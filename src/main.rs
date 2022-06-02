@@ -5,4 +5,6 @@ fn main() {
     let new = vec!["hell", "world", "!"];
     let result = algorithm::diff(&old[..], &new[..]);
     println!("{:?}", result);
+
+    println!("{:?}", algorithm::experiment(&old[..], &new[..]));
 }

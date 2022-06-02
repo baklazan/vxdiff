@@ -5,6 +5,54 @@ pub enum DiffOp {
     Delete,
 }
 
+#[derive(Debug)]
+pub struct FileDiff<'a>(Vec<Section<'a>>);
+
+#[derive(Debug)]
+pub struct Section<'a> {
+    old: SectionSide<'a>,
+    new: SectionSide<'a>,
+    equal: bool,
+}
+
+#[derive(Debug)]
+pub struct SectionSide<'a> {
+    lineno_initial: usize,
+    text_with_words: Vec<(bool, &'a str)>,
+    // moved: Option<(String, usize)>,
+}
+
+pub fn experiment<'a>(old: &'a [&str], new: &'a [&str]) -> FileDiff<'a> {
+    let mut result = FileDiff(vec![]);
+    for old_index in (0..old.len()) {
+        result.0.push(Section {
+            old: SectionSide {
+                lineno_initial: 0,
+                text_with_words: vec![(false, old[old_index])],
+            },
+            new: SectionSide {
+                lineno_initial: 0,
+                text_with_words: vec![],
+            },
+            equal: false,
+        });
+    }
+    for new_index in (0..new.len()) {
+        result.0.push(Section {
+            old: SectionSide {
+                lineno_initial: 0,
+                text_with_words: vec![],
+            },
+            new: SectionSide {
+                lineno_initial: 0,
+                text_with_words: vec![(false, new[new_index])],
+            },
+            equal: false,
+        });
+    }
+    result
+}
+
 pub fn diff(old: &[&str], new: &[&str]) -> Vec<DiffOp> {
     let inf = old.len() + new.len() + 1;
     let mut dp: Vec<Vec<(usize, Option<DiffOp>)>> =
