@@ -1,12 +1,14 @@
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)] pub enum DiffOp {
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum DiffOp {
     Match,
     Insert,
-    Delete
+    Delete,
 }
 
-pub fn diff(old : &[&str], new : &[&str]) -> Vec<DiffOp> {
+pub fn diff(old: &[&str], new: &[&str]) -> Vec<DiffOp> {
     let inf = old.len() + new.len() + 1;
-    let mut dp : Vec<Vec<(usize, Option<DiffOp>)>> = vec![vec![(inf, None); new.len() + 1] ; old.len() + 1];
+    let mut dp: Vec<Vec<(usize, Option<DiffOp>)>> =
+        vec![vec![(inf, None); new.len() + 1]; old.len() + 1];
     dp[old.len()][new.len()] = (0, None);
     for old_index in (0..old.len()).rev() {
         dp[old_index][new.len()] = (1 + dp[old_index + 1][new.len()].0, Some(DiffOp::Delete));
