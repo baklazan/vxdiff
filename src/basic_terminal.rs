@@ -1,5 +1,5 @@
-use super::algorithm::{FileDiff, Section, SectionSide};
-use console::{style, Style};
+use super::algorithm::{FileDiff, SectionSide};
+use console::Style;
 use std::io;
 
 fn print_side(
