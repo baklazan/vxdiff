@@ -4,12 +4,10 @@ mod algorithm;
 mod basic_terminal;
 
 fn main() -> io::Result<()> {
-    let old = vec!["hello", "world", "!"];
-    let new = vec!["hell", "world", "!"];
-    let result = algorithm::diff(&old[..], &new[..]);
-    println!("{:?}", result);
+    let old = "hello\nworld\n!\n";
+    let new = "hell\nworld\n!\n";
 
-    let diff = algorithm::experiment(&old[..], &new[..]);
+    let diff = algorithm::diff_file(old, new);
     println!("{:?}", diff);
 
     basic_terminal::print(&diff, &mut std::io::stdout())?;

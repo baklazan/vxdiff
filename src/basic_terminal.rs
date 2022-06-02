@@ -1,14 +1,26 @@
 use super::algorithm::{FileDiff, Section, SectionSide};
+use console::{style, Style};
 use std::io;
-use console::{Style, style};
 
-fn print_side(prefix: char, style_var: Style, side: &SectionSide, output: &mut dyn io::Write) -> io::Result<()> {
+fn print_side(
+    prefix: char,
+    style_var: Style,
+    side: &SectionSide,
+    output: &mut dyn io::Write,
+) -> io::Result<()> {
     if side.text_with_words.len() != 0 {
-    write!(output, "{}", style_var.apply_to(prefix))?;
-    for (highlight, text) in &side.text_with_words {
-        write!(output, "{}", if *highlight { style_var.apply_to(text).underlined().on_black() } else { style_var.apply_to(text) })?;
-    }
-    write!(output, "\n")?; // TODO: Remove. Put \n directly in text_with_words.
+        write!(output, "{}", style_var.apply_to(prefix))?;
+        for (highlight, text) in &side.text_with_words {
+            write!(
+                output,
+                "{}",
+                if *highlight {
+                    style_var.apply_to(text).underlined().on_black()
+                } else {
+                    style_var.apply_to(text)
+                }
+            )?;
+        }
     }
     Ok(())
 }
