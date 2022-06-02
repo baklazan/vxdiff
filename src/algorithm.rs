@@ -6,20 +6,20 @@ pub enum DiffOp {
 }
 
 #[derive(Debug)]
-pub struct FileDiff<'a>(Vec<Section<'a>>);
+pub struct FileDiff<'a>(pub Vec<Section<'a>>);
 
 #[derive(Debug)]
 pub struct Section<'a> {
-    old: SectionSide<'a>,
-    new: SectionSide<'a>,
-    equal: bool,
+    pub old: SectionSide<'a>,
+    pub new: SectionSide<'a>,
+    pub equal: bool,
 }
 
 #[derive(Debug)]
 pub struct SectionSide<'a> {
-    lineno_initial: usize,
-    text_with_words: Vec<(bool, &'a str)>,
-    // moved: Option<(String, usize)>,
+    pub lineno_initial: usize,
+    pub text_with_words: Vec<(bool, &'a str)>,
+    // pub moved: Option<(String, usize)>,
 }
 
 pub fn experiment<'a>(old: &'a [&str], new: &'a [&str]) -> FileDiff<'a> {
@@ -45,7 +45,7 @@ pub fn experiment<'a>(old: &'a [&str], new: &'a [&str]) -> FileDiff<'a> {
             },
             new: SectionSide {
                 lineno_initial: 0,
-                text_with_words: vec![(false, new[new_index])],
+                text_with_words: vec![(true, new[new_index])],
             },
             equal: false,
         });
