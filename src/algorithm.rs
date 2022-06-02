@@ -62,30 +62,7 @@ pub fn diff_file<'a>(old: &'a str, new: &'a str) -> FileDiff<'a> {
         equal: in_match,
     };
 
-    for op in diff_result {
-        if (op == DiffOp::Match) != in_match {
-            section.old.text_with_words.push((
-                !in_match,
-                &old[old_line_starts[section.old.lineno_initial]..old_line_starts[old_index]],
-            ));
-            section.new.text_with_words.push((
-                !in_match,
-                &new[new_line_starts[section.new.lineno_initial]..new_line_starts[new_index]],
-            ));
-            result.0.push(section);
-            in_match = op == DiffOp::Match;
-            section = Section {
-                old: SectionSide {
-                    lineno_initial: old_index,
-                    text_with_words: vec![],
-                },
-                new: SectionSide {
-                    lineno_initial: new_index,
-                    text_with_words: vec![],
-                },
-                equal: in_match,
-            };
-        }
+    for (i, op) in diff_result.iter().enumerate() {
         match op {
             DiffOp::Delete => {
                 old_index += 1;
@@ -98,16 +75,32 @@ pub fn diff_file<'a>(old: &'a str, new: &'a str) -> FileDiff<'a> {
                 new_index += 1;
             }
         }
+        if i + 1 >= diff_result.len() || (diff_result[i + 1] == DiffOp::Match) != in_match {
+            let old_text =
+                &old[old_line_starts[section.old.lineno_initial]..old_line_starts[old_index]];
+            if old_text.len() > 0 {
+                section.old.text_with_words.push((!in_match, old_text));
+            }
+            let new_text =
+                &new[new_line_starts[section.new.lineno_initial]..new_line_starts[new_index]];
+            if new_text.len() > 0 {
+                section.new.text_with_words.push((!in_match, new_text));
+            }
+            result.0.push(section);
+            in_match = !in_match;
+            section = Section {
+                old: SectionSide {
+                    lineno_initial: old_index,
+                    text_with_words: vec![],
+                },
+                new: SectionSide {
+                    lineno_initial: new_index,
+                    text_with_words: vec![],
+                },
+                equal: in_match,
+            };
+        }
     }
-    section.old.text_with_words.push((
-        !in_match,
-        &old[old_line_starts[section.old.lineno_initial]..old_line_starts[old_index]],
-    ));
-    section.new.text_with_words.push((
-        !in_match,
-        &new[new_line_starts[section.new.lineno_initial]..new_line_starts[new_index]],
-    ));
-    result.0.push(section);
     result
 }
 
@@ -251,6 +244,58 @@ mod test {
                         text_with_words: vec![(true, new_lines[3])],
                     },
                     equal: false,
+                },
+            ],
+        };
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn pure_delete() {
+        let old = "a\n\
+                   b\n\
+                   c\n\
+                   d\n\
+                   e\n";
+        let new = "a\n\
+                   e\n";
+        let (old_lines, old_starts) = line_starts(old);
+        let (new_lines, new_starts) = line_starts(new);
+        let actual = diff_file(old, new);
+        let expected = FileDiff {
+            0: vec![
+                Section {
+                    old: SectionSide {
+                        lineno_initial: 0,
+                        text_with_words: vec![(false, old_lines[0])],
+                    },
+                    new: SectionSide {
+                        lineno_initial: 0,
+                        text_with_words: vec![(false, new_lines[0])],
+                    },
+                    equal: true,
+                },
+                Section {
+                    old: SectionSide {
+                        lineno_initial: 1,
+                        text_with_words: vec![(true, &old[old_starts[1]..old_starts[4]])],
+                    },
+                    new: SectionSide {
+                        lineno_initial: 1,
+                        text_with_words: vec![],
+                    },
+                    equal: false,
+                },
+                Section {
+                    old: SectionSide {
+                        lineno_initial: 4,
+                        text_with_words: vec![(false, old_lines[4])],
+                    },
+                    new: SectionSide {
+                        lineno_initial: 1,
+                        text_with_words: vec![(false, new_lines[1])],
+                    },
+                    equal: true,
                 },
             ],
         };
