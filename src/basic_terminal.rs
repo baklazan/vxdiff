@@ -11,13 +11,22 @@ fn print_side(
     if side.text_with_words.len() != 0 {
         write!(output, "{}", style_var.apply_to(prefix))?;
         for (highlight, text) in &side.text_with_words {
+            let mut fixed_text = String::new();
+            let mut it = text.chars().peekable();
+            while let Some(ch) = it.next() {
+                fixed_text.push(ch);
+                if ch == '\n' && !it.peek().is_none() {
+                    fixed_text.push(prefix);
+                }
+            }
+
             write!(
                 output,
                 "{}",
                 if *highlight {
-                    style_var.apply_to(text).underlined().on_black()
+                    style_var.apply_to(fixed_text).underlined().on_black()
                 } else {
-                    style_var.apply_to(text)
+                    style_var.apply_to(fixed_text)
                 }
             )?;
         }
