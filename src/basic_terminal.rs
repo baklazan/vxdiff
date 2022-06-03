@@ -6,7 +6,7 @@ fn print_side(
     prefix: char,
     style_var: Style,
     side: &SectionSide,
-    output: &mut dyn io::Write,
+    output: &mut impl io::Write,
 ) -> io::Result<()> {
     if side.text_with_words.len() != 0 {
         write!(output, "{}", style_var.apply_to(prefix))?;
@@ -34,7 +34,7 @@ fn print_side(
     Ok(())
 }
 
-pub fn print(diff: &FileDiff, output: &mut dyn io::Write) -> io::Result<()> {
+pub fn print(diff: &FileDiff, output: &mut impl io::Write) -> io::Result<()> {
     for section in &diff.0 {
         if section.equal {
             // TODO: Check old == new.
