@@ -1,4 +1,4 @@
-use std::fs::read;
+use std::fs::read_to_string;
 use std::io;
 use std::process::exit;
 
@@ -12,11 +12,8 @@ fn main() -> io::Result<()> {
         exit(1);
     }
 
-    let old_bytes = read(&args[1])?;
-    let new_bytes = read(&args[2])?;
-    // TODO: Convert errors instead of unwrap()???
-    let old = std::str::from_utf8(&old_bytes).unwrap();
-    let new = std::str::from_utf8(&new_bytes).unwrap();
+    let old = &read_to_string(&args[1])?;
+    let new = &read_to_string(&args[2])?;
 
     let diff = algorithm::diff_file(old, new);
     println!("{:?}", diff);
