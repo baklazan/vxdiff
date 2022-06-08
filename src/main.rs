@@ -1,11 +1,10 @@
 use std::fs::read_to_string;
-use std::io;
 use std::process::exit;
 
 mod algorithm;
 mod basic_terminal;
 
-fn main() -> io::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().collect();
     if args.len() != 3 {
         eprintln!("usage: {:?} [old] [new]", args[0]);
@@ -18,7 +17,11 @@ fn main() -> io::Result<()> {
     let diff = algorithm::diff_file(old, new);
     println!("{:?}", diff);
 
+    println!("Normal print:");
     basic_terminal::print(&diff, &mut std::io::stdout())?;
+
+    println!("Side by side print:");
+    basic_terminal::print_side_by_side(&diff, &mut std::io::stdout())?;
 
     Ok(())
 }
