@@ -17,91 +17,172 @@ pub struct SectionSide<'a> {
     // pub moved: Option<(String, usize)>,
 }
 
-fn line_start_positions(string: &str) -> Vec<usize> {
-    let mut result = vec![0];
-    for (i, c) in string.chars().enumerate() {
-        if c == '\n' {
-            result.push(i + 1);
+impl<'a> Section<'a> {
+    fn new(old_lineno: usize, new_lineno: usize) -> Section<'a> {
+        Section {
+            old: SectionSide {
+                lineno_initial: old_lineno,
+                text_with_words: Vec::new(),
+            },
+            new: SectionSide {
+                lineno_initial: new_lineno,
+                text_with_words: Vec::new(),
+            },
+            equal: true,
         }
     }
-    if *result.last().unwrap() != string.len() {
-        result.push(string.len())
+}
+
+fn word_start_positions_bytes(string: &str) -> Vec<usize> {
+    let mut result = Vec::new();
+    let mut was_last_alphabetic = false;
+    let mut was_last_numeric = false;
+    for (i, c) in string.char_indices() {
+        if c.is_alphabetic() && was_last_alphabetic {
+            continue;
+        }
+        if c.is_numeric() && was_last_numeric {
+            continue;
+        }
+        was_last_alphabetic = c.is_alphabetic();
+        was_last_numeric = c.is_numeric();
+        result.push(i);
+    }
+    result.push(string.len());
+    result
+}
+
+fn align_words(texts: &[&str; 2], word_bounds: &[Vec<usize>; 2]) -> Vec<DiffOp> {
+    let mut interner = StringInterner::default();
+    let mut symbols = [Vec::new(), Vec::new()];
+    for side in 0..2 {
+        for i in 0..word_bounds[side].len() - 1 {
+            let word_start = word_bounds[side][i];
+            let word_end = word_bounds[side][i + 1];
+            let word = &texts[side][word_start..word_end];
+            symbols[side].push(interner.get_or_intern(word));
+        }
+    }
+    return align(&symbols[0], &symbols[1]);
+}
+
+fn highlighted_subsegments<'a>(
+    string: &'a str,
+    word_bounds: &[usize],
+    word_indices_and_highlight: Vec<(bool, usize)>,
+) -> Vec<(bool, &'a str)> {
+    if word_indices_and_highlight.is_empty() {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+
+    let mut subsegment_starting_word_index = word_indices_and_highlight[0].1;
+    for (i, (highlight, word_index)) in word_indices_and_highlight.iter().enumerate() {
+        if i + 1 >= word_indices_and_highlight.len()
+            || (*highlight != word_indices_and_highlight[i + 1].0)
+        {
+            let word_start_offset = word_bounds[subsegment_starting_word_index];
+            let word_end_offset = word_bounds[word_index + 1];
+            let word = &string[word_start_offset..word_end_offset];
+            result.push((*highlight, word));
+            subsegment_starting_word_index = word_index + 1;
+        }
+    }
+    result
+}
+
+fn word_diff_chunk<'a>(
+    old: &'a str,
+    old_lineno_initial: usize,
+    new: &'a str,
+    new_lineno_initial: usize,
+) -> Vec<Section<'a>> {
+    const OLD: usize = 0;
+    const NEW: usize = 1;
+    let texts = [old, new];
+    let word_bounds = [
+        word_start_positions_bytes(old),
+        word_start_positions_bytes(new),
+    ];
+    let alignment = align_words(&texts, &word_bounds);
+
+    let mut result = Vec::new();
+
+    let mut section_contents: [Vec<(bool, usize)>; 2] = [Vec::new(), Vec::new()];
+    let mut word_indices = [0, 0];
+    let mut line_numbers = [old_lineno_initial, new_lineno_initial];
+    let mut section = Section::new(old_lineno_initial, new_lineno_initial);
+    let mut section_contains_match = false;
+
+    for (i, op) in alignment.iter().enumerate() {
+        let mut should_push_both = i + 1 >= alignment.len();
+
+        let (used_words, is_match) = match op {
+            DiffOp::Delete => ([1, 0], false),
+            DiffOp::Insert => ([0, 1], false),
+            DiffOp::Match => ([1, 1], true),
+        };
+
+        section.equal &= is_match;
+        section_contains_match |= is_match;
+
+        for side in 0..=1 {
+            for _i in 0..used_words[side] {
+                let word_start = word_bounds[side][word_indices[side]];
+                let word_end = word_bounds[side][word_indices[side] + 1];
+                let word = &texts[side][word_start..word_end];
+                section_contents[side].push((!is_match, word_indices[side]));
+                word_indices[side] += 1;
+                if word == "\n" {
+                    line_numbers[side] += 1;
+
+                    if !is_match && !section_contains_match {
+                        let section_side = if side == OLD {
+                            &mut section.old
+                        } else {
+                            &mut section.new
+                        };
+                        section_side.text_with_words = highlighted_subsegments(
+                            texts[side],
+                            &word_bounds[side],
+                            std::mem::take(&mut section_contents[side]),
+                        );
+                        result.push(section);
+                        section = Section::new(line_numbers[OLD], line_numbers[NEW]);
+                        section_contains_match = false;
+                        should_push_both = false;
+                    }
+
+                    if is_match {
+                        should_push_both = true;
+                    }
+                }
+            }
+        }
+
+        if should_push_both {
+            section.old.text_with_words = highlighted_subsegments(
+                old,
+                &word_bounds[OLD],
+                std::mem::take(&mut section_contents[OLD]),
+            );
+            section.new.text_with_words = highlighted_subsegments(
+                new,
+                &word_bounds[NEW],
+                std::mem::take(&mut section_contents[NEW]),
+            );
+            result.push(section);
+            section = Section::new(line_numbers[OLD], line_numbers[NEW]);
+            section_contains_match = false;
+        }
     }
     result
 }
 
 pub fn diff_file<'a>(old: &'a str, new: &'a str) -> FileDiff<'a> {
-    let mut interner = StringInterner::default();
-    let old_line_starts = line_start_positions(old);
-    let mut old_symbols = Vec::new();
-    for i in 0..old_line_starts.len() - 1 {
-        old_symbols.push(interner.get_or_intern(&old[old_line_starts[i]..old_line_starts[i + 1]]));
+    FileDiff {
+        0: word_diff_chunk(old, 0, new, 0),
     }
-    let new_line_starts = line_start_positions(new);
-    let mut new_symbols = Vec::new();
-    for i in 0..new_line_starts.len() - 1 {
-        new_symbols.push(interner.get_or_intern(&new[new_line_starts[i]..new_line_starts[i + 1]]));
-    }
-    let diff_result = diff(&old_symbols[..], &new_symbols[..]);
-
-    let mut result = FileDiff { 0: vec![] };
-
-    let mut in_match = diff_result[0] == DiffOp::Match;
-    let mut old_index = 0;
-    let mut new_index = 0;
-
-    let mut section = Section {
-        old: SectionSide {
-            lineno_initial: old_index,
-            text_with_words: vec![],
-        },
-        new: SectionSide {
-            lineno_initial: new_index,
-            text_with_words: vec![],
-        },
-        equal: in_match,
-    };
-
-    for (i, op) in diff_result.iter().enumerate() {
-        match op {
-            DiffOp::Delete => {
-                old_index += 1;
-            }
-            DiffOp::Insert => {
-                new_index += 1;
-            }
-            DiffOp::Match => {
-                old_index += 1;
-                new_index += 1;
-            }
-        }
-        if i + 1 >= diff_result.len() || (diff_result[i + 1] == DiffOp::Match) != in_match {
-            let old_text =
-                &old[old_line_starts[section.old.lineno_initial]..old_line_starts[old_index]];
-            if old_text.len() > 0 {
-                section.old.text_with_words.push((!in_match, old_text));
-            }
-            let new_text =
-                &new[new_line_starts[section.new.lineno_initial]..new_line_starts[new_index]];
-            if new_text.len() > 0 {
-                section.new.text_with_words.push((!in_match, new_text));
-            }
-            result.0.push(section);
-            in_match = !in_match;
-            section = Section {
-                old: SectionSide {
-                    lineno_initial: old_index,
-                    text_with_words: vec![],
-                },
-                new: SectionSide {
-                    lineno_initial: new_index,
-                    text_with_words: vec![],
-                },
-                equal: in_match,
-            };
-        }
-    }
-    result
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -111,7 +192,7 @@ enum DiffOp {
     Delete,
 }
 
-fn diff(
+fn align(
     old: &[string_interner::symbol::SymbolU32],
     new: &[string_interner::symbol::SymbolU32],
 ) -> Vec<DiffOp> {
@@ -127,6 +208,10 @@ fn diff(
     }
     for old_index in (0..old.len()).rev() {
         for new_index in (0..new.len()).rev() {
+            let proposed_diagonal = dp[old_index + 1][new_index + 1].0;
+            if old[old_index] == new[new_index] && dp[old_index][new_index].0 > proposed_diagonal {
+                dp[old_index][new_index] = (proposed_diagonal, Some(DiffOp::Match));
+            }
             let proposed_down = dp[old_index + 1][new_index].0 + 1;
             if dp[old_index][new_index].0 > proposed_down {
                 dp[old_index][new_index] = (proposed_down, Some(DiffOp::Delete));
@@ -134,10 +219,6 @@ fn diff(
             let proposed_right = dp[old_index][new_index + 1].0 + 1;
             if dp[old_index][new_index].0 > proposed_right {
                 dp[old_index][new_index] = (proposed_right, Some(DiffOp::Insert));
-            }
-            let proposed_diagonal = dp[old_index + 1][new_index + 1].0;
-            if old[old_index] == new[new_index] && dp[old_index][new_index].0 > proposed_diagonal {
-                dp[old_index][new_index] = (proposed_diagonal, Some(DiffOp::Match));
             }
         }
     }
@@ -167,118 +248,32 @@ mod test {
 
     use super::*;
 
-    fn line_starts<'a>(string: &str) -> (Vec<&str>, Vec<usize>) {
-        let mut lines = Vec::new();
-        let mut line_starts = Vec::new();
-        let mut line_start = 0;
-        for (i, c) in string.chars().enumerate() {
-            if c == '\n' {
-                lines.push(&string[line_start..i + 1]);
-                line_starts.push(line_start);
-                line_start = i + 1;
-            }
-        }
-        if line_start < string.len() {
-            lines.push(&string[line_start..string.len()]);
-        }
-        line_starts.push(string.len());
-        (lines, line_starts)
-    }
-
-    #[test]
-    fn simple() {
-        let old = "a\n\
-                   b\n\
-                   c\n\
-                   d\n\
-                   e\n";
-        let new = "a\n\
-                   ba\n\
-                   c\n\
-                   c2\n";
-        let (old_lines, old_starts) = line_starts(old);
-        let (new_lines, new_starts) = line_starts(new);
-        let actual = diff_file(old, new);
-        let expected = FileDiff {
-            0: vec![
-                Section {
-                    old: SectionSide {
-                        lineno_initial: 0,
-                        text_with_words: vec![(false, old_lines[0])],
-                    },
-                    new: SectionSide {
-                        lineno_initial: 0,
-                        text_with_words: vec![(false, new_lines[0])],
-                    },
-                    equal: true,
-                },
-                Section {
-                    old: SectionSide {
-                        lineno_initial: 1,
-                        text_with_words: vec![(true, old_lines[1])],
-                    },
-                    new: SectionSide {
-                        lineno_initial: 1,
-                        text_with_words: vec![(true, new_lines[1])],
-                    },
-                    equal: false,
-                },
-                Section {
-                    old: SectionSide {
-                        lineno_initial: 2,
-                        text_with_words: vec![(false, old_lines[2])],
-                    },
-                    new: SectionSide {
-                        lineno_initial: 2,
-                        text_with_words: vec![(false, new_lines[2])],
-                    },
-                    equal: true,
-                },
-                Section {
-                    old: SectionSide {
-                        lineno_initial: 3,
-                        text_with_words: vec![(true, &old[old_starts[3]..old_starts[5]])],
-                    },
-                    new: SectionSide {
-                        lineno_initial: 3,
-                        text_with_words: vec![(true, new_lines[3])],
-                    },
-                    equal: false,
-                },
-            ],
-        };
-        assert_eq!(expected, actual);
-    }
-
     #[test]
     fn pure_delete() {
         let old = "a\n\
                    b\n\
                    c\n\
-                   d\n\
-                   e\n";
+                   d\n";
         let new = "a\n\
-                   e\n";
-        let (old_lines, old_starts) = line_starts(old);
-        let (new_lines, new_starts) = line_starts(new);
+                   d\n";
         let actual = diff_file(old, new);
         let expected = FileDiff {
             0: vec![
                 Section {
                     old: SectionSide {
                         lineno_initial: 0,
-                        text_with_words: vec![(false, old_lines[0])],
+                        text_with_words: vec![(false, "a\n")],
                     },
                     new: SectionSide {
                         lineno_initial: 0,
-                        text_with_words: vec![(false, new_lines[0])],
+                        text_with_words: vec![(false, "a\n")],
                     },
                     equal: true,
                 },
                 Section {
                     old: SectionSide {
                         lineno_initial: 1,
-                        text_with_words: vec![(true, &old[old_starts[1]..old_starts[4]])],
+                        text_with_words: vec![(true, "b\n")],
                     },
                     new: SectionSide {
                         lineno_initial: 1,
@@ -288,16 +283,107 @@ mod test {
                 },
                 Section {
                     old: SectionSide {
-                        lineno_initial: 4,
-                        text_with_words: vec![(false, old_lines[4])],
+                        lineno_initial: 2,
+                        text_with_words: vec![(true, "c\n")],
                     },
                     new: SectionSide {
                         lineno_initial: 1,
-                        text_with_words: vec![(false, new_lines[1])],
+                        text_with_words: vec![],
+                    },
+                    equal: false,
+                },
+                Section {
+                    old: SectionSide {
+                        lineno_initial: 3,
+                        text_with_words: vec![(false, "d\n")],
+                    },
+                    new: SectionSide {
+                        lineno_initial: 1,
+                        text_with_words: vec![(false, "d\n")],
                     },
                     equal: true,
                 },
             ],
+        };
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn line_split() {
+        let old = "... :::\n";
+        let new = "...\n\
+                   :::\n";
+        let actual = diff_file(old, new);
+        let expected = FileDiff {
+            0: vec![Section {
+                old: SectionSide {
+                    lineno_initial: 0,
+                    text_with_words: vec![(false, "..."), (true, " "), (false, ":::\n")],
+                },
+                new: SectionSide {
+                    lineno_initial: 0,
+                    text_with_words: vec![(false, "..."), (true, "\n"), (false, ":::\n")],
+                },
+                equal: false,
+            }],
+        };
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn deletion_before_modified_line() {
+        let old = "...\n\
+                   [[[ ::: ]]]\n";
+        let new = "[[[ $$$ ]]]\n";
+        let actual = diff_file(old, new);
+        let expected = FileDiff {
+            0: vec![
+                Section {
+                    old: SectionSide {
+                        lineno_initial: 0,
+                        text_with_words: vec![(true, "...\n")],
+                    },
+                    new: SectionSide {
+                        lineno_initial: 0,
+                        text_with_words: vec![],
+                    },
+                    equal: false,
+                },
+                Section {
+                    old: SectionSide {
+                        lineno_initial: 1,
+                        text_with_words: vec![(false, "[[[ "), (true, ":::"), (false, " ]]]\n")],
+                    },
+                    new: SectionSide {
+                        lineno_initial: 0,
+                        text_with_words: vec![(false, "[[[ "), (true, "$$$"), (false, " ]]]\n")],
+                    },
+                    equal: false,
+                },
+            ],
+        };
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn line_split_with_insert() {
+        let old = "... :::\n";
+        let new = "...\n\
+                   $$$\n\
+                   :::\n";
+        let actual = diff_file(old, new);
+        let expected = FileDiff {
+            0: vec![Section {
+                old: SectionSide {
+                    lineno_initial: 0,
+                    text_with_words: vec![(false, "..."), (true, " "), (false, ":::\n")],
+                },
+                new: SectionSide {
+                    lineno_initial: 0,
+                    text_with_words: vec![(false, "..."), (true, "\n$$$\n"), (false, ":::\n")],
+                },
+                equal: false,
+            }],
         };
         assert_eq!(expected, actual);
     }
