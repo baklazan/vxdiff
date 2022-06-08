@@ -8,29 +8,34 @@ fn print_side(
     side: &SectionSide,
     output: &mut impl io::Write,
 ) -> io::Result<()> {
-    if side.text_with_words.len() != 0 {
-        write!(output, "{}", style_var.apply_to(prefix))?;
-        for (highlight, text) in &side.text_with_words {
-            let mut fixed_text = String::new();
-            let mut it = text.chars().peekable();
-            while let Some(ch) = it.next() {
-                fixed_text.push(ch);
-                if ch == '\n' && !it.peek().is_none() {
-                    fixed_text.push(prefix);
-                }
+    let mut fresh_line = true;
+    for (highlight, text) in &side.text_with_words {
+        for part_with_eol in text.split_inclusive('\n') {
+            let (part, eol) = match part_with_eol.strip_suffix('\n') {
+                Some(part) => (part, true),
+                None => (part_with_eol, false),
+            };
+            if fresh_line {
+                write!(output, "{}", style_var.apply_to(prefix))?;
+                fresh_line = false;
             }
-
-            write!(
-                output,
-                "{}",
-                if *highlight {
-                    style_var.apply_to(fixed_text).underlined().on_black()
-                } else {
-                    style_var.apply_to(fixed_text)
-                }
-            )?;
+            let styled_part = style_var.apply_to(part);
+            if *highlight {
+                write!(output, "{}", styled_part.underlined().on_yellow())?;
+            } else {
+                write!(output, "{}", styled_part)?;
+            }
+            if eol {
+                // Never highlight the final newline because terminals are bad.
+                write!(output, "\n")?;
+                fresh_line = true;
+            }
         }
     }
+    if !fresh_line {
+        write!(output, "\n\\ No newline at end of file\n")?;
+    }
+
     Ok(())
 }
 
