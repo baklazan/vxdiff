@@ -15,11 +15,11 @@ pub struct SectionSide<'a> {
     // pub moved: Option<(String, usize)>,
 }
 
-fn word_bounds_bytes(string: &str) -> Vec<usize> {
-    let mut result = Vec::new();
+fn partition_into_words<'a>(text: &'a str) -> PartitionedText<'a> {
+    let mut word_bounds = Vec::new();
     let mut was_last_alphabetic = false;
     let mut was_last_numeric = false;
-    for (i, c) in string.char_indices() {
+    for (i, c) in text.char_indices() {
         if c.is_alphabetic() && was_last_alphabetic {
             continue;
         }
@@ -28,29 +28,40 @@ fn word_bounds_bytes(string: &str) -> Vec<usize> {
         }
         was_last_alphabetic = c.is_alphabetic();
         was_last_numeric = c.is_numeric();
-        result.push(i);
+        word_bounds.push(i);
     }
-    result.push(string.len());
-    result
+    word_bounds.push(text.len());
+    PartitionedText { text, word_bounds }
 }
 
-fn align_words(texts: &[&str; 2], word_bounds: &[Vec<usize>; 2]) -> Vec<DiffOp> {
+fn align_words(texts: &[PartitionedText; 2]) -> Vec<DiffOp> {
     let mut interner = StringInterner::default();
     let mut symbols = [Vec::new(), Vec::new()];
     for side in 0..2 {
-        for i in 0..word_bounds[side].len() - 1 {
-            let word_start = word_bounds[side][i];
-            let word_end = word_bounds[side][i + 1];
-            let word = &texts[side][word_start..word_end];
+        for i in 0..texts[side].word_count() {
+            let word = texts[side].get_word(i);
             symbols[side].push(interner.get_or_intern(word));
         }
     }
     return align(&symbols[0], &symbols[1]);
 }
 
+struct PartitionedText<'a> {
+    pub text: &'a str,
+    pub word_bounds: Vec<usize>,
+}
+
+impl<'a> PartitionedText<'a> {
+    fn word_count(&self) -> usize {
+        self.word_bounds.len() - 1
+    }
+    fn get_word(&self, index: usize) -> &'a str {
+        &self.text[self.word_bounds[index]..self.word_bounds[index + 1]]
+    }
+}
+
 fn highlighted_subsegments<'a>(
-    string: &'a str,
-    word_bounds: &[usize],
+    text: &PartitionedText<'a>,
     word_indices_and_highlight: Vec<(bool, usize)>,
 ) -> Vec<(bool, &'a str)> {
     if word_indices_and_highlight.is_empty() {
@@ -61,9 +72,9 @@ fn highlighted_subsegments<'a>(
     let mut subsegment_starting_word_index = word_indices_and_highlight[0].1;
     for (i, (highlight, word_index)) in word_indices_and_highlight.iter().enumerate() {
         if i + 1 >= word_indices_and_highlight.len() || (*highlight != word_indices_and_highlight[i + 1].0) {
-            let word_start_offset = word_bounds[subsegment_starting_word_index];
-            let word_end_offset = word_bounds[word_index + 1];
-            let word = &string[word_start_offset..word_end_offset];
+            let word_start_offset = text.word_bounds[subsegment_starting_word_index];
+            let word_end_offset = text.word_bounds[word_index + 1];
+            let word = &text.text[word_start_offset..word_end_offset];
             result.push((*highlight, word));
             subsegment_starting_word_index = word_index + 1;
         }
@@ -72,10 +83,12 @@ fn highlighted_subsegments<'a>(
 }
 
 fn word_diff_chunk<'a>(old: &'a str, new: &'a str) -> Vec<Section<'a>> {
-    let texts = [old, new];
-    let word_bounds = [word_bounds_bytes(old), word_bounds_bytes(new)];
-    let alignment = align_words(&texts, &word_bounds);
+    let texts = [partition_into_words(old), partition_into_words(new)];
+    let alignment = align_words(&texts);
+    make_sections(&texts, &alignment)
+}
 
+fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> Vec<Section<'a>> {
     let mut result = Vec::new();
 
     let mut section_contents: [Vec<(bool, usize)>; 2] = [Vec::new(), Vec::new()];
@@ -97,9 +110,7 @@ fn word_diff_chunk<'a>(old: &'a str, new: &'a str) -> Vec<Section<'a>> {
 
         for side in 0..=1 {
             for _i in 0..used_words[side] {
-                let word_start = word_bounds[side][word_indices[side]];
-                let word_end = word_bounds[side][word_indices[side] + 1];
-                let word = &texts[side][word_start..word_end];
+                let word = texts[side].get_word(word_indices[side]);
                 section_contents[side].push((!is_match, word_indices[side]));
                 word_indices[side] += 1;
 
@@ -108,11 +119,8 @@ fn word_diff_chunk<'a>(old: &'a str, new: &'a str) -> Vec<Section<'a>> {
                         let mut sides = [(); 2].map(|_| SectionSide {
                             text_with_words: vec![],
                         });
-                        sides[side].text_with_words = highlighted_subsegments(
-                            texts[side],
-                            &word_bounds[side],
-                            std::mem::take(&mut section_contents[side]),
-                        );
+                        sides[side].text_with_words =
+                            highlighted_subsegments(&texts[side], std::mem::take(&mut section_contents[side]));
 
                         result.push(Section {
                             sides: sides,
@@ -132,11 +140,7 @@ fn word_diff_chunk<'a>(old: &'a str, new: &'a str) -> Vec<Section<'a>> {
 
         if should_push_both {
             let sides = [0, 1].map(|side| SectionSide {
-                text_with_words: highlighted_subsegments(
-                    texts[side],
-                    &word_bounds[side],
-                    std::mem::take(&mut section_contents[side]),
-                ),
+                text_with_words: highlighted_subsegments(&texts[side], std::mem::take(&mut section_contents[side])),
             });
             result.push(Section {
                 sides: sides,
