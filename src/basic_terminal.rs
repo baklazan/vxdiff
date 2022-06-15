@@ -8,7 +8,7 @@ type TheResult = Result<(), Box<dyn Error>>;
 
 fn print_side(
     prefix: char,
-    style_var: Style,
+    style_var: &Style,
     side: &SectionSide,
     write_line: &mut impl FnMut(&str, usize, &Style) -> TheResult,
 ) -> TheResult {
@@ -17,11 +17,7 @@ fn print_side(
     let mut current_line = "".to_string();
     let mut current_line_visible_length = 0;
     for (highlight, text) in &side.text_with_words {
-        let my_style = if *highlight {
-            &highlighted_style
-        } else {
-            &style_var
-        };
+        let my_style = if *highlight { &highlighted_style } else { &style_var };
         for part_with_eol in text.split_inclusive('\n') {
             let (part, eol) = match part_with_eol.strip_suffix('\n') {
                 Some(part) => (part, true),
@@ -50,20 +46,18 @@ fn print_side(
 }
 
 pub fn print(diff: &FileDiff, output: &mut impl io::Write) -> TheResult {
-    // TODO: Why dyn?
-    let mut write_line: &mut dyn FnMut(&str, usize, &Style) -> TheResult =
-        &mut |line, _visible_length, _newline_style| {
-            // Never highlight the final newline because terminals are bad.
-            write!(output, "{}\n", line)?;
-            Ok(())
-        };
+    let mut write_line = |line: &str, _visible_length: usize, _newline_style: &Style| {
+        // Never highlight the final newline because terminals are bad.
+        write!(output, "{}\n", line)?;
+        Ok(())
+    };
     for section in &diff.0 {
         if section.equal {
             // TODO: Check old == new.
-            print_side(' ', Style::new(), &section.old, &mut write_line)?;
+            print_side(' ', &Style::new(), &section.old, &mut write_line)?;
         } else {
-            print_side('-', Style::new().red(), &section.old, &mut write_line)?;
-            print_side('+', Style::new().green(), &section.new, &mut write_line)?;
+            print_side('-', &Style::new().red(), &section.old, &mut write_line)?;
+            print_side('+', &Style::new().green(), &section.new, &mut write_line)?;
         }
     }
     Ok(())
@@ -73,39 +67,28 @@ pub fn print_side_by_side(diff: &FileDiff, output: &mut impl io::Write) -> TheRe
     let width = 30;
     for section in &diff.0 {
         write!(output, "---section---\n")?;
-        let (left_char, left_style, right_char, right_style) = if section.equal {
-            (' ', Style::new(), ' ', Style::new())
+        let sides = [&section.old, &section.new];
+        let styles = if section.equal {
+            [(' ', Style::new()), (' ', Style::new())]
         } else {
-            ('-', Style::new().red(), '+', Style::new().green())
+            [('-', Style::new().red()), ('+', Style::new().green())]
         };
-        let mut left_lines = vec![];
-        let mut right_lines = vec![];
-        print_side(
-            left_char,
-            left_style,
-            &section.old,
-            &mut |line: &str, visible_length, _newline_style| {
-                left_lines.push(line.to_string() + &" ".repeat(width - visible_length));
+        let mut lines = [vec![], vec![]];
+        for i in 0..2 {
+            let mut write_line = |line: &str, visible_length, _newline_style: &Style| {
+                lines[i].push(line.to_string() + &" ".repeat(width - visible_length));
                 Ok(())
-            },
-        )?;
-        print_side(
-            right_char,
-            right_style,
-            &section.new,
-            &mut |line: &str, visible_length, _newline_style| {
-                right_lines.push(line.to_string() + &" ".repeat(width - visible_length));
-                Ok(())
-            },
-        )?;
+            };
+            print_side(styles[i].0, &styles[i].1, sides[i], &mut write_line)?;
+        }
         // TODO: The 'itertools' crate has a zip_longest function.
-        while left_lines.len() < right_lines.len() {
-            left_lines.push(" ".repeat(width));
+        while lines[0].len() < lines[1].len() {
+            lines[0].push(" ".repeat(width));
         }
-        while right_lines.len() < left_lines.len() {
-            right_lines.push(" ".repeat(width));
+        while lines[1].len() < lines[0].len() {
+            lines[1].push(" ".repeat(width));
         }
-        for (left_line, right_line) in std::iter::zip(left_lines, right_lines) {
+        for (left_line, right_line) in std::iter::zip(&lines[0], &lines[1]) {
             write!(output, "{} | {}\n", left_line, right_line)?;
         }
     }
