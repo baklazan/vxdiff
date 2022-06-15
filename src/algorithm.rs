@@ -62,7 +62,7 @@ impl<'a> PartitionedText<'a> {
 
 fn highlighted_subsegments<'a>(
     text: &PartitionedText<'a>,
-    word_indices_and_highlight: Vec<(bool, usize)>,
+    word_indices_and_highlight: &[(bool, usize)],
 ) -> Vec<(bool, &'a str)> {
     if word_indices_and_highlight.is_empty() {
         return Vec::new();
@@ -89,15 +89,15 @@ fn word_diff_chunk<'a>(old: &'a str, new: &'a str) -> Vec<Section<'a>> {
 }
 
 fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> Vec<Section<'a>> {
-    let mut result = Vec::new();
+    let mut result = vec![];
 
-    let mut section_contents: [Vec<(bool, usize)>; 2] = [Vec::new(), Vec::new()];
+    let mut section_contents: [Vec<(bool, usize)>; 2] = [vec![], vec![]];
     let mut word_indices = [0, 0];
     let mut section_contains_match = false;
-    let mut is_section_equal = true;
+    let mut current_line_start = [0, 0]; // indices into section_contents
 
     for (i, op) in alignment.iter().enumerate() {
-        let mut should_push_both = i + 1 >= alignment.len();
+        let is_last = i + 1 >= alignment.len();
 
         let (used_words, is_match) = match op {
             DiffOp::Delete => ([1, 0], false),
@@ -105,49 +105,48 @@ fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> 
             DiffOp::Match => ([1, 1], true),
         };
 
-        is_section_equal &= is_match;
-        section_contains_match |= is_match;
+        let mut is_newline = false;
 
-        for side in 0..=1 {
+        for side in 0..2 {
             for _i in 0..used_words[side] {
-                let word = texts[side].get_word(word_indices[side]);
+                is_newline = texts[side].get_word(word_indices[side]) == "\n";
                 section_contents[side].push((!is_match, word_indices[side]));
                 word_indices[side] += 1;
-
-                if word == "\n" {
-                    if !is_match && !section_contains_match {
-                        let mut sides = [(); 2].map(|_| SectionSide {
-                            text_with_words: vec![],
-                        });
-                        sides[side].text_with_words =
-                            highlighted_subsegments(&texts[side], std::mem::take(&mut section_contents[side]));
-
-                        result.push(Section {
-                            sides: sides,
-                            equal: is_section_equal,
-                        });
-                        section_contains_match = false;
-                        should_push_both = false;
-                        is_section_equal = true;
-                    }
-
-                    if is_match {
-                        should_push_both = true;
-                    }
+                if is_newline {
+                    current_line_start[side] = section_contents[side].len();
                 }
             }
         }
 
-        if should_push_both {
+        if is_match && !section_contains_match && !is_newline {
+            if current_line_start[0] != 0 || current_line_start[1] != 0 {
+                let sides = [0, 1].map(|side| SectionSide {
+                    text_with_words: highlighted_subsegments(
+                        &texts[side],
+                        &section_contents[side][0..current_line_start[side]],
+                    ),
+                });
+                result.push(Section { sides, equal: false });
+                for side in 0..2 {
+                    section_contents[side].drain(0..current_line_start[side]);
+                    current_line_start[side] = 0;
+                }
+            }
+        }
+
+        section_contains_match |= is_match;
+
+        if (is_match && is_newline) || is_last {
             let sides = [0, 1].map(|side| SectionSide {
-                text_with_words: highlighted_subsegments(&texts[side], std::mem::take(&mut section_contents[side])),
+                text_with_words: highlighted_subsegments(&texts[side], &section_contents[side]),
             });
-            result.push(Section {
-                sides: sides,
-                equal: is_section_equal,
-            });
+            let equal = sides
+                .iter()
+                .all(|side| side.text_with_words.iter().all(|(highlight, _)| *highlight == false));
+            result.push(Section { sides, equal });
+            section_contents = [vec![], vec![]];
+            current_line_start = [0, 0];
             section_contains_match = false;
-            is_section_equal = true;
         }
     }
     result
@@ -239,8 +238,7 @@ mod test {
         let actual = diff_file(old, new);
         let expected = FileDiff(vec![
             make_section(vec![(false, "a\n")], vec![(false, "a\n")], true),
-            make_section(vec![(true, "b\n")], vec![], false),
-            make_section(vec![(true, "c\n")], vec![], false),
+            make_section(vec![(true, "b\nc\n")], vec![], false),
             make_section(vec![(false, "d\n")], vec![(false, "d\n")], true),
         ]);
         assert_eq!(expected, actual);
@@ -289,6 +287,71 @@ mod test {
             vec![(false, "..."), (true, "\n$$$\n"), (false, ":::\n")],
             false,
         )]);
+        assert_eq!(expected, actual);
+    }
+
+    fn partitioned_text_from_list<'a>(list: &[&str], string_storage: &'a mut String) -> PartitionedText<'a> {
+        let mut word_bounds = vec![0];
+        for word in list {
+            string_storage.push_str(word);
+            word_bounds.push(string_storage.len());
+        }
+        PartitionedText {
+            text: string_storage,
+            word_bounds,
+        }
+    }
+
+    #[test]
+    fn long_mismatch_section() {
+        let mut old_storage = String::new();
+        let mut new_storage = String::new();
+        let old = partitioned_text_from_list(&["a", "\n", "b", "\n", "x", "z"], &mut old_storage);
+        let new = partitioned_text_from_list(&["c", "\n", "d", "\n", "e", "\n", "y", "z"], &mut new_storage);
+        use DiffOp::*;
+        let alignment = &[
+            Delete, Delete, Delete, Delete, Delete, Insert, Insert, Insert, Insert, Insert, Insert, Insert, Match,
+        ];
+        let actual = make_sections(&[old, new], alignment);
+        let expected = vec![
+            make_section(vec![(true, "a\nb\n")], vec![(true, "c\nd\ne\n")], false),
+            make_section(vec![(true, "x"), (false, "z")], vec![(true, "y"), (false, "z")], false),
+        ];
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn match_after_long_mismatch_section() {
+        let mut old_storage = String::new();
+        let mut new_storage = String::new();
+        let old = partitioned_text_from_list(&["a", "\n", "b", "\n", "z"], &mut old_storage);
+        let new = partitioned_text_from_list(&["c", "\n", "d", "\n", "e", "\n", "z"], &mut new_storage);
+        use DiffOp::*;
+        let alignment = &[
+            Delete, Delete, Delete, Delete, Insert, Insert, Insert, Insert, Insert, Insert, Match,
+        ];
+        let actual = make_sections(&[old, new], alignment);
+        let expected = vec![
+            make_section(vec![(true, "a\nb\n")], vec![(true, "c\nd\ne\n")], false),
+            make_section(vec![(false, "z")], vec![(false, "z")], true),
+        ];
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn section_with_only_newline_matching() {
+        let mut old_storage = String::new();
+        let mut new_storage = String::new();
+        let old = partitioned_text_from_list(&["a", "\n", "b", "\n"], &mut old_storage);
+        let new = partitioned_text_from_list(&["c", "\n", "d", "\n", "e", "\n"], &mut new_storage);
+        use DiffOp::*;
+        let alignment = &[Delete, Delete, Delete, Insert, Insert, Insert, Insert, Insert, Match];
+        let actual = make_sections(&[old, new], alignment);
+        let expected = vec![make_section(
+            vec![(true, "a\nb"), (false, "\n")],
+            vec![(true, "c\nd\ne"), (false, "\n")],
+            false,
+        )];
         assert_eq!(expected, actual);
     }
 }
