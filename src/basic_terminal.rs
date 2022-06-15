@@ -1,5 +1,6 @@
 use super::algorithm::{FileDiff, SectionSide};
 use console::Style;
+use itertools::Itertools;
 use std::error::Error;
 use std::fmt::Write;
 use std::io;
@@ -65,6 +66,7 @@ pub fn print(diff: &FileDiff, output: &mut impl io::Write) -> TheResult {
 
 pub fn print_side_by_side(diff: &FileDiff, output: &mut impl io::Write) -> TheResult {
     let width = 30;
+    let empty = " ".repeat(width);
     for section in &diff.0 {
         write!(output, "---section---\n")?;
         let sides = [&section.old, &section.new];
@@ -81,15 +83,10 @@ pub fn print_side_by_side(diff: &FileDiff, output: &mut impl io::Write) -> TheRe
             };
             print_side(styles[i].0, &styles[i].1, sides[i], &mut write_line)?;
         }
-        // TODO: The 'itertools' crate has a zip_longest function.
-        while lines[0].len() < lines[1].len() {
-            lines[0].push(" ".repeat(width));
-        }
-        while lines[1].len() < lines[0].len() {
-            lines[1].push(" ".repeat(width));
-        }
-        for (left_line, right_line) in std::iter::zip(&lines[0], &lines[1]) {
-            write!(output, "{} | {}\n", left_line, right_line)?;
+        for pair in lines[0].iter().zip_longest(lines[1].iter()) {
+            let left = *pair.as_ref().left().unwrap_or(&&empty);
+            let right = *pair.as_ref().right().unwrap_or(&&empty);
+            write!(output, "{} | {}\n", left, right)?;
         }
     }
     Ok(())
