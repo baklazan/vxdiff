@@ -55,10 +55,10 @@ pub fn print(diff: &FileDiff, output: &mut impl io::Write) -> TheResult {
     for section in &diff.0 {
         if section.equal {
             // TODO: Check old == new.
-            print_side(' ', &Style::new(), &section.old, &mut write_line)?;
+            print_side(' ', &Style::new(), &section.sides[0], &mut write_line)?;
         } else {
-            print_side('-', &Style::new().red(), &section.old, &mut write_line)?;
-            print_side('+', &Style::new().green(), &section.new, &mut write_line)?;
+            print_side('-', &Style::new().red(), &section.sides[0], &mut write_line)?;
+            print_side('+', &Style::new().green(), &section.sides[1], &mut write_line)?;
         }
     }
     Ok(())
@@ -69,7 +69,6 @@ pub fn print_side_by_side(diff: &FileDiff, output: &mut impl io::Write) -> TheRe
     let empty = " ".repeat(width);
     for section in &diff.0 {
         write!(output, "---section---\n")?;
-        let sides = [&section.old, &section.new];
         let styles = if section.equal {
             [(' ', Style::new()), (' ', Style::new())]
         } else {
@@ -81,7 +80,7 @@ pub fn print_side_by_side(diff: &FileDiff, output: &mut impl io::Write) -> TheRe
                 lines[i].push(line.to_string() + &" ".repeat(width - visible_length));
                 Ok(())
             };
-            print_side(styles[i].0, &styles[i].1, sides[i], &mut write_line)?;
+            print_side(styles[i].0, &styles[i].1, &section.sides[i], &mut write_line)?;
         }
         for pair in lines[0].iter().zip_longest(lines[1].iter()) {
             let left = *pair.as_ref().left().unwrap_or(&&empty);
