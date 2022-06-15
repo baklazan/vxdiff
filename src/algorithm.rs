@@ -33,7 +33,7 @@ impl<'a> Section<'a> {
     }
 }
 
-fn word_start_positions_bytes(string: &str) -> Vec<usize> {
+fn word_bounds_bytes(string: &str) -> Vec<usize> {
     let mut result = Vec::new();
     let mut was_last_alphabetic = false;
     let mut was_last_numeric = false;
@@ -78,9 +78,7 @@ fn highlighted_subsegments<'a>(
 
     let mut subsegment_starting_word_index = word_indices_and_highlight[0].1;
     for (i, (highlight, word_index)) in word_indices_and_highlight.iter().enumerate() {
-        if i + 1 >= word_indices_and_highlight.len()
-            || (*highlight != word_indices_and_highlight[i + 1].0)
-        {
+        if i + 1 >= word_indices_and_highlight.len() || (*highlight != word_indices_and_highlight[i + 1].0) {
             let word_start_offset = word_bounds[subsegment_starting_word_index];
             let word_end_offset = word_bounds[word_index + 1];
             let word = &string[word_start_offset..word_end_offset];
@@ -100,10 +98,7 @@ fn word_diff_chunk<'a>(
     const OLD: usize = 0;
     const NEW: usize = 1;
     let texts = [old, new];
-    let word_bounds = [
-        word_start_positions_bytes(old),
-        word_start_positions_bytes(new),
-    ];
+    let word_bounds = [word_bounds_bytes(old), word_bounds_bytes(new)];
     let alignment = align_words(&texts, &word_bounds);
 
     let mut result = Vec::new();
@@ -161,16 +156,10 @@ fn word_diff_chunk<'a>(
         }
 
         if should_push_both {
-            section.old.text_with_words = highlighted_subsegments(
-                old,
-                &word_bounds[OLD],
-                std::mem::take(&mut section_contents[OLD]),
-            );
-            section.new.text_with_words = highlighted_subsegments(
-                new,
-                &word_bounds[NEW],
-                std::mem::take(&mut section_contents[NEW]),
-            );
+            section.old.text_with_words =
+                highlighted_subsegments(old, &word_bounds[OLD], std::mem::take(&mut section_contents[OLD]));
+            section.new.text_with_words =
+                highlighted_subsegments(new, &word_bounds[NEW], std::mem::take(&mut section_contents[NEW]));
             result.push(section);
             section = Section::new(line_numbers[OLD], line_numbers[NEW]);
             section_contains_match = false;
@@ -180,9 +169,7 @@ fn word_diff_chunk<'a>(
 }
 
 pub fn diff_file<'a>(old: &'a str, new: &'a str) -> FileDiff<'a> {
-    FileDiff {
-        0: word_diff_chunk(old, 0, new, 0),
-    }
+    FileDiff(word_diff_chunk(old, 0, new, 0))
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -192,13 +179,9 @@ enum DiffOp {
     Delete,
 }
 
-fn align(
-    old: &[string_interner::symbol::SymbolU32],
-    new: &[string_interner::symbol::SymbolU32],
-) -> Vec<DiffOp> {
+fn align(old: &[string_interner::symbol::SymbolU32], new: &[string_interner::symbol::SymbolU32]) -> Vec<DiffOp> {
     let inf = old.len() + new.len() + 1;
-    let mut dp: Vec<Vec<(usize, Option<DiffOp>)>> =
-        vec![vec![(inf, None); new.len() + 1]; old.len() + 1];
+    let mut dp: Vec<Vec<(usize, Option<DiffOp>)>> = vec![vec![(inf, None); new.len() + 1]; old.len() + 1];
     dp[old.len()][new.len()] = (0, None);
     for old_index in (0..old.len()).rev() {
         dp[old_index][new.len()] = (1 + dp[old_index + 1][new.len()].0, Some(DiffOp::Delete));
@@ -208,17 +191,15 @@ fn align(
     }
     for old_index in (0..old.len()).rev() {
         for new_index in (0..new.len()).rev() {
-            let proposed_diagonal = dp[old_index + 1][new_index + 1].0;
-            if old[old_index] == new[new_index] && dp[old_index][new_index].0 > proposed_diagonal {
-                dp[old_index][new_index] = (proposed_diagonal, Some(DiffOp::Match));
-            }
-            let proposed_down = dp[old_index + 1][new_index].0 + 1;
-            if dp[old_index][new_index].0 > proposed_down {
-                dp[old_index][new_index] = (proposed_down, Some(DiffOp::Delete));
-            }
-            let proposed_right = dp[old_index][new_index + 1].0 + 1;
-            if dp[old_index][new_index].0 > proposed_right {
-                dp[old_index][new_index] = (proposed_right, Some(DiffOp::Insert));
+            let is_match = old[old_index] == new[new_index];
+            for (score, diffop, valid) in [
+                (dp[old_index + 1][new_index + 1].0 + 1, DiffOp::Match, is_match),
+                (dp[old_index + 1][new_index].0 + 1, DiffOp::Delete, true),
+                (dp[old_index][new_index + 1].0 + 1, DiffOp::Insert, true),
+            ] {
+                if dp[old_index][new_index].0 > score && valid {
+                    dp[old_index][new_index] = (score, Some(diffop));
+                }
             }
         }
     }
