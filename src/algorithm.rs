@@ -11,27 +11,8 @@ pub struct Section<'a> {
 
 #[derive(Debug, PartialEq)]
 pub struct SectionSide<'a> {
-    pub lineno_initial: usize,
     pub text_with_words: Vec<(bool, &'a str)>,
     // pub moved: Option<(String, usize)>,
-}
-
-impl<'a> Section<'a> {
-    fn new(old_lineno: usize, new_lineno: usize) -> Section<'a> {
-        Section {
-            sides: [
-                SectionSide {
-                    lineno_initial: old_lineno,
-                    text_with_words: Vec::new(),
-                },
-                SectionSide {
-                    lineno_initial: new_lineno,
-                    text_with_words: Vec::new(),
-                },
-            ],
-            equal: true,
-        }
-    }
 }
 
 fn word_bounds_bytes(string: &str) -> Vec<usize> {
@@ -90,14 +71,7 @@ fn highlighted_subsegments<'a>(
     result
 }
 
-fn word_diff_chunk<'a>(
-    old: &'a str,
-    old_lineno_initial: usize,
-    new: &'a str,
-    new_lineno_initial: usize,
-) -> Vec<Section<'a>> {
-    const OLD: usize = 0;
-    const NEW: usize = 1;
+fn word_diff_chunk<'a>(old: &'a str, new: &'a str) -> Vec<Section<'a>> {
     let texts = [old, new];
     let word_bounds = [word_bounds_bytes(old), word_bounds_bytes(new)];
     let alignment = align_words(&texts, &word_bounds);
@@ -106,9 +80,8 @@ fn word_diff_chunk<'a>(
 
     let mut section_contents: [Vec<(bool, usize)>; 2] = [Vec::new(), Vec::new()];
     let mut word_indices = [0, 0];
-    let mut line_numbers = [old_lineno_initial, new_lineno_initial];
-    let mut section = Section::new(old_lineno_initial, new_lineno_initial);
     let mut section_contains_match = false;
+    let mut is_section_equal = true;
 
     for (i, op) in alignment.iter().enumerate() {
         let mut should_push_both = i + 1 >= alignment.len();
@@ -119,7 +92,7 @@ fn word_diff_chunk<'a>(
             DiffOp::Match => ([1, 1], true),
         };
 
-        section.equal &= is_match;
+        is_section_equal &= is_match;
         section_contains_match |= is_match;
 
         for side in 0..=1 {
@@ -129,19 +102,25 @@ fn word_diff_chunk<'a>(
                 let word = &texts[side][word_start..word_end];
                 section_contents[side].push((!is_match, word_indices[side]));
                 word_indices[side] += 1;
-                if word == "\n" {
-                    line_numbers[side] += 1;
 
+                if word == "\n" {
                     if !is_match && !section_contains_match {
-                        section.sides[side].text_with_words = highlighted_subsegments(
+                        let mut sides = [(); 2].map(|_| SectionSide {
+                            text_with_words: vec![],
+                        });
+                        sides[side].text_with_words = highlighted_subsegments(
                             texts[side],
                             &word_bounds[side],
                             std::mem::take(&mut section_contents[side]),
                         );
-                        result.push(section);
-                        section = Section::new(line_numbers[OLD], line_numbers[NEW]);
+
+                        result.push(Section {
+                            sides: sides,
+                            equal: is_section_equal,
+                        });
                         section_contains_match = false;
                         should_push_both = false;
+                        is_section_equal = true;
                     }
 
                     if is_match {
@@ -152,23 +131,26 @@ fn word_diff_chunk<'a>(
         }
 
         if should_push_both {
-            for side in 0..2 {
-                section.sides[side].text_with_words = highlighted_subsegments(
+            let sides = [0, 1].map(|side| SectionSide {
+                text_with_words: highlighted_subsegments(
                     texts[side],
                     &word_bounds[side],
                     std::mem::take(&mut section_contents[side]),
-                );
-            }
-            result.push(section);
-            section = Section::new(line_numbers[OLD], line_numbers[NEW]);
+                ),
+            });
+            result.push(Section {
+                sides: sides,
+                equal: is_section_equal,
+            });
             section_contains_match = false;
+            is_section_equal = true;
         }
     }
     result
 }
 
 pub fn diff_file<'a>(old: &'a str, new: &'a str) -> FileDiff<'a> {
-    FileDiff(word_diff_chunk(old, 0, new, 0))
+    FileDiff(word_diff_chunk(old, new))
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -228,21 +210,13 @@ mod test {
 
     use super::*;
 
-    fn make_section<'a>(
-        old_lineno_initial: usize,
-        old_text: Vec<(bool, &'a str)>,
-        new_lineno_initial: usize,
-        new_text: Vec<(bool, &'a str)>,
-        equal: bool,
-    ) -> Section<'a> {
+    fn make_section<'a>(old_text: Vec<(bool, &'a str)>, new_text: Vec<(bool, &'a str)>, equal: bool) -> Section<'a> {
         Section {
             sides: [
                 SectionSide {
-                    lineno_initial: old_lineno_initial,
                     text_with_words: old_text,
                 },
                 SectionSide {
-                    lineno_initial: new_lineno_initial,
                     text_with_words: new_text,
                 },
             ],
@@ -260,10 +234,10 @@ mod test {
                    d\n";
         let actual = diff_file(old, new);
         let expected = FileDiff(vec![
-            make_section(0, vec![(false, "a\n")], 0, vec![(false, "a\n")], true),
-            make_section(1, vec![(true, "b\n")], 1, vec![], false),
-            make_section(2, vec![(true, "c\n")], 1, vec![], false),
-            make_section(3, vec![(false, "d\n")], 1, vec![(false, "d\n")], true),
+            make_section(vec![(false, "a\n")], vec![(false, "a\n")], true),
+            make_section(vec![(true, "b\n")], vec![], false),
+            make_section(vec![(true, "c\n")], vec![], false),
+            make_section(vec![(false, "d\n")], vec![(false, "d\n")], true),
         ]);
         assert_eq!(expected, actual);
     }
@@ -275,9 +249,7 @@ mod test {
                    :::\n";
         let actual = diff_file(old, new);
         let expected = FileDiff(vec![make_section(
-            0,
             vec![(false, "..."), (true, " "), (false, ":::\n")],
-            0,
             vec![(false, "..."), (true, "\n"), (false, ":::\n")],
             false,
         )]);
@@ -291,11 +263,9 @@ mod test {
         let new = "[[[ $$$ ]]]\n";
         let actual = diff_file(old, new);
         let expected = FileDiff(vec![
-            make_section(0, vec![(true, "...\n")], 0, vec![], false),
+            make_section(vec![(true, "...\n")], vec![], false),
             make_section(
-                1,
                 vec![(false, "[[[ "), (true, ":::"), (false, " ]]]\n")],
-                0,
                 vec![(false, "[[[ "), (true, "$$$"), (false, " ]]]\n")],
                 false,
             ),
@@ -311,9 +281,7 @@ mod test {
                    :::\n";
         let actual = diff_file(old, new);
         let expected = FileDiff(vec![make_section(
-            0,
             vec![(false, "..."), (true, " "), (false, ":::\n")],
-            0,
             vec![(false, "..."), (true, "\n$$$\n"), (false, ":::\n")],
             false,
         )]);
