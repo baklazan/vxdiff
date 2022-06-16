@@ -1,6 +1,5 @@
 use super::algorithm::{FileDiff, SectionSide};
 use console::Style;
-use itertools::Itertools;
 use std::error::Error;
 use std::fmt::Write;
 use std::io;
@@ -82,9 +81,9 @@ pub fn print_side_by_side(diff: &FileDiff, output: &mut impl io::Write) -> TheRe
             };
             print_side(styles[i].0, &styles[i].1, &section.sides[i], &mut write_line)?;
         }
-        for pair in lines[0].iter().zip_longest(lines[1].iter()) {
-            let left = *pair.as_ref().left().unwrap_or(&&empty);
-            let right = *pair.as_ref().right().unwrap_or(&&empty);
+        for i in 0..std::cmp::max(lines[0].len(), lines[1].len()) {
+            let left = lines[0].get(i).unwrap_or(&empty);
+            let right = lines[1].get(i).unwrap_or(&empty);
             write!(output, "{} | {}\n", left, right)?;
         }
     }
