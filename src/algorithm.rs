@@ -1,7 +1,22 @@
 use string_interner::StringInterner;
 
+#[cfg(test)]
+mod test;
+mod dynamic_programming;
+
+use dynamic_programming::*;
+
+#[derive(Debug)]
+pub struct Diff<'a> {
+    pub sections: Vec<Section<'a>>,
+    pub files: Vec<FileDiff>
+}
+
 #[derive(Debug, PartialEq)]
-pub struct FileDiff<'a>(pub Vec<Section<'a>>);
+pub struct FileDiff {
+    pub sides: [Vec<usize>; 2],
+    pub alignment: Vec<DiffOp>
+}
 
 #[derive(Debug, PartialEq)]
 pub struct Section<'a> {
@@ -12,7 +27,6 @@ pub struct Section<'a> {
 #[derive(Debug, PartialEq)]
 pub struct SectionSide<'a> {
     pub text_with_words: Vec<(bool, &'a str)>,
-    // pub moved: Option<(String, usize)>,
 }
 
 fn partition_into_words<'a>(text: &'a str) -> PartitionedText<'a> {
@@ -34,19 +48,7 @@ fn partition_into_words<'a>(text: &'a str) -> PartitionedText<'a> {
     PartitionedText { text, word_bounds }
 }
 
-fn align_words(texts: &[PartitionedText; 2]) -> Vec<DiffOp> {
-    let mut interner = StringInterner::default();
-    let mut symbols = [Vec::new(), Vec::new()];
-    for side in 0..2 {
-        for i in 0..texts[side].word_count() {
-            let word = texts[side].get_word(i);
-            symbols[side].push(interner.get_or_intern(word));
-        }
-    }
-    return align(&symbols[0], &symbols[1]);
-}
-
-struct PartitionedText<'a> {
+pub struct PartitionedText<'a> {
     pub text: &'a str,
     pub word_bounds: Vec<usize>,
 }
@@ -80,12 +82,6 @@ fn highlighted_subsegments<'a>(
         }
     }
     result
-}
-
-fn word_diff_chunk<'a>(old: &'a str, new: &'a str) -> Vec<Section<'a>> {
-    let texts = [partition_into_words(old), partition_into_words(new)];
-    let alignment = align_words(&texts);
-    make_sections(&texts, &alignment)
 }
 
 fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> Vec<Section<'a>> {
@@ -152,206 +148,372 @@ fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> 
     result
 }
 
-pub fn diff_file<'a>(old: &'a str, new: &'a str) -> FileDiff<'a> {
-    FileDiff(word_diff_chunk(old, new))
+fn get_partitioned_subtext<'a>(text: &PartitionedText<'a>, from_word: usize, to_word: usize) -> PartitionedText<'a> {
+    let mut word_bounds = vec![];
+    for i in from_word..=to_word {
+        word_bounds.push(text.word_bounds[i] - text.word_bounds[from_word]);
+    }
+    let subtext = &text.text[text.word_bounds[from_word]..text.word_bounds[to_word]];
+    PartitionedText {
+        text: subtext,
+        word_bounds,
+    }
+}
+
+pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
+    let texts = [partition_into_words(old), partition_into_words(new)];
+    let mut can_change_state = [vec![true], vec![true]];
+    for side in 0..2 {
+        for i in 0..texts[side].word_count() {
+            let word = texts[side].get_word(i);
+            can_change_state[side].push(word == "\n" || i + 1 == texts[side].word_count());
+        }
+    }
+
+    let supersection_candidates =
+        supersection_candidates(texts[0].word_count(), texts[1].word_count(), &Scoring::new(&texts), &can_change_state[0], &can_change_state[1]);
+
+    let supersection_alignment = select_candidates(&supersection_candidates, [texts[0].word_count(), texts[1].word_count()]);
+    let mut first_section_from_supersection : Vec<usize> = vec![];
+    let mut sections_count_from_supersection: Vec<usize> = vec![];
+    let mut sections = vec![];
+    
+    for supersection in supersection_alignment.supersections.iter() {
+        let parts = [
+            get_partitioned_subtext(&texts[0], supersection.starts[0], supersection.ends[0]),
+            get_partitioned_subtext(&texts[1], supersection.starts[1], supersection.ends[1]),
+        ];
+        first_section_from_supersection.push(sections.len());
+        let mut sections_from_supersection = make_sections(&parts, &supersection.alignment);
+        sections_count_from_supersection.push(sections_from_supersection.len());
+        sections.append(&mut sections_from_supersection);
+    }
+    
+    let mut file_sides = [vec![], vec![]];
+    let mut file_alignment = vec![];
+    
+    let mut super_indices = [0, 0];
+    let mut word_indices = [0, 0];
+    for op in supersection_alignment.alignment {
+        let do_side = match op {
+            DiffOp::Insert => {
+                [false, true]
+            },
+            DiffOp::Delete => {
+                [true, false]
+            },
+            DiffOp::Match => {
+                [true, true]
+            }
+        };
+        let mut sections_count = 0;
+        for side in 0..2 {
+            if !do_side[side] {
+                continue;
+            }
+            let supersection_id = supersection_alignment.sides[side][super_indices[side]];
+            let supersection = &supersection_alignment.supersections[supersection_id];
+            if word_indices[side] < supersection.starts[side] {
+                let indel_op = [DiffOp::Delete, DiffOp::Insert][side];
+                let indel_alignment = vec![indel_op; supersection.starts[side] - word_indices[side]];
+                let mut parts = [PartitionedText{ text: "", word_bounds: vec![]}, PartitionedText{ text: "", word_bounds: vec![]}];
+                parts[side] = get_partitioned_subtext(&texts[side], word_indices[side], supersection.starts[side]);
+                let mut indel_sections = make_sections(&parts, &indel_alignment);
+                for section_id in sections.len() .. sections.len() + indel_sections.len() {
+                    file_sides[side].push(section_id);
+                    file_alignment.push(indel_op);
+                }
+                sections.append(&mut indel_sections);
+            }
+            
+            sections_count = sections_count_from_supersection[supersection_id];
+            for section_id in first_section_from_supersection[supersection_id] .. first_section_from_supersection[supersection_id] + sections_count {
+                file_sides[side].push(section_id);
+            }
+            super_indices[side] += 1;
+            word_indices[side] = supersection.ends[side];
+        }
+        for _ in 0..sections_count {
+            file_alignment.push(op);
+        }
+    }
+    
+    for side in 0..2 {
+        if word_indices[side] < texts[side].word_count() {
+            let indel_op = [DiffOp::Delete, DiffOp::Insert][side];
+            let indel_alignment = vec![indel_op; texts[side].word_count() - word_indices[side]];
+            let mut parts = [PartitionedText{ text: "", word_bounds: vec![]}, PartitionedText{ text: "", word_bounds: vec![]}];
+            parts[side] = get_partitioned_subtext(&texts[side], word_indices[side], texts[side].word_count());
+            let mut indel_sections = make_sections(&parts, &indel_alignment);
+            for section_id in sections.len() .. sections.len() + indel_sections.len() {
+                file_sides[side].push(section_id);
+                file_alignment.push(indel_op);
+            }
+            sections.append(&mut indel_sections);
+        }
+    }
+    
+    let file_diff = FileDiff { sides: file_sides, alignment: file_alignment };
+    
+    Diff {
+        sections,
+        files: vec![file_diff]
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-enum DiffOp {
+pub enum DiffOp {
     Match,
     Insert,
     Delete,
 }
 
-fn align(old: &[string_interner::symbol::SymbolU32], new: &[string_interner::symbol::SymbolU32]) -> Vec<DiffOp> {
-    let inf = old.len() + new.len() + 1;
-    let mut dp: Vec<Vec<(usize, Option<DiffOp>)>> = vec![vec![(inf, None); new.len() + 1]; old.len() + 1];
-    dp[old.len()][new.len()] = (0, None);
-    for old_index in (0..old.len()).rev() {
-        dp[old_index][new.len()] = (1 + dp[old_index + 1][new.len()].0, Some(DiffOp::Delete));
+
+fn clamp_interval(interval: (usize, usize), bounds: (usize, usize)) -> (usize, usize) {
+    (interval.0.clamp(bounds.0, bounds.1), interval.1.clamp(bounds.0, bounds.1))
+}
+
+#[derive(Copy, Clone, Debug)]
+struct Candidate<'a> {
+    starts: [usize; 2],
+    ends: [usize; 2],
+    original: &'a OriginalCandidate,
+    alignment: &'a [DiffOp],
+    alignment_interval_in_original: (usize, usize), 
+    score: TScore,
+}
+
+impl<'a> Candidate<'a> {
+    fn from(original: &'a OriginalCandidate) -> Candidate<'a> {
+        Candidate {
+            original,
+            starts: original.starts,
+            ends: original.ends,
+            alignment: &original.alignment,
+            score: *original.prefix_scores.last().unwrap(),
+            alignment_interval_in_original: (0, original.alignment.len())
+        }
     }
-    for new_index in (0..new.len()).rev() {
-        dp[old.len()][new_index] = (1 + dp[old.len()][new_index + 1].0, Some(DiffOp::Insert));
+    
+    fn as_subinterval(original: &'a OriginalCandidate, alignment_subinterval: (usize, usize)) -> Candidate<'a> {
+        let mut starts = [0; 2];
+        let mut ends = [0; 2];
+        for side in 0..2 {
+            starts[side] = original.alignment_to_word[side][alignment_subinterval.0];
+            ends[side] = original.alignment_to_word[side][alignment_subinterval.1];
+        }
+        let alignment = &original.alignment[alignment_subinterval.0 .. alignment_subinterval.1];
+        let score = original.prefix_scores[alignment_subinterval.1] - original.prefix_scores[alignment_subinterval.0];
+        Candidate { starts, ends, original, alignment, alignment_interval_in_original: alignment_subinterval, score }
     }
-    for old_index in (0..old.len()).rev() {
-        for new_index in (0..new.len()).rev() {
-            let is_match = old[old_index] == new[new_index];
-            for (score, diffop, valid) in [
-                (dp[old_index + 1][new_index + 1].0 + 1, DiffOp::Match, is_match),
-                (dp[old_index + 1][new_index].0 + 1, DiffOp::Delete, true),
-                (dp[old_index][new_index + 1].0 + 1, DiffOp::Insert, true),
-            ] {
-                if dp[old_index][new_index].0 > score && valid {
-                    dp[old_index][new_index] = (score, Some(diffop));
+
+    fn overlaps(&self, other: &Candidate) -> bool {
+        for side in 0..2 {
+            if self.starts[side] < other.ends[side] && other.starts[side] < self.ends[side] {
+                return true;
+            }
+        }
+        false
+    }
+
+    
+    
+    fn remove_overlapping(&self, other: &Candidate) -> Vec<Candidate<'a>> {
+        let mut removed_intervals = [(0, 0); 2];
+        for side in 0..2 {
+            removed_intervals[side] = self.original.word_interval_to_alignment_interval((other.starts[side], other.ends[side]), side);
+        }
+        let mut result_alignment_intervals = vec![];
+        let left_removed_start = std::cmp::min(removed_intervals[0].0, removed_intervals[1].0);
+        if left_removed_start > self.alignment_interval_in_original.0 {
+            result_alignment_intervals.push((self.alignment_interval_in_original.0, left_removed_start));
+        }
+        let between_removed_start = std::cmp::max(self.alignment_interval_in_original.0, std::cmp::min(removed_intervals[0].1, removed_intervals[1].1));
+        let between_removed_end = std::cmp::min(self.alignment_interval_in_original.1, std::cmp::max(removed_intervals[0].0, removed_intervals[1].0));
+        if between_removed_start < between_removed_end {
+            result_alignment_intervals.push((between_removed_start, between_removed_end));
+        }
+        let right_removed_end = std::cmp::max(removed_intervals[0].1, removed_intervals[1].1);
+        if right_removed_end < self.alignment_interval_in_original.1 {
+            result_alignment_intervals.push((right_removed_end, self.alignment_interval_in_original.1));
+        }
+        let mut result = vec![];
+        for alignment_interval in result_alignment_intervals {
+            result.push(Candidate::as_subinterval(self.original, alignment_interval));
+        }
+        result
+    }
+}
+
+impl<'a> PartialEq for Candidate<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.starts == other.starts && self.ends == other.ends
+    }
+}
+
+impl<'a> Eq for Candidate<'a> {}
+impl<'a> Ord for Candidate<'a> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        for side in 0..2 {
+            let order = usize::cmp(&self.starts[side], &other.starts[side]);
+            if order != std::cmp::Ordering::Equal {
+                return order;
+            }
+            let order = usize::cmp(&self.ends[side], &other.ends[side]);
+            if order != std::cmp::Ordering::Equal {
+                return order;
+            }
+        }
+        std::cmp::Ordering::Equal
+    }
+}
+
+impl<'a> PartialOrd for Candidate<'a> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Debug)]
+struct SupersectionAlignment<'a> {
+    pub supersections : Vec<Candidate<'a>>,
+    pub sides: [Vec<usize>; 2],
+    pub alignment: Vec<DiffOp>
+}
+
+fn select_candidates(original_candidates: &Vec<OriginalCandidate>, text_lengths: [usize; 2]) -> SupersectionAlignment {
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    struct CandidateByScore<'a> {
+        candidate: Candidate<'a>,
+    }
+
+    impl<'a> Ord for CandidateByScore<'a> {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            let ord = f64::partial_cmp(&self.candidate.score, &other.candidate.score).unwrap();
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+            Candidate::cmp(&self.candidate, &other.candidate)
+        }
+    }
+
+    impl<'a> PartialOrd for CandidateByScore<'a> {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    use std::collections::BTreeSet;
+
+    let mut original_candidate_fragments: Vec<Vec<Candidate>> = vec![vec![]; original_candidates.len()];
+    let mut candidates_by_score: BTreeSet<CandidateByScore> = BTreeSet::new();
+    let mut original_covering_ids: [Vec<Vec<usize>>; 2] =
+        [vec![vec![]; text_lengths[0]], vec![vec![]; text_lengths[1]]];
+        
+    for (id, original) in original_candidates.iter().enumerate() {
+        for side in 0..2 {
+            for position in original.starts[side]..original.ends[side] {
+                original_covering_ids[side][position].push(id);
+            }
+        }
+
+        let candidate = Candidate::from(original);
+        candidates_by_score.insert(CandidateByScore { candidate });
+        original_candidate_fragments[id].push(candidate);
+    }
+
+    let mut supersections = vec![];
+    let mut is_supersection_match = vec![];
+    let mut matching_indices : BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut overlaping_set = vec![false; original_candidates.len()];
+
+    while !candidates_by_score.is_empty() {
+        let current = *candidates_by_score.iter().next_back().unwrap();
+        candidates_by_score.remove(&current);
+        let current = current.candidate;
+        let start_indices = (current.starts[0], current.starts[1]);
+        let match_before = matching_indices.range((std::ops::Bound::Unbounded, std::ops::Bound::Excluded(start_indices))).next_back();
+        let match_after = matching_indices.range((std::ops::Bound::Excluded(start_indices), std::ops::Bound::Unbounded)).next();
+        let before_good = match_before == None || match_before.unwrap().1 <= start_indices.1;
+        let after_good = match_after == None || match_after.unwrap().1 >= start_indices.1;
+        if before_good && after_good {
+            is_supersection_match.push(true);
+            matching_indices.insert(start_indices);
+        }
+        else {
+            const MOVED_SCORE_THRESHOLD : f64 = 20.0;
+            if current.score < MOVED_SCORE_THRESHOLD {
+                continue;
+            }
+            is_supersection_match.push(false);
+        }
+        supersections.push(current);
+        
+        for side in 0..2 {
+            let mut influenced_original_ids = vec![];
+            for position in current.starts[side]..current.ends[side] {
+                for id in &original_covering_ids[side][position] {
+                    if !overlaping_set[*id] {
+                        overlaping_set[*id] = true;
+                        influenced_original_ids.push(*id);
+                    }
                 }
             }
+
+            for id in influenced_original_ids.iter() {
+                let mut new_fragments = vec![];
+                for fragment in std::mem::take(&mut original_candidate_fragments[*id]) {
+                    if fragment.overlaps(&current) {
+                        let mut subfragments = fragment.remove_overlapping(&current);
+                        candidates_by_score.remove(&CandidateByScore { candidate: fragment });
+                        for subfragment in subfragments.iter() {
+                            candidates_by_score.insert(CandidateByScore { candidate: *subfragment });
+                        }
+                        new_fragments.append(&mut subfragments);
+                    } else {
+                        new_fragments.push(fragment);
+                    }
+                }
+                original_candidate_fragments[*id] = new_fragments;
+            }
+
+            for id in influenced_original_ids {
+                overlaping_set[id] = false;
+            }
         }
     }
-    let mut result = Vec::<DiffOp>::new();
-    let mut old_index = 0;
+    let mut sides = [vec![], vec![]];
+    let mut sides_match = [vec![], vec![]];
+    for side in 0 .. 2 {
+        let mut ids_by_start = vec![];
+        for (id, supersection) in supersections.iter().enumerate() {
+            ids_by_start.push((supersection.starts[side], id));
+        }
+        ids_by_start.sort();
+        for (_start, id) in ids_by_start {
+            sides[side].push(id);
+            sides_match[side].push(is_supersection_match[id]);
+        }
+    }
+    let mut alignment = vec![];
     let mut new_index = 0;
-    while old_index < old.len() || new_index < new.len() {
-        result.push(dp[old_index][new_index].1.unwrap());
-        match dp[old_index][new_index].1.unwrap() {
-            DiffOp::Insert => {
+    for (_old_index, old_match) in sides_match[0].iter().enumerate() {
+        if *old_match {
+            while !sides_match[1][new_index] {
+                alignment.push(DiffOp::Insert);
                 new_index += 1;
             }
-            DiffOp::Delete => {
-                old_index += 1;
-            }
-            DiffOp::Match => {
-                new_index += 1;
-                old_index += 1;
-            }
+            alignment.push(DiffOp::Match);
+            new_index += 1;
+        }
+        else {
+            alignment.push(DiffOp::Delete);
         }
     }
-    result
+    while new_index < sides_match[1].len() {
+        alignment.push(DiffOp::Insert);
+        new_index += 1;
+    }
+    SupersectionAlignment { supersections, sides, alignment }
 }
 
-#[cfg(test)]
-mod test {
-
-    use super::*;
-
-    fn make_section<'a>(old_text: Vec<(bool, &'a str)>, new_text: Vec<(bool, &'a str)>, equal: bool) -> Section<'a> {
-        Section {
-            sides: [
-                SectionSide {
-                    text_with_words: old_text,
-                },
-                SectionSide {
-                    text_with_words: new_text,
-                },
-            ],
-            equal: equal,
-        }
-    }
-
-    #[test]
-    fn pure_delete() {
-        let old = "a\n\
-                   b\n\
-                   c\n\
-                   d\n";
-        let new = "a\n\
-                   d\n";
-        let actual = diff_file(old, new);
-        let expected = FileDiff(vec![
-            make_section(vec![(false, "a\n")], vec![(false, "a\n")], true),
-            make_section(vec![(true, "b\nc\n")], vec![], false),
-            make_section(vec![(false, "d\n")], vec![(false, "d\n")], true),
-        ]);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn line_split() {
-        let old = "... :::\n";
-        let new = "...\n\
-                   :::\n";
-        let actual = diff_file(old, new);
-        let expected = FileDiff(vec![make_section(
-            vec![(false, "..."), (true, " "), (false, ":::\n")],
-            vec![(false, "..."), (true, "\n"), (false, ":::\n")],
-            false,
-        )]);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deletion_before_modified_line() {
-        let old = "...\n\
-                   [[[ ::: ]]]\n";
-        let new = "[[[ $$$ ]]]\n";
-        let actual = diff_file(old, new);
-        let expected = FileDiff(vec![
-            make_section(vec![(true, "...\n")], vec![], false),
-            make_section(
-                vec![(false, "[[[ "), (true, ":::"), (false, " ]]]\n")],
-                vec![(false, "[[[ "), (true, "$$$"), (false, " ]]]\n")],
-                false,
-            ),
-        ]);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn line_split_with_insert() {
-        let old = "... :::\n";
-        let new = "...\n\
-                   $$$\n\
-                   :::\n";
-        let actual = diff_file(old, new);
-        let expected = FileDiff(vec![make_section(
-            vec![(false, "..."), (true, " "), (false, ":::\n")],
-            vec![(false, "..."), (true, "\n$$$\n"), (false, ":::\n")],
-            false,
-        )]);
-        assert_eq!(expected, actual);
-    }
-
-    fn partitioned_text_from_list<'a>(list: &[&str], string_storage: &'a mut String) -> PartitionedText<'a> {
-        let mut word_bounds = vec![0];
-        for word in list {
-            string_storage.push_str(word);
-            word_bounds.push(string_storage.len());
-        }
-        PartitionedText {
-            text: string_storage,
-            word_bounds,
-        }
-    }
-
-    #[test]
-    fn long_mismatch_section() {
-        let mut old_storage = String::new();
-        let mut new_storage = String::new();
-        let old = partitioned_text_from_list(&["a", "\n", "b", "\n", "x", "z"], &mut old_storage);
-        let new = partitioned_text_from_list(&["c", "\n", "d", "\n", "e", "\n", "y", "z"], &mut new_storage);
-        use DiffOp::*;
-        let alignment = &[
-            Delete, Delete, Delete, Delete, Delete, Insert, Insert, Insert, Insert, Insert, Insert, Insert, Match,
-        ];
-        let actual = make_sections(&[old, new], alignment);
-        let expected = vec![
-            make_section(vec![(true, "a\nb\n")], vec![(true, "c\nd\ne\n")], false),
-            make_section(vec![(true, "x"), (false, "z")], vec![(true, "y"), (false, "z")], false),
-        ];
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn match_after_long_mismatch_section() {
-        let mut old_storage = String::new();
-        let mut new_storage = String::new();
-        let old = partitioned_text_from_list(&["a", "\n", "b", "\n", "z"], &mut old_storage);
-        let new = partitioned_text_from_list(&["c", "\n", "d", "\n", "e", "\n", "z"], &mut new_storage);
-        use DiffOp::*;
-        let alignment = &[
-            Delete, Delete, Delete, Delete, Insert, Insert, Insert, Insert, Insert, Insert, Match,
-        ];
-        let actual = make_sections(&[old, new], alignment);
-        let expected = vec![
-            make_section(vec![(true, "a\nb\n")], vec![(true, "c\nd\ne\n")], false),
-            make_section(vec![(false, "z")], vec![(false, "z")], true),
-        ];
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn section_with_only_newline_matching() {
-        let mut old_storage = String::new();
-        let mut new_storage = String::new();
-        let old = partitioned_text_from_list(&["a", "\n", "b", "\n"], &mut old_storage);
-        let new = partitioned_text_from_list(&["c", "\n", "d", "\n", "e", "\n"], &mut new_storage);
-        use DiffOp::*;
-        let alignment = &[Delete, Delete, Delete, Insert, Insert, Insert, Insert, Insert, Match];
-        let actual = make_sections(&[old, new], alignment);
-        let expected = vec![make_section(
-            vec![(true, "a\nb"), (false, "\n")],
-            vec![(true, "c\nd\ne"), (false, "\n")],
-            false,
-        )];
-        assert_eq!(expected, actual);
-    }
-}
