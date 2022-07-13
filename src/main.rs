@@ -15,7 +15,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let new = &read_to_string(&args[2])?;
 
     let diff = algorithm::diff_file(old, new);
-    println!("{:#?}", diff);
 
     println!("Normal print:");
     basic_terminal::print(&diff, &mut std::io::stdout())?;

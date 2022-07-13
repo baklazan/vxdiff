@@ -1,21 +1,21 @@
-use string_interner::StringInterner;
-
+mod dynamic_programming;
+mod scoring;
 #[cfg(test)]
 mod test;
-mod dynamic_programming;
 
 use dynamic_programming::*;
+use scoring::*;
 
 #[derive(Debug)]
 pub struct Diff<'a> {
     pub sections: Vec<Section<'a>>,
-    pub files: Vec<FileDiff>
+    pub files: Vec<FileDiff>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct FileDiff {
     pub sides: [Vec<usize>; 2],
-    pub alignment: Vec<DiffOp>
+    pub alignment: Vec<DiffOp>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -170,14 +170,20 @@ pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
         }
     }
 
-    let supersection_candidates =
-        supersection_candidates(texts[0].word_count(), texts[1].word_count(), &Scoring::new(&texts), &can_change_state[0], &can_change_state[1]);
+    let supersection_candidates = supersection_candidates(
+        texts[0].word_count(),
+        texts[1].word_count(),
+        &HistogramScoring::new(&texts),
+        &can_change_state[0],
+        &can_change_state[1],
+    );
 
-    let supersection_alignment = select_candidates(&supersection_candidates, [texts[0].word_count(), texts[1].word_count()]);
-    let mut first_section_from_supersection : Vec<usize> = vec![];
+    let supersection_alignment =
+        select_candidates(&supersection_candidates, [texts[0].word_count(), texts[1].word_count()]);
+    let mut first_section_from_supersection: Vec<usize> = vec![];
     let mut sections_count_from_supersection: Vec<usize> = vec![];
     let mut sections = vec![];
-    
+
     for supersection in supersection_alignment.supersections.iter() {
         let parts = [
             get_partitioned_subtext(&texts[0], supersection.starts[0], supersection.ends[0]),
@@ -188,23 +194,17 @@ pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
         sections_count_from_supersection.push(sections_from_supersection.len());
         sections.append(&mut sections_from_supersection);
     }
-    
+
     let mut file_sides = [vec![], vec![]];
     let mut file_alignment = vec![];
-    
+
     let mut super_indices = [0, 0];
     let mut word_indices = [0, 0];
     for op in supersection_alignment.alignment {
         let do_side = match op {
-            DiffOp::Insert => {
-                [false, true]
-            },
-            DiffOp::Delete => {
-                [true, false]
-            },
-            DiffOp::Match => {
-                [true, true]
-            }
+            DiffOp::Insert => [false, true],
+            DiffOp::Delete => [true, false],
+            DiffOp::Match => [true, true],
         };
         let mut sections_count = 0;
         for side in 0..2 {
@@ -216,18 +216,29 @@ pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
             if word_indices[side] < supersection.starts[side] {
                 let indel_op = [DiffOp::Delete, DiffOp::Insert][side];
                 let indel_alignment = vec![indel_op; supersection.starts[side] - word_indices[side]];
-                let mut parts = [PartitionedText{ text: "", word_bounds: vec![]}, PartitionedText{ text: "", word_bounds: vec![]}];
+                let mut parts = [
+                    PartitionedText {
+                        text: "",
+                        word_bounds: vec![],
+                    },
+                    PartitionedText {
+                        text: "",
+                        word_bounds: vec![],
+                    },
+                ];
                 parts[side] = get_partitioned_subtext(&texts[side], word_indices[side], supersection.starts[side]);
                 let mut indel_sections = make_sections(&parts, &indel_alignment);
-                for section_id in sections.len() .. sections.len() + indel_sections.len() {
+                for section_id in sections.len()..sections.len() + indel_sections.len() {
                     file_sides[side].push(section_id);
                     file_alignment.push(indel_op);
                 }
                 sections.append(&mut indel_sections);
             }
-            
+
             sections_count = sections_count_from_supersection[supersection_id];
-            for section_id in first_section_from_supersection[supersection_id] .. first_section_from_supersection[supersection_id] + sections_count {
+            for section_id in first_section_from_supersection[supersection_id]
+                ..first_section_from_supersection[supersection_id] + sections_count
+            {
                 file_sides[side].push(section_id);
             }
             super_indices[side] += 1;
@@ -237,27 +248,39 @@ pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
             file_alignment.push(op);
         }
     }
-    
+
     for side in 0..2 {
         if word_indices[side] < texts[side].word_count() {
             let indel_op = [DiffOp::Delete, DiffOp::Insert][side];
             let indel_alignment = vec![indel_op; texts[side].word_count() - word_indices[side]];
-            let mut parts = [PartitionedText{ text: "", word_bounds: vec![]}, PartitionedText{ text: "", word_bounds: vec![]}];
+            let mut parts = [
+                PartitionedText {
+                    text: "",
+                    word_bounds: vec![],
+                },
+                PartitionedText {
+                    text: "",
+                    word_bounds: vec![],
+                },
+            ];
             parts[side] = get_partitioned_subtext(&texts[side], word_indices[side], texts[side].word_count());
             let mut indel_sections = make_sections(&parts, &indel_alignment);
-            for section_id in sections.len() .. sections.len() + indel_sections.len() {
+            for section_id in sections.len()..sections.len() + indel_sections.len() {
                 file_sides[side].push(section_id);
                 file_alignment.push(indel_op);
             }
             sections.append(&mut indel_sections);
         }
     }
-    
-    let file_diff = FileDiff { sides: file_sides, alignment: file_alignment };
-    
+
+    let file_diff = FileDiff {
+        sides: file_sides,
+        alignment: file_alignment,
+    };
+
     Diff {
         sections,
-        files: vec![file_diff]
+        files: vec![file_diff],
     }
 }
 
@@ -268,9 +291,21 @@ pub enum DiffOp {
     Delete,
 }
 
+impl DiffOp {
+    fn movement(&self) -> (usize, usize) {
+        match self {
+            DiffOp::Delete => (1, 0),
+            DiffOp::Insert => (0, 1),
+            DiffOp::Match => (1, 1),
+        }
+    }
+}
 
 fn clamp_interval(interval: (usize, usize), bounds: (usize, usize)) -> (usize, usize) {
-    (interval.0.clamp(bounds.0, bounds.1), interval.1.clamp(bounds.0, bounds.1))
+    (
+        interval.0.clamp(bounds.0, bounds.1),
+        interval.1.clamp(bounds.0, bounds.1),
+    )
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -279,7 +314,7 @@ struct Candidate<'a> {
     ends: [usize; 2],
     original: &'a OriginalCandidate,
     alignment: &'a [DiffOp],
-    alignment_interval_in_original: (usize, usize), 
+    alignment_interval_in_original: (usize, usize),
     score: TScore,
 }
 
@@ -291,10 +326,10 @@ impl<'a> Candidate<'a> {
             ends: original.ends,
             alignment: &original.alignment,
             score: *original.prefix_scores.last().unwrap(),
-            alignment_interval_in_original: (0, original.alignment.len())
+            alignment_interval_in_original: (0, original.alignment.len()),
         }
     }
-    
+
     fn as_subinterval(original: &'a OriginalCandidate, alignment_subinterval: (usize, usize)) -> Candidate<'a> {
         let mut starts = [0; 2];
         let mut ends = [0; 2];
@@ -302,9 +337,16 @@ impl<'a> Candidate<'a> {
             starts[side] = original.alignment_to_word[side][alignment_subinterval.0];
             ends[side] = original.alignment_to_word[side][alignment_subinterval.1];
         }
-        let alignment = &original.alignment[alignment_subinterval.0 .. alignment_subinterval.1];
+        let alignment = &original.alignment[alignment_subinterval.0..alignment_subinterval.1];
         let score = original.prefix_scores[alignment_subinterval.1] - original.prefix_scores[alignment_subinterval.0];
-        Candidate { starts, ends, original, alignment, alignment_interval_in_original: alignment_subinterval, score }
+        Candidate {
+            starts,
+            ends,
+            original,
+            alignment,
+            alignment_interval_in_original: alignment_subinterval,
+            score,
+        }
     }
 
     fn overlaps(&self, other: &Candidate) -> bool {
@@ -316,20 +358,26 @@ impl<'a> Candidate<'a> {
         false
     }
 
-    
-    
     fn remove_overlapping(&self, other: &Candidate) -> Vec<Candidate<'a>> {
         let mut removed_intervals = [(0, 0); 2];
         for side in 0..2 {
-            removed_intervals[side] = self.original.word_interval_to_alignment_interval((other.starts[side], other.ends[side]), side);
+            removed_intervals[side] = self
+                .original
+                .word_interval_to_alignment_interval((other.starts[side], other.ends[side]), side);
         }
         let mut result_alignment_intervals = vec![];
         let left_removed_start = std::cmp::min(removed_intervals[0].0, removed_intervals[1].0);
         if left_removed_start > self.alignment_interval_in_original.0 {
             result_alignment_intervals.push((self.alignment_interval_in_original.0, left_removed_start));
         }
-        let between_removed_start = std::cmp::max(self.alignment_interval_in_original.0, std::cmp::min(removed_intervals[0].1, removed_intervals[1].1));
-        let between_removed_end = std::cmp::min(self.alignment_interval_in_original.1, std::cmp::max(removed_intervals[0].0, removed_intervals[1].0));
+        let between_removed_start = std::cmp::max(
+            self.alignment_interval_in_original.0,
+            std::cmp::min(removed_intervals[0].1, removed_intervals[1].1),
+        );
+        let between_removed_end = std::cmp::min(
+            self.alignment_interval_in_original.1,
+            std::cmp::max(removed_intervals[0].0, removed_intervals[1].0),
+        );
         if between_removed_start < between_removed_end {
             result_alignment_intervals.push((between_removed_start, between_removed_end));
         }
@@ -376,9 +424,9 @@ impl<'a> PartialOrd for Candidate<'a> {
 
 #[derive(Debug)]
 struct SupersectionAlignment<'a> {
-    pub supersections : Vec<Candidate<'a>>,
+    pub supersections: Vec<Candidate<'a>>,
     pub sides: [Vec<usize>; 2],
-    pub alignment: Vec<DiffOp>
+    pub alignment: Vec<DiffOp>,
 }
 
 fn select_candidates(original_candidates: &Vec<OriginalCandidate>, text_lengths: [usize; 2]) -> SupersectionAlignment {
@@ -409,7 +457,7 @@ fn select_candidates(original_candidates: &Vec<OriginalCandidate>, text_lengths:
     let mut candidates_by_score: BTreeSet<CandidateByScore> = BTreeSet::new();
     let mut original_covering_ids: [Vec<Vec<usize>>; 2] =
         [vec![vec![]; text_lengths[0]], vec![vec![]; text_lengths[1]]];
-        
+
     for (id, original) in original_candidates.iter().enumerate() {
         for side in 0..2 {
             for position in original.starts[side]..original.ends[side] {
@@ -424,7 +472,7 @@ fn select_candidates(original_candidates: &Vec<OriginalCandidate>, text_lengths:
 
     let mut supersections = vec![];
     let mut is_supersection_match = vec![];
-    let mut matching_indices : BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut matching_indices: BTreeSet<(usize, usize)> = BTreeSet::new();
     let mut overlaping_set = vec![false; original_candidates.len()];
 
     while !candidates_by_score.is_empty() {
@@ -432,23 +480,26 @@ fn select_candidates(original_candidates: &Vec<OriginalCandidate>, text_lengths:
         candidates_by_score.remove(&current);
         let current = current.candidate;
         let start_indices = (current.starts[0], current.starts[1]);
-        let match_before = matching_indices.range((std::ops::Bound::Unbounded, std::ops::Bound::Excluded(start_indices))).next_back();
-        let match_after = matching_indices.range((std::ops::Bound::Excluded(start_indices), std::ops::Bound::Unbounded)).next();
+        let match_before = matching_indices
+            .range((std::ops::Bound::Unbounded, std::ops::Bound::Excluded(start_indices)))
+            .next_back();
+        let match_after = matching_indices
+            .range((std::ops::Bound::Excluded(start_indices), std::ops::Bound::Unbounded))
+            .next();
         let before_good = match_before == None || match_before.unwrap().1 <= start_indices.1;
         let after_good = match_after == None || match_after.unwrap().1 >= start_indices.1;
         if before_good && after_good {
             is_supersection_match.push(true);
             matching_indices.insert(start_indices);
-        }
-        else {
-            const MOVED_SCORE_THRESHOLD : f64 = 20.0;
+        } else {
+            const MOVED_SCORE_THRESHOLD: f64 = 20.0;
             if current.score < MOVED_SCORE_THRESHOLD {
                 continue;
             }
             is_supersection_match.push(false);
         }
         supersections.push(current);
-        
+
         for side in 0..2 {
             let mut influenced_original_ids = vec![];
             for position in current.starts[side]..current.ends[side] {
@@ -467,7 +518,9 @@ fn select_candidates(original_candidates: &Vec<OriginalCandidate>, text_lengths:
                         let mut subfragments = fragment.remove_overlapping(&current);
                         candidates_by_score.remove(&CandidateByScore { candidate: fragment });
                         for subfragment in subfragments.iter() {
-                            candidates_by_score.insert(CandidateByScore { candidate: *subfragment });
+                            candidates_by_score.insert(CandidateByScore {
+                                candidate: *subfragment,
+                            });
                         }
                         new_fragments.append(&mut subfragments);
                     } else {
@@ -484,7 +537,7 @@ fn select_candidates(original_candidates: &Vec<OriginalCandidate>, text_lengths:
     }
     let mut sides = [vec![], vec![]];
     let mut sides_match = [vec![], vec![]];
-    for side in 0 .. 2 {
+    for side in 0..2 {
         let mut ids_by_start = vec![];
         for (id, supersection) in supersections.iter().enumerate() {
             ids_by_start.push((supersection.starts[side], id));
@@ -505,8 +558,7 @@ fn select_candidates(original_candidates: &Vec<OriginalCandidate>, text_lengths:
             }
             alignment.push(DiffOp::Match);
             new_index += 1;
-        }
-        else {
+        } else {
             alignment.push(DiffOp::Delete);
         }
     }
@@ -514,6 +566,9 @@ fn select_candidates(original_candidates: &Vec<OriginalCandidate>, text_lengths:
         alignment.push(DiffOp::Insert);
         new_index += 1;
     }
-    SupersectionAlignment { supersections, sides, alignment }
+    SupersectionAlignment {
+        supersections,
+        sides,
+        alignment,
+    }
 }
-
