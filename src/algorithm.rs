@@ -14,8 +14,7 @@ pub struct Diff<'a> {
 
 #[derive(Debug, PartialEq)]
 pub struct FileDiff {
-    pub sides: [Vec<usize>; 2],
-    pub alignment: Vec<DiffOp>,
+    pub ops: Vec<(DiffOp, usize)>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -195,8 +194,7 @@ pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
         sections.append(&mut sections_from_supersection);
     }
 
-    let mut file_sides = [vec![], vec![]];
-    let mut file_alignment = vec![];
+    let mut file_ops = vec![];
 
     let mut super_indices = [0, 0];
     let mut word_indices = [0, 0];
@@ -206,13 +204,18 @@ pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
             DiffOp::Delete => [true, false],
             DiffOp::Match => [true, true],
         };
-        let mut sections_count = 0;
+        let mut supersection_id = None;
         for side in 0..2 {
             if !do_side[side] {
                 continue;
             }
-            let supersection_id = supersection_alignment.sides[side][super_indices[side]];
-            let supersection = &supersection_alignment.supersections[supersection_id];
+            let my_supersection_id = supersection_alignment.sides[side][super_indices[side]];
+            if supersection_id.is_some() && supersection_id != Some(my_supersection_id) {
+                panic!("Match had different supersection_id on its sides?!");
+            }
+            supersection_id = Some(my_supersection_id);
+
+            let supersection = &supersection_alignment.supersections[my_supersection_id];
             if word_indices[side] < supersection.starts[side] {
                 let indel_op = [DiffOp::Delete, DiffOp::Insert][side];
                 let indel_alignment = vec![indel_op; supersection.starts[side] - word_indices[side]];
@@ -229,23 +232,19 @@ pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
                 parts[side] = get_partitioned_subtext(&texts[side], word_indices[side], supersection.starts[side]);
                 let mut indel_sections = make_sections(&parts, &indel_alignment);
                 for section_id in sections.len()..sections.len() + indel_sections.len() {
-                    file_sides[side].push(section_id);
-                    file_alignment.push(indel_op);
+                    file_ops.push((indel_op, section_id));
                 }
                 sections.append(&mut indel_sections);
             }
 
-            sections_count = sections_count_from_supersection[supersection_id];
-            for section_id in first_section_from_supersection[supersection_id]
-                ..first_section_from_supersection[supersection_id] + sections_count
-            {
-                file_sides[side].push(section_id);
-            }
             super_indices[side] += 1;
             word_indices[side] = supersection.ends[side];
         }
-        for _ in 0..sections_count {
-            file_alignment.push(op);
+        let supersection_id = supersection_id.unwrap();
+        for section_id in first_section_from_supersection[supersection_id]
+            ..first_section_from_supersection[supersection_id] + sections_count_from_supersection[supersection_id]
+        {
+            file_ops.push((op, section_id));
         }
     }
 
@@ -266,17 +265,13 @@ pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
             parts[side] = get_partitioned_subtext(&texts[side], word_indices[side], texts[side].word_count());
             let mut indel_sections = make_sections(&parts, &indel_alignment);
             for section_id in sections.len()..sections.len() + indel_sections.len() {
-                file_sides[side].push(section_id);
-                file_alignment.push(indel_op);
+                file_ops.push((indel_op, section_id));
             }
             sections.append(&mut indel_sections);
         }
     }
 
-    let file_diff = FileDiff {
-        sides: file_sides,
-        alignment: file_alignment,
-    };
+    let file_diff = FileDiff { ops: file_ops };
 
     Diff {
         sections,

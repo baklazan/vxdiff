@@ -51,11 +51,10 @@ pub fn print(diff: &Diff, output: &mut impl io::Write) -> TheResult {
         write!(output, "{}\n", line)?;
         Ok(())
     };
-    let (mut old_index, mut new_index) = (0, 0);
-    for op in diff.files[0].alignment.iter() {
+    for (op, section_id) in diff.files[0].ops.iter() {
+        let section = &diff.sections[*section_id];
         match op {
             DiffOp::Match => {
-                let section = &diff.sections[diff.files[0].sides[0][old_index]];
                 if section.equal {
                     // TODO: Check old == new.
                     print_side(' ', &Style::new(), &section.sides[0], &mut write_line)?;
@@ -63,18 +62,12 @@ pub fn print(diff: &Diff, output: &mut impl io::Write) -> TheResult {
                     print_side('-', &Style::new().red(), &section.sides[0], &mut write_line)?;
                     print_side('+', &Style::new().green(), &section.sides[1], &mut write_line)?;
                 }
-                old_index += 1;
-                new_index += 1;
             }
             DiffOp::Insert => {
-                let section = &diff.sections[diff.files[0].sides[1][new_index]];
                 print_side('+', &Style::new().green(), &section.sides[1], &mut write_line)?;
-                new_index += 1;
             }
             DiffOp::Delete => {
-                let section = &diff.sections[diff.files[0].sides[0][old_index]];
                 print_side('-', &Style::new().red(), &section.sides[0], &mut write_line)?;
-                old_index += 1;
             }
         }
     }
@@ -85,12 +78,11 @@ pub fn print_side_by_side(diff: &Diff, output: &mut impl io::Write) -> TheResult
     let width = 121;
     let empty = String::from("x") + &" ".repeat(width - 1);
 
-    let (mut old_index, mut new_index) = (0, 0);
-    for op in diff.files[0].alignment.iter() {
+    for (op, section_id) in diff.files[0].ops.iter() {
+        let section = &diff.sections[*section_id];
         let styles = match op {
             DiffOp::Match => {
-                let section_id = diff.files[0].sides[0][old_index];
-                if diff.sections[section_id].equal {
+                if section.equal {
                     [(' ', Style::new()), (' ', Style::new())]
                 } else {
                     [('-', Style::new().red()), ('+', Style::new().green())]
@@ -99,22 +91,6 @@ pub fn print_side_by_side(diff: &Diff, output: &mut impl io::Write) -> TheResult
             DiffOp::Insert => [('*', Style::new().blue()), ('+', Style::new().green())],
             DiffOp::Delete => [('-', Style::new().red()), ('*', Style::new().blue())],
         };
-        let section_id;
-        match op {
-            DiffOp::Match => {
-                section_id = diff.files[0].sides[0][old_index];
-                old_index += 1;
-                new_index += 1;
-            }
-            DiffOp::Insert => {
-                section_id = diff.files[0].sides[1][new_index];
-                new_index += 1;
-            }
-            DiffOp::Delete => {
-                section_id = diff.files[0].sides[0][old_index];
-                old_index += 1;
-            }
-        }
 
         let mut lines = [vec![], vec![]];
         for i in 0..2 {
@@ -122,12 +98,7 @@ pub fn print_side_by_side(diff: &Diff, output: &mut impl io::Write) -> TheResult
                 lines[i].push(line.to_string() + &" ".repeat(width - visible_length));
                 Ok(())
             };
-            print_side(
-                styles[i].0,
-                &styles[i].1,
-                &diff.sections[section_id].sides[i],
-                &mut write_line,
-            )?;
+            print_side(styles[i].0, &styles[i].1, &section.sides[i], &mut write_line)?;
         }
         for i in 0..std::cmp::max(lines[0].len(), lines[1].len()) {
             let left = lines[0].get(i).unwrap_or(&empty);
