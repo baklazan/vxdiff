@@ -3,6 +3,7 @@ use std::process::exit;
 
 mod algorithm;
 mod basic_terminal;
+mod tui_terminal;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().collect();
