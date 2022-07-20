@@ -161,24 +161,16 @@ fn get_partitioned_subtext<'a>(text: &PartitionedText<'a>, from_word: usize, to_
 
 pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
     let texts = [partition_into_words(old), partition_into_words(new)];
-    let mut can_change_state = [vec![true], vec![true]];
-    for side in 0..2 {
-        for i in 0..texts[side].word_count() {
-            let word = texts[side].get_word(i);
-            can_change_state[side].push(word == "\n" || i + 1 == texts[side].word_count());
-        }
-    }
 
-    let supersection_candidates = supersection_candidates(
-        texts[0].word_count(),
-        texts[1].word_count(),
-        &HistogramScoring::new(&texts),
-        &can_change_state[0],
-        &can_change_state[1],
+    let scoring = AffineScoring::new(&texts);
+    let supersection_candidates =
+        supersection_candidates(texts[0].word_count(), texts[1].word_count(), &scoring, &scoring);
+
+    let supersection_alignment = select_candidates(
+        &supersection_candidates,
+        [texts[0].word_count(), texts[1].word_count()],
+        AffineScoring::MOVED_SUPERSECTION_THRESHOLD,
     );
-
-    let supersection_alignment =
-        select_candidates(&supersection_candidates, [texts[0].word_count(), texts[1].word_count()]);
     let mut first_section_from_supersection: Vec<usize> = vec![];
     let mut sections_count_from_supersection: Vec<usize> = vec![];
     let mut sections = vec![];
@@ -424,7 +416,11 @@ struct SupersectionAlignment<'a> {
     pub alignment: Vec<DiffOp>,
 }
 
-fn select_candidates(original_candidates: &Vec<OriginalCandidate>, text_lengths: [usize; 2]) -> SupersectionAlignment {
+fn select_candidates(
+    original_candidates: &Vec<OriginalCandidate>,
+    text_lengths: [usize; 2],
+    moved_threshold: TScore,
+) -> SupersectionAlignment {
     #[derive(Clone, Copy, Eq, PartialEq)]
     struct CandidateByScore<'a> {
         candidate: Candidate<'a>,
@@ -487,8 +483,7 @@ fn select_candidates(original_candidates: &Vec<OriginalCandidate>, text_lengths:
             is_supersection_match.push(true);
             matching_indices.insert(start_indices);
         } else {
-            const MOVED_SCORE_THRESHOLD: f64 = 20.0;
-            if current.score < MOVED_SCORE_THRESHOLD {
+            if current.score < moved_threshold {
                 continue;
             }
             is_supersection_match.push(false);

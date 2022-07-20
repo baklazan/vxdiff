@@ -1,4 +1,4 @@
-use super::scoring::ScoringMethod;
+use super::scoring::*;
 use super::*;
 
 #[derive(Debug)]
@@ -29,47 +29,48 @@ impl OriginalCandidate {
     }
 }
 
-pub fn supersection_candidates<Method: ScoringMethod>(
+pub fn supersection_candidates<
+    AlignmentScoring: AlignmentScoringMethod,
+    SupersectionScoring: SupersectionBoundsScoringMethod,
+>(
     old_len: usize,
     new_len: usize,
-    scoring: &Method,
-    old_can_change_state: &Vec<bool>,
-    new_can_change_state: &Vec<bool>,
+    alignment_scoring: &AlignmentScoring,
+    bounds_scoring: &SupersectionScoring,
 ) -> Vec<OriginalCandidate> {
     type Position = (usize, usize);
 
-    let mut match_state: Vec<Vec<Method::State>> =
-        vec![vec![scoring.starting_state(f64::NEG_INFINITY); new_len + 1]; old_len + 1];
+    let mut match_state: Vec<Vec<AlignmentScoring::State>> =
+        vec![vec![alignment_scoring.starting_state(f64::NEG_INFINITY); new_len + 1]; old_len + 1];
     let mut mismatch_score: Vec<Vec<TScore>> = vec![vec![0.0; new_len + 1]; old_len + 1];
     let mut root_position: Vec<Vec<Vec<Position>>> =
-        vec![vec![vec![(old_len, new_len); Method::State::SUBSTATES_COUNT]; new_len + 1]; old_len + 1];
+        vec![vec![vec![(old_len, new_len); AlignmentScoring::State::SUBSTATES_COUNT]; new_len + 1]; old_len + 1];
 
     let mut best_leaf_for_root: std::collections::HashMap<Position, (TScore, Position, usize)> =
         std::collections::HashMap::new();
 
-    const ENTER_MISMATCH_SCORE: TScore = -200.0;
-    const SCORE_THRESHOLD: TScore = 100.0;
-
-    match_state[old_len][new_len] = scoring.starting_state(0.0);
+    match_state[old_len][new_len] = alignment_scoring.starting_state(0.0);
     for old_index in (0..=old_len).rev() {
         for new_index in (0..=new_len).rev() {
+            let change_state_score = bounds_scoring.supersection_bound_penalty(old_index, new_index);
+
             let ops = [DiffOp::Delete, DiffOp::Insert, DiffOp::Match];
             for op in ops {
                 let step = op.movement();
-                if old_index + step.0 < old_len && new_index + step.1 < new_len {
+                if old_index + step.0 <= old_len && new_index + step.1 <= new_len {
                     mismatch_score[old_index][new_index] = TScore::max(
                         mismatch_score[old_index][new_index],
                         mismatch_score[old_index + step.0][new_index + step.1],
                     );
                 }
             }
-            if old_can_change_state[old_index] && new_can_change_state[new_index] {
-                match_state[old_index][new_index] = scoring.starting_state(mismatch_score[old_index][new_index]);
-            }
+            match_state[old_index][new_index] =
+                alignment_scoring.starting_state(mismatch_score[old_index][new_index] + change_state_score);
+
             for op in ops {
                 let step = op.movement();
-                if old_index + step.0 < old_len && new_index + step.1 < new_len {
-                    scoring.consider_step(
+                if old_index + step.0 <= old_len && new_index + step.1 <= new_len {
+                    alignment_scoring.consider_step(
                         old_index,
                         new_index,
                         match_state[old_index + step.0][new_index + step.1].clone(),
@@ -80,8 +81,9 @@ pub fn supersection_candidates<Method: ScoringMethod>(
             }
             let match_score = match_state[old_index][new_index].best_score();
             mismatch_score[old_index][new_index] =
-                TScore::max(mismatch_score[old_index][new_index], match_score + ENTER_MISMATCH_SCORE);
+                TScore::max(mismatch_score[old_index][new_index], match_score + change_state_score);
 
+            let can_change_state = change_state_score > TScore::NEG_INFINITY;
             let match_scores = match_state[old_index][new_index].substate_scores();
             let position = (old_index, new_index);
             for (substate, movement) in match_state[old_index][new_index]
@@ -94,14 +96,18 @@ pub fn supersection_candidates<Method: ScoringMethod>(
                         let step = op.movement();
                         let root = root_position[old_index + step.0][new_index + step.1][*next_substate];
                         root_position[old_index][new_index][substate] = root;
-                        let old_value = best_leaf_for_root.get(&root).unwrap().0;
-                        if match_scores[substate] > old_value {
-                            best_leaf_for_root.insert(root, (match_scores[substate], position, substate));
+                        if can_change_state {
+                            let old_value = best_leaf_for_root.get(&root).unwrap().0;
+                            if match_scores[substate] > old_value {
+                                best_leaf_for_root.insert(root, (match_scores[substate], position, substate));
+                            }
                         }
                     }
                     None => {
                         root_position[old_index][new_index][substate] = position;
-                        best_leaf_for_root.insert(position, (match_scores[substate], position, substate));
+                        if can_change_state {
+                            best_leaf_for_root.insert(position, (match_scores[substate], position, substate));
+                        }
                     }
                 }
             }
@@ -110,7 +116,7 @@ pub fn supersection_candidates<Method: ScoringMethod>(
 
     let mut result = vec![];
     for (root, (score, position, substate)) in best_leaf_for_root.iter() {
-        if *score - mismatch_score[root.0][root.1] < SCORE_THRESHOLD {
+        if *score - match_state[root.0][root.1].best_score() < SupersectionScoring::SUPERSECTION_THRESHOLD {
             continue;
         }
         let mut alignment = Vec::<DiffOp>::new();
