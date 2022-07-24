@@ -298,6 +298,7 @@ name = "vxdiff"
 version = "0.1.0"
 dependencies = [
  "console",
+ "crossterm",
  "string-interner",
  "tui",
 ]

@@ -7,5 +7,6 @@ edition = "2021"
 
 [dependencies]
 console = "*"
+crossterm = "*"
 string-interner = "*"
 tui = "*"
