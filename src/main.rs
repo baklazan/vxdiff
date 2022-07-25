@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "debug" => println!("{diff:#?}"),
         "unified" => basic_terminal::print(&diff, &mut std::io::stdout())?,
         "side" => basic_terminal::print_side_by_side(&diff, &mut std::io::stdout())?,
+        "tuiplain" => tui_terminal::print_side_by_side_diff_plainly(&diff, &mut std::io::stdout())?,
         "tui" => tui_terminal::run_in_terminal(|terminal| tui_terminal::run_tui(&diff, terminal))?,
         _ => eprintln!("invalid mode: {mode}"),
     }
