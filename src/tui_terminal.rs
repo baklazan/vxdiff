@@ -1,18 +1,69 @@
 use super::algorithm::{Diff, DiffOp, FileDiff, Section};
 use crossterm::{self, event::KeyCode};
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::error::Error;
 use std::io::{self, Write as _};
-use std::ops::Range;
+use std::ops::{DerefMut as _, Range};
 use tui;
 
-type TheResult = Result<(), Box<dyn Error>>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    Prev,
+    Next,
+}
 
-type TheTerminal = tui::terminal::Terminal<tui::backend::CrosstermBackend<io::Stdout>>;
+use Direction::{Next, Prev};
 
-fn same_section_group(sections: &Vec<Section>, a: (DiffOp, usize), b: (DiffOp, usize)) -> bool {
-    (a.0 == DiffOp::Match && b.0 == DiffOp::Match && sections[a.1].equal && sections[b.1].equal)
-        || (a.0 != DiffOp::Match && b.0 != DiffOp::Match)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BorderSide {
+    First,
+    Last,
+}
+
+use BorderSide::{First, Last};
+
+#[derive(Clone)]
+struct HalfLine {
+    // TODO: line_number
+    text_with_words: Vec<(bool, String)>, // TODO: byte offset info and proper lifetime
+    newline_highlight: bool,
+}
+
+#[derive(Clone, Default)]
+struct WrappedHalfLine {
+    // TODO: line_number
+    text_with_words: Vec<(bool, String)>, // TODO: byte offset info and proper lifetime
+    newline_highlight: bool,
+}
+
+#[derive(Clone)]
+enum UILine {
+    Sides([WrappedHalfLine; 2]),
+    FileHeaderLine(usize),
+    ExpanderLine(usize),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Nid(usize);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct LeafPosition {
+    parent: Nid,
+    line_index: usize,
+}
+
+#[derive(Clone)]
+struct BranchNode {
+    children: Vec<Nid>,
+    visible: Range<usize>,
+}
+
+#[derive(Clone)]
+struct PaddedGroupNode {
+    equal: bool,
+    original: [Vec<HalfLine>; 2],
+    cached_wrap: RefCell<Option<(usize, Vec<UILine>)>>,
 }
 
 #[derive(Clone)]
@@ -24,6 +75,13 @@ enum Node {
 }
 
 impl Node {
+    fn new_branch() -> Node {
+        Node::Branch(BranchNode {
+            children: Default::default(),
+            visible: 0..0,
+        })
+    }
+
     fn as_branch(&self) -> &BranchNode {
         match self {
             Node::Branch(node) => node,
@@ -39,33 +97,126 @@ impl Node {
     }
 }
 
-#[derive(Clone)]
-struct BranchNode {
-    children: Vec<Node>,
-    visible: Range<usize>,
+struct NodeMeta {
+    value: Node,
+    parent: Option<Nid>,
+    index_in_parent: usize,
 }
 
-#[derive(Clone)]
-struct PaddedGroupNode {
-    equal: bool,
-    original: [Vec<HalfLine>; 2],
-    cached_wrap: RefCell<Option<(usize, Vec<WrappedLine>)>>,
+struct Tree {
+    nodes: Vec<NodeMeta>,
+    root: Nid,
 }
 
-#[derive(Clone)]
-struct HalfLine {
-    // TODO: line_number
-    text_with_words: Vec<(bool, String)>, // TODO: byte offset info and proper lifetime
-    newline_highlight: bool,
-}
+impl Tree {
+    fn new(root_node: Node) -> Tree {
+        Tree {
+            nodes: vec![NodeMeta {
+                value: root_node,
+                parent: None,
+                index_in_parent: usize::MAX,
+            }],
+            root: Nid(0),
+        }
+    }
 
-type WrappedLine = [WrappedHalfLine; 2];
+    fn node(&self, nid: Nid) -> &Node {
+        &self.nodes[nid.0].value
+    }
 
-#[derive(Clone, Default)]
-struct WrappedHalfLine {
-    // TODO: line_number
-    text_with_words: Vec<(bool, String)>, // TODO: byte offset info and proper lifetime
-    newline_highlight: bool,
+    fn node_mut(&mut self, nid: Nid) -> &mut Node {
+        &mut self.nodes[nid.0].value
+    }
+
+    fn node_meta(&self, nid: Nid) -> &NodeMeta {
+        &self.nodes[nid.0]
+    }
+
+    fn parent(&self, nid: Nid) -> Option<Nid> {
+        self.node_meta(nid).parent
+    }
+
+    fn sibling(&self, nid: Nid, dir: Direction) -> Option<Nid> {
+        let my_meta = self.node_meta(nid);
+        let parent = self.node(my_meta.parent?).as_branch();
+        let next_index = match dir {
+            Next => my_meta.index_in_parent + 1,
+            Prev => my_meta.index_in_parent.wrapping_sub(1),
+        };
+        if parent.visible.contains(&next_index) {
+            Some(parent.children[next_index])
+        } else {
+            None
+        }
+    }
+
+    /// Returns the first/last visible child of `nid`, if it exists.
+    fn bordering_child(&self, nid: Nid, side: BorderSide) -> Option<Nid> {
+        if let Node::Branch(node) = self.node(nid) {
+            if !node.visible.is_empty() {
+                return Some(
+                    node.children[match side {
+                        First => node.visible.start,
+                        Last => node.visible.end - 1,
+                    }],
+                );
+            }
+        }
+        None
+    }
+
+    fn index_path(&self, nid: Nid) -> Vec<usize> {
+        let mut result = vec![];
+        let mut nid = nid;
+        while let Some(parent) = self.parent(nid) {
+            result.push(self.node_meta(nid).index_in_parent);
+            nid = parent;
+        }
+        result.reverse();
+        result
+    }
+
+    fn compare_nodes(&self, a: Nid, b: Nid) -> Ordering {
+        if a == b {
+            Ordering::Equal
+        } else {
+            self.index_path(a).cmp(&self.index_path(b))
+        }
+    }
+
+    fn compare_leaves(&self, a: LeafPosition, b: LeafPosition) -> Ordering {
+        if a.parent == b.parent {
+            a.line_index.cmp(&b.line_index)
+        } else {
+            self.compare_nodes(a.parent, b.parent)
+        }
+    }
+
+    fn add_child(&mut self, parent: Nid, value: Node) -> Nid {
+        let nid = Nid(self.nodes.len());
+        let mut parent_branch_node = self.node_mut(parent).as_branch_mut();
+        parent_branch_node.visible.end += 1;
+        let index_in_parent = parent_branch_node.children.len();
+        parent_branch_node.children.push(nid);
+        self.nodes.push(NodeMeta {
+            value,
+            parent: Some(parent),
+            index_in_parent,
+        });
+        nid
+    }
+
+    fn add_children(&mut self, parent: Nid, values: Vec<Node>) {
+        for value in values {
+            self.add_child(parent, value);
+        }
+    }
+
+    // Future note: We don't need removing nodes yet, but we could implement it as:
+    // - replace the node in self.nodes with some kind of "dummy node"
+    // - add the nid to a list of "unused nids", to be recycled in add_child
+    // - fix `children` in the parent
+    // - fix `index_in_parent` in all next siblings
 }
 
 fn build_padded_group(sections: &Vec<Section>, ops: &[(DiffOp, usize)]) -> Node {
@@ -125,14 +276,19 @@ fn build_padded_group(sections: &Vec<Section>, ops: &[(DiffOp, usize)]) -> Node 
     })
 }
 
-fn build_initial_tree(diff: &Diff) -> Node {
-    fn make_branch(visible: Range<usize>, children: Vec<Node>) -> Node {
-        Node::Branch(BranchNode { children, visible })
+fn build_initial_tree(diff: &Diff) -> Tree {
+    fn same_section_group(sections: &Vec<Section>, a: (DiffOp, usize), b: (DiffOp, usize)) -> bool {
+        (a.0 == DiffOp::Match && b.0 == DiffOp::Match && sections[a.1].equal && sections[b.1].equal)
+            || (a.0 != DiffOp::Match && b.0 != DiffOp::Match)
     }
 
-    let mut root_children = vec![];
+    let mut tree = Tree::new(Node::new_branch());
+
     for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
-        let mut file_children = vec![];
+        let file_nid = tree.add_child(tree.root, Node::new_branch());
+        tree.add_child(file_nid, Node::FileHeaderLine(file_id));
+        let file_content_nid = tree.add_child(file_nid, Node::new_branch());
+        tree.node_mut(file_nid).as_branch_mut().visible = 0..1;
 
         let mut op_index = 0;
         while op_index < ops.len() {
@@ -160,24 +316,25 @@ fn build_initial_tree(diff: &Diff) -> Node {
 
                 let context = 3; // TODO configurable
                 if length > 2 * context + 1 {
-                    file_children.push(make_branch(0..context, padded_groups.clone()));
-                    file_children.push(Node::ExpanderLine(length - 2 * context));
-                    file_children.push(make_branch(length - context..length, padded_groups));
+                    let upper_nid = tree.add_child(file_content_nid, Node::new_branch());
+                    tree.add_children(upper_nid, padded_groups.clone());
+                    tree.node_mut(upper_nid).as_branch_mut().visible = 0..context;
+
+                    tree.add_child(file_content_nid, Node::ExpanderLine(length - 2 * context));
+
+                    let lower_nid = tree.add_child(file_content_nid, Node::new_branch());
+                    tree.add_children(lower_nid, padded_groups);
+                    tree.node_mut(lower_nid).as_branch_mut().visible = (length - context)..length;
                 } else {
-                    file_children.extend(padded_groups);
+                    tree.add_children(file_content_nid, padded_groups);
                 }
             } else {
-                file_children.push(build_padded_group(&diff.sections, &ops[begin..end]));
+                tree.add_child(file_content_nid, build_padded_group(&diff.sections, &ops[begin..end]));
             }
         }
-
-        let file_header_node = Node::FileHeaderLine(file_id);
-        let file_content_node = make_branch(0..file_children.len(), file_children);
-        let file_node = make_branch(0..1, vec![file_header_node, file_content_node]);
-        root_children.push(file_node)
     }
 
-    make_branch(0..root_children.len(), root_children)
+    tree
 }
 
 fn wrap_one_side(lines: &Vec<HalfLine>, wrap_width: usize) -> Vec<WrappedHalfLine> {
@@ -192,49 +349,57 @@ fn wrap_one_side(lines: &Vec<HalfLine>, wrap_width: usize) -> Vec<WrappedHalfLin
     out
 }
 
-impl PaddedGroupNode {
-    /// Calls func with an up-to-date wrapped line list, refreshing the cache if needed. Panics if
-    /// the RefCell is currently borrowed. So don't call with_wrapped_lines() again inside func.
-    fn with_wrapped_lines<Ret>(&self, wrap_width: usize, func: impl FnOnce(&Vec<WrappedLine>) -> Ret) -> Ret {
-        let mut wrap = self.cached_wrap.borrow_mut();
-        match wrap.as_ref() {
-            Some((w, l)) if *w == wrap_width => func(l),
-            _ => {
-                let mut lines: Vec<WrappedLine> = vec![];
-                for side in 0..2 {
-                    let wrapped_side = wrap_one_side(&self.original[side], wrap_width);
-                    if lines.len() < wrapped_side.len() {
+impl Node {
+    /// Calls func with this node's current UILine list, recomputing it if needed.
+    /// Panics if self is a branch node.
+    /// Don't call with_ui_lines recursively (from inside func).
+    fn with_ui_lines<Ret>(&self, wrap_width: usize, func: impl FnOnce(&[UILine]) -> Ret) -> Ret {
+        match self {
+            Node::Branch(_) => panic!("unexpected Branch node"),
+            Node::PaddedGroup(node) => match node.cached_wrap.borrow_mut().deref_mut() {
+                Some((w, l)) if *w == wrap_width => func(l),
+                cached_wrap => {
+                    let padding = WrappedHalfLine {
                         // TODO: temporary padding indicators
-                        lines.resize_with(wrapped_side.len(), || {
-                            [(); 2].map(|_| WrappedHalfLine {
-                                text_with_words: vec![(false, "@".to_string())],
-                                newline_highlight: false,
-                            })
-                        });
-                    }
-                    for (i, line) in wrapped_side.into_iter().enumerate() {
-                        lines[i][side] = line;
-                    }
+                        text_with_words: vec![(false, "@".to_string())],
+                        newline_highlight: false,
+                    };
+                    let wrapped_sides = [0, 1].map(|side| wrap_one_side(&node.original[side], wrap_width));
+                    let len = std::cmp::max(wrapped_sides[0].len(), wrapped_sides[1].len());
+                    let padded_wrapped_sides =
+                        wrapped_sides.map(|side| side.into_iter().chain(std::iter::repeat(padding.clone())));
+                    let [side0, side1] = padded_wrapped_sides;
+                    let lines: Vec<UILine> = std::iter::zip(side0, side1)
+                        .map(|(line0, line1)| UILine::Sides([line0, line1]))
+                        .take(len)
+                        .collect();
+                    let result = func(&lines);
+                    *cached_wrap = Some((wrap_width, lines));
+                    result
                 }
-                let result = func(&lines);
-                *wrap = Some((wrap_width, lines));
-                result
-            }
+            },
+            Node::FileHeaderLine(file_id) => func(&[UILine::FileHeaderLine(*file_id)]),
+            Node::ExpanderLine(0) => func(&[]),
+            Node::ExpanderLine(hidden_count) => func(&[UILine::ExpanderLine(*hidden_count)]),
         }
     }
 }
 
-fn print_plainly(node: &Node, wrap_width: usize, output: &mut impl io::Write) -> TheResult {
-    match node {
-        Node::Branch(node) => {
-            // clone() explanation: https://stackoverflow.com/q/63685464
-            for i in node.visible.clone() {
-                print_plainly(&node.children[i], wrap_width, output)?;
-            }
+type TheResult = Result<(), Box<dyn Error>>;
+
+fn print_plainly(tree: &Tree, nid: Nid, wrap_width: usize, output: &mut impl io::Write) -> TheResult {
+    let node = tree.node(nid);
+    if let Node::Branch(node) = node {
+        // clone() explanation: https://stackoverflow.com/q/63685464
+        for i in node.visible.clone() {
+            print_plainly(tree, node.children[i], wrap_width, output)?;
         }
-        Node::PaddedGroup(node) => {
-            node.with_wrapped_lines(wrap_width, |lines| -> TheResult {
-                for line in lines {
+        return Ok(());
+    }
+    node.with_ui_lines(wrap_width, |lines| -> TheResult {
+        for line in lines {
+            match line {
+                UILine::Sides(sides) => {
                     let render_half = |whl: &WrappedHalfLine| -> String {
                         let mut res = String::new();
                         let mut length = 0;
@@ -251,259 +416,223 @@ fn print_plainly(node: &Node, wrap_width: usize, output: &mut impl io::Write) ->
                         res.push_str(&" ".repeat(wrap_width - length));
                         res
                     };
-                    writeln!(output, "{} | {}", render_half(&line[0]), render_half(&line[1]))?;
+                    writeln!(output, "{} | {}", render_half(&sides[0]), render_half(&sides[1]))?;
                 }
-                Ok(())
-            })?;
+                UILine::FileHeaderLine(file_id) => {
+                    writeln!(output, "file #{}", file_id)?;
+                }
+                UILine::ExpanderLine(hidden_count) => {
+                    writeln!(output, "...{} hidden lines...", hidden_count)?;
+                }
+            }
         }
-        Node::FileHeaderLine(file_id) => {
-            writeln!(output, "file #{}", file_id)?;
-        }
-        Node::ExpanderLine(hidden_count) => {
-            writeln!(output, "...{} hidden lines...", hidden_count)?;
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 pub fn print_side_by_side_diff_plainly(diff: &Diff, output: &mut impl io::Write) -> TheResult {
     let mut tree = build_initial_tree(diff);
 
     // Gotta expand the file headers in order to see any content.
-    for child in &mut tree.as_branch_mut().children {
-        let child = child.as_branch_mut();
-        assert!(child.visible == (0..1));
-        assert!(child.children.len() == 2);
-        child.visible = 0..2;
+    let mut child_option_nid = tree.bordering_child(tree.root, First);
+    while let Some(child_nid) = child_option_nid {
+        let child_branch_node = tree.node_mut(child_nid).as_branch_mut();
+        assert!(child_branch_node.visible == (0..1));
+        assert!(child_branch_node.children.len() == 2);
+        child_branch_node.visible = 0..2;
+        child_option_nid = tree.sibling(child_nid, Next);
     }
 
-    print_plainly(&tree, 80, output)
+    print_plainly(&tree, tree.root, 80, output)
 }
 
-/// Returns `if cond { true_iter } else { false_iter }` except that it works even if they have
-/// different types. Loosely based on <https://stackoverflow.com/q/29760668>.
-fn either_iterator<T>(
-    cond: bool,
-    true_iter: impl IntoIterator<Item = T>,
-    false_iter: impl IntoIterator<Item = T>,
-) -> impl Iterator<Item = T> {
-    let a = (if cond { Some(true_iter) } else { None }).into_iter().flatten();
-    let b = (if !cond { Some(false_iter) } else { None }).into_iter().flatten();
-    a.chain(b)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Direction {
-    Prev,
-    Next,
-}
-
-use Direction::{Next, Prev};
-
-impl Direction {
-    fn opposite(self) -> Direction {
-        match self {
-            Prev => Next,
-            Next => Prev,
-        }
-    }
-}
-
-type Position = Vec<usize>;
-
-struct Mover<'a> {
-    position: Position,
-    /// Invariant: If we're not at a WrappedLine, nodes.len() == position.len()+1.
-    /// If we're at a WrappedLine, nodes.len() == position.len() because WrappedLine is not a Node.
-    nodes: Vec<&'a Node>,
+struct TreeView<'a> {
+    tree: &'a Tree,
     wrap_width: usize,
 }
 
-impl<'a> Mover<'a> {
-    fn new(position: &Position, tree: &'a Node, wrap_width: usize) -> Mover<'a> {
-        Mover {
-            position: position.clone(),
-            nodes: position_to_nodes(tree, &position),
-            wrap_width,
-        }
-    }
-
-    /// Returns the current node, but if the current position is a WrappedLine, returns its parent (PaddedGroup).
-    fn last_node(&self) -> &'a Node {
-        self.nodes.last().unwrap()
-    }
-
-    /// Precondition: Current position is a visible leaf.
-    /// Moves to the next visible leaf in this direction. If there is none, moves to the root and returns false.
-    #[must_use]
-    fn go_next(&mut self, dir: Direction) -> bool {
-        assert!(self.position.len() != 0);
-        while self.position.len() != 0 {
-            let depth = self.position.len() - 1;
-            let original_child_index = self.position[depth];
-            match self.nodes[depth] {
-                Node::Branch(node) => {
-                    self.position.pop();
-                    self.nodes.pop();
-                    for candidate in either_iterator(
-                        dir == Next,
-                        original_child_index + 1..node.visible.end,
-                        (node.visible.start..original_child_index).rev(),
-                    ) {
-                        self.position.push(candidate);
-                        self.nodes.push(&node.children[candidate]);
-                        if self.go_boundary_leaf(dir) {
-                            return true;
-                        }
-                        self.nodes.pop();
-                        self.position.pop();
-                    }
+impl<'a> TreeView<'a> {
+    /// Returns the first/last visible leaf under `nid`, if it exists.
+    fn bordering_leaf_under(&self, nid: Nid, side: BorderSide) -> Option<LeafPosition> {
+        let node = self.tree.node(nid);
+        if let Node::Branch(_) = node {
+            let mut child_option_nid = self.tree.bordering_child(nid, side);
+            while let Some(child_nid) = child_option_nid {
+                if let Some(lp) = self.bordering_leaf_under(child_nid, side) {
+                    return Some(lp);
                 }
-                Node::PaddedGroup(node) => {
-                    let next_index = if dir == Next {
-                        original_child_index + 1
-                    } else {
-                        original_child_index.wrapping_sub(1)
-                    };
-                    if node.with_wrapped_lines(self.wrap_width, |lines| next_index < lines.len()) {
-                        self.position[depth] = next_index;
-                        return true;
-                    }
-                    self.position.pop();
-                }
-                Node::FileHeaderLine(_) | Node::ExpanderLine(_) => panic!("that node can't have children"),
+                let dir = match side {
+                    First => Next,
+                    Last => Prev,
+                };
+                child_option_nid = self.tree.sibling(child_nid, dir);
             }
-        }
-        false
-    }
-
-    /// Precondition: Current position is a visible leaf.
-    /// Moves in `direction` by `count`. If it reaches the first/last visible leaf of the tree, it stays there.
-    /// Returns how much we moved.
-    fn go_next_max(&mut self, count: usize, dir: Direction) -> usize {
-        assert!(self.position.len() != 0);
-        for i in 0..count {
-            if !self.go_next(dir) {
-                assert!(self.go_boundary_leaf(dir.opposite()));
-                return i;
-            }
-        }
-        count
-    }
-
-    /// Moves to the first (for Next) or last (for Prev) leaf which is a
-    /// descendant (or equal) of the current position.
-    /// If there is no visible leaf under this position, returns false and stays put.
-    #[must_use]
-    fn go_boundary_leaf(&mut self, dir: Direction) -> bool {
-        if self.position.len() == self.nodes.len() {
-            // We must be in a WrappedLine, which is a leaf.
-            return true;
-        }
-
-        let depth = self.position.len();
-        assert!(self.nodes.len() == depth + 1);
-        match self.nodes[depth] {
-            Node::Branch(node) => {
-                for i in either_iterator(dir == Next, node.visible.clone(), node.visible.clone().rev()) {
-                    self.position.push(i);
-                    self.nodes.push(&node.children[i]);
-                    if self.go_boundary_leaf(dir) {
-                        return true;
-                    }
-                    self.nodes.pop();
-                    self.position.pop();
-                }
-                false
-            }
-            Node::PaddedGroup(node) => node.with_wrapped_lines(self.wrap_width, |lines| {
+            None
+        } else {
+            node.with_ui_lines(self.wrap_width, |lines| {
                 if lines.is_empty() {
-                    false
+                    None
                 } else {
-                    self.position.push(if dir == Next { 0 } else { lines.len() - 1 });
-                    true
+                    Some(LeafPosition {
+                        parent: nid,
+                        line_index: match side {
+                            First => 0,
+                            Last => lines.len() - 1,
+                        },
+                    })
                 }
-            }),
-            Node::FileHeaderLine(_) | Node::ExpanderLine(_) => true,
+            })
         }
     }
-}
 
-fn position_to_nodes<'a>(tree: &'a Node, position: &Position) -> Vec<&'a Node> {
-    let mut out: Vec<&'a Node> = vec![tree];
-    for i in 0..position.len() {
-        match out[i] {
-            Node::Branch(node) => {
-                if let Some(child_node) = node.children.get(position[i]) {
-                    out.push(child_node);
+    /// Precondition: `leaf` is visible.
+    /// Returns the next visible leaf in this direction. If this is the first/last leaf, returns None.
+    fn next_leaf(&self, leaf: LeafPosition, dir: Direction) -> Option<LeafPosition> {
+        let next_line_index = match dir {
+            Next => leaf.line_index + 1,
+            Prev => leaf.line_index.wrapping_sub(1),
+        };
+        let parent = self.tree.node(leaf.parent);
+        if next_line_index < parent.with_ui_lines(self.wrap_width, |lines| lines.len()) {
+            return Some(LeafPosition {
+                parent: leaf.parent,
+                line_index: next_line_index,
+            });
+        }
+
+        // Loop invariant: We already tried everything under `nid`.
+        let mut nid = leaf.parent;
+        loop {
+            if let Some(sibling) = self.tree.sibling(nid, dir) {
+                let side = match dir {
+                    Next => First,
+                    Prev => Last,
+                };
+                if let Some(lp) = self.bordering_leaf_under(sibling, side) {
+                    return Some(lp);
                 } else {
-                    panic!("invalid position: out of bounds");
+                    nid = sibling;
+                }
+            } else {
+                if let Some(parent) = self.tree.parent(nid) {
+                    nid = parent;
+                } else {
+                    return None;
                 }
             }
-            Node::PaddedGroup(_) => {
-                if i != position.len() - 1 {
-                    panic!("invalid position: WrappedLine has no children");
-                }
-            }
-            Node::FileHeaderLine(_) | Node::ExpanderLine(_) => panic!("invalid position: leaf node has no children"),
         }
     }
-    out
-}
 
-fn find_node_mut<'a>(tree: &'a mut Node, branches: &[usize]) -> &'a mut Node {
-    let mut node = tree;
-    for &child_index in branches {
-        node = &mut node.as_branch_mut().children[child_index];
+    /// Precondition: `leaf` is visible.
+    /// Returns the next visible leaf moving in `direction` by `count`. If it reaches the
+    /// first/last visible leaf of the tree, it stays there.
+    /// Returns the new position and how much we moved.
+    fn next_leaves_max(&self, leaf: LeafPosition, offset: usize, dir: Direction) -> LeafPosition {
+        let mut leaf = leaf;
+        for i in 0..offset {
+            if let Some(next) = self.next_leaf(leaf, dir) {
+                leaf = next;
+            } else {
+                return leaf;
+            }
+        }
+        leaf
     }
-    node
+
+    /// Preconditions: `from` and `to` are visible. `from <= to` in tree order.
+    fn leaf_distance(&self, from: LeafPosition, to: LeafPosition) -> usize {
+        let mut from = from;
+        let mut result = 0;
+        while from != to {
+            from = self.next_leaf(from, Next).unwrap();
+            result += 1;
+        }
+        result
+    }
 }
 
 struct State {
-    tree: Node,
-    scroll_pos: Position,
-    cursor_pos: Position,
+    tree: Tree,
+    scroll_pos: LeafPosition,
+    cursor_pos: LeafPosition,
     wrap_width: usize,
     scroll_height: usize,
 }
 
-fn move_position(position: &mut Position, tree: &Node, wrap_width: usize, offset: usize, dir: Direction) {
-    let mut mover = Mover::new(position, tree, wrap_width);
-    mover.go_next_max(offset, dir);
-    *position = mover.position;
-}
-
 impl State {
+    fn tree_view<'a>(&'a self) -> TreeView<'a> {
+        TreeView {
+            tree: &self.tree,
+            wrap_width: self.wrap_width,
+        }
+    }
+
+    fn move_pos(&self, pos: LeafPosition, offset: usize, dir: Direction) -> LeafPosition {
+        self.tree_view().next_leaves_max(pos, offset, dir)
+    }
+
     fn scroll_by(&mut self, offset: usize, dir: Direction) {
-        move_position(&mut self.scroll_pos, &self.tree, self.wrap_width, offset, dir);
-        move_position(&mut self.cursor_pos, &self.tree, self.wrap_width, offset, dir);
+        self.scroll_pos = self.move_pos(self.scroll_pos, offset, dir);
+        self.cursor_pos = self.move_pos(self.cursor_pos, offset, dir);
         self.fix_scroll_invariants(false);
     }
 
     fn move_cursor_by(&mut self, offset: usize, dir: Direction) {
-        move_position(&mut self.cursor_pos, &self.tree, self.wrap_width, offset, dir);
+        self.cursor_pos = self.move_pos(self.cursor_pos, offset, dir);
         self.fix_scroll_invariants(true);
+    }
+
+    fn expand_expander(&mut self, expander: Nid, count: usize, dir: Direction) {
+        let hidden_count = match self.tree.node(expander) {
+            Node::ExpanderLine(hidden_count) => *hidden_count,
+            _ => return,
+        };
+        let cursor_distance = self.tree_view().leaf_distance(self.scroll_pos, self.cursor_pos);
+        if hidden_count >= count + 2 {
+            *self.tree.node_mut(expander) = Node::ExpanderLine(hidden_count - count);
+            let sibling_nid = self.tree.sibling(expander, dir).unwrap();
+            let sibling_node = self.tree.node_mut(sibling_nid).as_branch_mut();
+            match dir {
+                Prev => sibling_node.visible.end += count,
+                Next => sibling_node.visible.start -= count,
+            };
+        } else {
+            let sibling_nid = self.tree.sibling(expander, Next).unwrap();
+            let sibling_node = self.tree.node_mut(sibling_nid).as_branch_mut();
+            sibling_node.visible.start -= hidden_count;
+            let this_leaf = LeafPosition {
+                parent: expander,
+                line_index: 0,
+            };
+            let next_leaf = self.tree_view().next_leaf(this_leaf, Next).unwrap();
+            if self.scroll_pos == this_leaf {
+                self.scroll_pos = next_leaf;
+            }
+            if self.cursor_pos == this_leaf {
+                self.cursor_pos = next_leaf;
+            }
+            *self.tree.node_mut(expander) = Node::ExpanderLine(0);
+        }
+        self.scroll_pos = self.move_pos(self.cursor_pos, cursor_distance, Prev);
     }
 
     fn fix_scroll_invariants(&mut self, prefer_changing_scroll: bool) {
         // scroll_pos <= tree.end - (scroll_height-1)
         let top_bottom_dist = self.scroll_height - 1;
-        move_position(&mut self.scroll_pos, &self.tree, self.wrap_width, top_bottom_dist, Next);
-        let bottom_pos = self.scroll_pos.clone();
-        move_position(&mut self.scroll_pos, &self.tree, self.wrap_width, top_bottom_dist, Prev);
+        let bottom_pos = self.move_pos(self.scroll_pos, top_bottom_dist, Next);
+        self.scroll_pos = self.move_pos(bottom_pos, top_bottom_dist, Prev);
 
         // scroll_pos <= cursor_pos <= bottom_pos
-        if self.cursor_pos < self.scroll_pos {
+        if self.tree.compare_leaves(self.cursor_pos, self.scroll_pos) == Ordering::Less {
             if prefer_changing_scroll {
-                self.scroll_pos = self.cursor_pos.clone();
+                self.scroll_pos = self.cursor_pos;
             } else {
-                self.cursor_pos = self.scroll_pos.clone();
+                self.cursor_pos = self.scroll_pos;
             }
         }
-        if self.cursor_pos > bottom_pos {
+        if self.tree.compare_leaves(self.cursor_pos, bottom_pos) == Ordering::Greater {
             if prefer_changing_scroll {
-                self.scroll_pos = self.cursor_pos.clone();
-                move_position(&mut self.scroll_pos, &self.tree, self.wrap_width, top_bottom_dist, Prev);
+                self.scroll_pos = self.move_pos(self.cursor_pos, top_bottom_dist, Prev);
             } else {
                 self.cursor_pos = bottom_pos;
             }
@@ -525,18 +654,21 @@ where
     }
 }
 
+type TheTerminal = tui::terminal::Terminal<tui::backend::CrosstermBackend<io::Stdout>>;
+
 pub fn run_tui(diff: &Diff, terminal: &mut TheTerminal) -> TheResult {
     let mut size = terminal.size()?;
 
     let initial_tree = build_initial_tree(diff);
-    let initial_scroll = {
-        let mut mover = Mover::new(&vec![], &initial_tree, 80);
-        assert!(mover.go_boundary_leaf(Next));
-        mover.position
-    };
+    let initial_scroll = TreeView {
+        tree: &initial_tree,
+        wrap_width: 80,
+    }
+    .bordering_leaf_under(initial_tree.root, First)
+    .unwrap();
     let mut state = State {
         tree: initial_tree,
-        scroll_pos: initial_scroll.clone(),
+        scroll_pos: initial_scroll,
         cursor_pos: initial_scroll,
         wrap_width: 80,
         scroll_height: usize::try_from(size.height)?,
@@ -551,11 +683,9 @@ pub fn run_tui(diff: &Diff, terminal: &mut TheTerminal) -> TheResult {
                 // state.wrap_width = ...; state.scroll_height = ...;
             }
 
-            let mut mover = Mover::new(&state.scroll_pos, &state.tree, state.wrap_width);
+            let mut pos = state.scroll_pos;
             for y in 0..state.scroll_height {
-                let is_cursor = mover.position.len() == state.cursor_pos.len()
-                    && mover.position.iter().rev().eq(state.cursor_pos.iter().rev());
-                if is_cursor {
+                if pos == state.cursor_pos {
                     buffer.set_string(
                         0,
                         u16::try_from(y).unwrap(),
@@ -575,16 +705,19 @@ pub fn run_tui(diff: &Diff, terminal: &mut TheTerminal) -> TheResult {
                     }
                     style
                 }
-                match mover.last_node() {
-                    Node::Branch(_) => panic!("logic error: Position is a BranchNode"),
-                    Node::PaddedGroup(node) => node.with_wrapped_lines(state.wrap_width, |lines| {
-                        let line = &lines[*mover.position.last().unwrap()];
+                let parent_node = state.tree.node(pos.parent);
+                parent_node.with_ui_lines(state.wrap_width, |lines| match &lines[pos.line_index] {
+                    UILine::Sides(sides) => {
+                        let equal = match parent_node {
+                            Node::PaddedGroup(node) => node.equal,
+                            _ => panic!("wat"),
+                        };
                         for side in 0..2 {
-                            let spans = line[side]
+                            let spans = sides[side]
                                 .text_with_words
                                 .iter()
                                 .map(|(highlight, part)| {
-                                    tui::text::Span::styled(part, get_style(*highlight, side, node.equal))
+                                    tui::text::Span::styled(part, get_style(*highlight, side, equal))
                                 })
                                 .collect();
                             buffer.set_spans(
@@ -600,9 +733,11 @@ pub fn run_tui(diff: &Diff, terminal: &mut TheTerminal) -> TheResult {
                             tui::symbols::line::VERTICAL,
                             Default::default(),
                         );
-                    }),
-                    Node::FileHeaderLine(file_id) => {
-                        let is_open = match &mover.nodes[mover.nodes.len() - 2].as_branch().visible.end {
+                    }
+                    UILine::FileHeaderLine(file_id) => {
+                        let file_header_nid = pos.parent;
+                        let file_nid = state.tree.parent(file_header_nid).unwrap();
+                        let is_open = match state.tree.node(file_nid).as_branch().visible.end {
                             1 => false,
                             2 => true,
                             _ => panic!("unexpected node.visible of FileHeaderLine's parent"),
@@ -624,7 +759,7 @@ pub fn run_tui(diff: &Diff, terminal: &mut TheTerminal) -> TheResult {
                                 }),
                         );
                     }
-                    Node::ExpanderLine(hidden_count) => {
+                    UILine::ExpanderLine(hidden_count) => {
                         buffer.set_string(
                             1,
                             u16::try_from(y).unwrap(),
@@ -634,8 +769,10 @@ pub fn run_tui(diff: &Diff, terminal: &mut TheTerminal) -> TheResult {
                                 .bg(tui::style::Color::White),
                         );
                     }
-                }
-                if !mover.go_next(Next) {
+                });
+                if let Some(next) = state.tree_view().next_leaf(pos, Next) {
+                    pos = next;
+                } else {
                     break;
                 }
             }
@@ -656,58 +793,22 @@ pub fn run_tui(diff: &Diff, terminal: &mut TheTerminal) -> TheResult {
                     KeyCode::PageDown | KeyCode::Char(' ') => state.scroll_by(state.scroll_height, Next),
                     KeyCode::Char('w') | KeyCode::Char('k') => state.move_cursor_by(1, Prev),
                     KeyCode::Char('s') | KeyCode::Char('j') => state.move_cursor_by(1, Next),
+                    // TODO: temporary key assignment for 'z', 'x', 'c'
                     KeyCode::Char('z') => {
-                        // TODO: key assignment
-                        let nodes = position_to_nodes(&state.tree, &state.cursor_pos);
-                        if let Node::FileHeaderLine(_) = nodes.last().unwrap() {
-                            let file_node =
-                                find_node_mut(&mut state.tree, &state.cursor_pos[0..state.cursor_pos.len() - 1])
-                                    .as_branch_mut();
-                            file_node.visible.end = match file_node.visible.end {
+                        if let Node::FileHeaderLine(_) = state.tree.node(state.cursor_pos.parent) {
+                            let file_nid = state.tree.parent(state.cursor_pos.parent).unwrap();
+                            let file_branch_node = state.tree.node_mut(file_nid).as_branch_mut();
+                            file_branch_node.visible.end = match file_branch_node.visible.end {
                                 1 => 2,
                                 2 => 1,
-                                _ => panic!("logic error: bad file_node.visible.end"),
+                                _ => panic!("logic error: bad file_branch_node.visible.end"),
                             };
                             state.fix_scroll_invariants(false); // TODO: test this once we have multiple files
                         }
                     }
-                    KeyCode::Char('x') => {
-                        // TODO: key assignment
-                        let nodes = position_to_nodes(&state.tree, &state.cursor_pos);
-                        if let Node::ExpanderLine(hidden_count) = nodes.last().unwrap() {
-                            let hidden_count = *hidden_count; // TODO: rust syntax???
-                            if hidden_count >= 5 {
-                                // TODO: expand everything if <= 4
-                                let my_index = *state.cursor_pos.last().unwrap();
-                                let parent_node =
-                                    find_node_mut(&mut state.tree, &state.cursor_pos[0..state.cursor_pos.len() - 1])
-                                        .as_branch_mut();
-                                // TODO: configurable number of lines
-                                parent_node.children[my_index] = Node::ExpanderLine(hidden_count - 3);
-                                parent_node.children[my_index - 1].as_branch_mut().visible.end += 3;
-                                // TODO: adjust scroll_pos to keep cursor on the same level.
-                                // (for now we at least keep cursor in view)
-                                state.fix_scroll_invariants(true);
-                            }
-                        }
-                    }
-                    KeyCode::Char('c') => {
-                        // TODO: key assignment
-                        let nodes = position_to_nodes(&state.tree, &state.cursor_pos);
-                        if let Node::ExpanderLine(hidden_count) = nodes.last().unwrap() {
-                            let hidden_count = *hidden_count; // TODO: rust syntax???
-                            if hidden_count >= 5 {
-                                // TODO: expand everything if <= 4
-                                let my_index = *state.cursor_pos.last().unwrap();
-                                let parent_node =
-                                    find_node_mut(&mut state.tree, &state.cursor_pos[0..state.cursor_pos.len() - 1])
-                                        .as_branch_mut();
-                                // TODO: configurable number of lines
-                                parent_node.children[my_index] = Node::ExpanderLine(hidden_count - 3);
-                                parent_node.children[my_index + 1].as_branch_mut().visible.start -= 3;
-                            }
-                        }
-                    }
+                    // TODO: configurable number of lines
+                    KeyCode::Char('x') => state.expand_expander(state.cursor_pos.parent, 3, Prev),
+                    KeyCode::Char('c') => state.expand_expander(state.cursor_pos.parent, 3, Next),
                     _ => write!(terminal.backend_mut(), "\x07")?,
                 },
                 crossterm::event::Event::Mouse(e) => {
