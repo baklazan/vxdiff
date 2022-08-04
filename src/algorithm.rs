@@ -1,5 +1,7 @@
 mod dynamic_programming;
 mod scoring;
+mod seed_selection;
+
 #[cfg(test)]
 mod test;
 
@@ -162,13 +164,12 @@ fn get_partitioned_subtext<'a>(text: &PartitionedText<'a>, from_word: usize, to_
 pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
     let texts = [partition_into_words(old), partition_into_words(new)];
 
-    let scoring = AffineScoring::new(&texts);
-    let supersection_candidates =
-        supersection_candidates(texts[0].word_count(), texts[1].word_count(), &scoring, &scoring);
+    let supersection_candidates = supersection_candidates(&texts);
 
     let supersection_alignment = select_candidates(
         &supersection_candidates,
         [texts[0].word_count(), texts[1].word_count()],
+        AffineScoring::SUPERSECTION_THRESHOLD,
         AffineScoring::MOVED_SUPERSECTION_THRESHOLD,
     );
     let mut first_section_from_supersection: Vec<usize> = vec![];
@@ -419,6 +420,7 @@ struct SupersectionAlignment<'a> {
 fn select_candidates(
     original_candidates: &Vec<OriginalCandidate>,
     text_lengths: [usize; 2],
+    supersection_threshold: TScore,
     moved_threshold: TScore,
 ) -> SupersectionAlignment {
     #[derive(Clone, Copy, Eq, PartialEq)]
@@ -470,6 +472,9 @@ fn select_candidates(
         let current = *candidates_by_score.iter().next_back().unwrap();
         candidates_by_score.remove(&current);
         let current = current.candidate;
+        if current.score < supersection_threshold {
+            break;
+        }
         let start_indices = (current.starts[0], current.starts[1]);
         let match_before = matching_indices
             .range((std::ops::Bound::Unbounded, std::ops::Bound::Excluded(start_indices)))
