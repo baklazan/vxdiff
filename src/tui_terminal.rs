@@ -5,7 +5,6 @@ use std::cmp::Ordering;
 use std::error::Error;
 use std::io::{self, Write as _};
 use std::ops::{DerefMut as _, Range};
-use tui;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
@@ -219,7 +218,7 @@ impl Tree {
     // - fix `index_in_parent` in all next siblings
 }
 
-fn build_padded_group(sections: &Vec<Section>, ops: &[(DiffOp, usize)]) -> Node {
+fn build_padded_group(sections: &[Section], ops: &[(DiffOp, usize)]) -> Node {
     let mut equal = true;
     let mut lines = [vec![], vec![]];
     for &(op, section_id) in ops {
@@ -277,7 +276,7 @@ fn build_padded_group(sections: &Vec<Section>, ops: &[(DiffOp, usize)]) -> Node 
 }
 
 fn build_initial_tree(diff: &Diff) -> Tree {
-    fn same_section_group(sections: &Vec<Section>, a: (DiffOp, usize), b: (DiffOp, usize)) -> bool {
+    fn same_section_group(sections: &[Section], a: (DiffOp, usize), b: (DiffOp, usize)) -> bool {
         (a.0 == DiffOp::Match && b.0 == DiffOp::Match && sections[a.1].equal && sections[b.1].equal)
             || (a.0 != DiffOp::Match && b.0 != DiffOp::Match)
     }
@@ -529,7 +528,7 @@ impl<'a> TreeView<'a> {
     /// Returns the new position and how much we moved.
     fn next_leaves_max(&self, leaf: LeafPosition, offset: usize, dir: Direction) -> LeafPosition {
         let mut leaf = leaf;
-        for i in 0..offset {
+        for _ in 0..offset {
             if let Some(next) = self.next_leaf(leaf, dir) {
                 leaf = next;
             } else {
@@ -560,7 +559,7 @@ struct State {
 }
 
 impl State {
-    fn tree_view<'a>(&'a self) -> TreeView<'a> {
+    fn tree_view(&self) -> TreeView {
         TreeView {
             tree: &self.tree,
             wrap_width: self.wrap_width,

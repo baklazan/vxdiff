@@ -4,6 +4,7 @@ use std::process::exit;
 mod algorithm;
 mod basic_terminal;
 mod tui_terminal;
+mod validate;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().collect();
@@ -16,6 +17,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let new = &read_to_string(&args[3])?;
 
     let diff = algorithm::diff_file(old, new);
+
+    validate::print_errors(&validate::validate(&diff, &[[old, new]]));
 
     let mode = args[1].to_str().unwrap_or("???");
     match mode {
