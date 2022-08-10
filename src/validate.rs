@@ -30,13 +30,6 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
         }
     }
 
-    // Each FileDiff should contain nonzero DiffOps.
-    for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
-        if ops.is_empty() {
-            errors.push(format!("File {file_id} is empty"));
-        }
-    }
-
     // Each section_id should be used by at most 2 DiffOps: 1 on the left and 1 on the right.
     for section_id in 0..diff.sections.len() {
         for side in 0..2 {
