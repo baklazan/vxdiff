@@ -317,14 +317,81 @@ fn dump_as_pgm(matrix_subset: &MatrixSubset, sizes: [usize; 2], filename: &str) 
     }
 }
 
+pub fn filter_seeds(seeds: Vec<Seed>, information_values: &[Vec<TScore>; 2]) -> Vec<Seed> {
+    let mut prefix_information_values = vec![0.0];
+    let mut prefix_value = 0.0;
+    for value in information_values[0].iter() {
+        prefix_value += value;
+        prefix_information_values.push(prefix_value)
+    }
+    const SEED_INFORMATION_THRESHOLD: TScore = 20.0;
+    let mut best_visible: [Vec<Option<(TScore, usize)>>; 2] = [
+        vec![None; information_values[0].len()],
+        vec![None; information_values[1].len()],
+    ];
+
+    let mut new_seeds = vec![];
+    for seed in seeds {
+        let information_value = prefix_information_values[seed.end[0]] - prefix_information_values[seed.start[0]];
+        if information_value >= SEED_INFORMATION_THRESHOLD {
+            for old_index in seed.start[0]..seed.end[0] {
+                let new_index = seed.start[1] + old_index - seed.start[0];
+                let indices = [old_index, new_index];
+                for side in 0..2 {
+                    if best_visible[side][indices[side]].is_none()
+                        || best_visible[side][indices[side]].unwrap().0 < information_value
+                    {
+                        best_visible[side][indices[side]] = Some((information_value, new_seeds.len()));
+                    }
+                }
+            }
+            new_seeds.push(seed);
+        }
+    }
+    let seeds = new_seeds;
+
+    let mut shadow = [
+        vec![false; information_values[0].len()],
+        vec![false; information_values[1].len()],
+    ];
+    for old_index in 0..information_values[0].len() {
+        if best_visible[0][old_index].is_none() {
+            continue;
+        }
+        let seed_id = best_visible[0][old_index].unwrap().1;
+        let seed = &seeds[seed_id];
+        let new_index = old_index - seed.start[0] + seed.start[1];
+        if !best_visible[1][new_index].is_none() && best_visible[1][new_index].unwrap().1 == seed_id {
+            shadow[0][old_index] = true;
+            shadow[1][new_index] = true;
+        }
+    }
+
+    let mut new_seeds = vec![];
+    for (seed_id, seed) in seeds.into_iter().enumerate() {
+        for old_index in seed.start[0]..seed.end[0] {
+            let new_index = old_index - seed.start[0] + seed.start[1];
+            let shadowed_old = shadow[0][old_index] && best_visible[0][old_index].unwrap().1 != seed_id;
+            let shadowed_new = shadow[1][new_index] && best_visible[1][new_index].unwrap().1 != seed_id;
+            if !shadowed_old && !shadowed_new {
+                new_seeds.push(seed);
+                break;
+            }
+        }
+    }
+    new_seeds
+}
+
 pub fn supersection_candidates(texts: &[PartitionedText; 2]) -> Vec<OriginalCandidate> {
     let seeds = select_seeds(texts);
-    let sizes = [texts[0].word_count() + 1, texts[1].word_count() + 1];
-    let matrix_subset = union(covered_by_seeds(sizes, &seeds), seed_extensions(sizes, &seeds));
-
-    //dump_as_pgm(&matrix_subset, sizes, "subset.pgm");
 
     let scoring = AffineScoring::new(&texts);
+    let seeds = filter_seeds(seeds, &scoring.information_values);
+
+    let sizes = [texts[0].word_count() + 1, texts[1].word_count() + 1];
+    let matrix_subset = union(covered_by_seeds(sizes, &seeds), seed_extensions(sizes, &seeds));
+    //dump_as_pgm(&matrix_subset, sizes, "subset.pgm");
+
     candidates_dp(&matrix_subset, &scoring, &scoring)
 }
 
