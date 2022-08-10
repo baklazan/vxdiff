@@ -222,18 +222,12 @@ fn build_padded_group(sections: &[Section], ops: &[(DiffOp, usize)]) -> Node {
     let mut equal = true;
     let mut lines = [vec![], vec![]];
     for &(op, section_id) in ops {
-        // TODO: change movement() return type and make it public
-        let movement = match op {
-            DiffOp::Delete => [1, 0],
-            DiffOp::Insert => [0, 1],
-            DiffOp::Match => [1, 1],
-        };
         let section = &sections[section_id];
         // TODO: Add "moved to/from" info line.
         // - precompute file index & lineno for each section * side
         // - track local lineno to handle sequences of same moves
         for side in 0..2 {
-            if movement[side] == 0 {
+            if op.movement()[side] == 0 {
                 continue;
             }
             let mut current_line: Vec<(bool, String)> = vec![];

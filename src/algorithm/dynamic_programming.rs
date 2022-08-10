@@ -380,7 +380,7 @@ pub fn candidates_dp<AlignmentScoring: AlignmentScoringMethod, SupersectionScori
 
             for (op, iterator) in ops.iter().zip(neighbor_iterators.iter_mut()) {
                 let step = op.movement();
-                iterator.row_iterator.move_to_position(new_index + step.1);
+                iterator.row_iterator.move_to_position(new_index + step[1]);
             }
 
             for neighbor in neighbor_iterators.iter() {
@@ -415,7 +415,7 @@ pub fn candidates_dp<AlignmentScoring: AlignmentScoringMethod, SupersectionScori
                 match movement {
                     Some((op, next_substate)) => {
                         let step = op.movement();
-                        let index_after_step = &neighbor_iterators[step.0 * 2 + step.1 - 1];
+                        let index_after_step = &neighbor_iterators[step[0] * 2 + step[1] - 1];
                         let root = root_position[index_after_step][*next_substate];
                         root_position[&current_iterator][substate] = root;
                         if can_change_state {
@@ -460,8 +460,8 @@ pub fn candidates_dp<AlignmentScoring: AlignmentScoringMethod, SupersectionScori
             let (op, next_substate) = match_state[&current_index].substate_movements()[substate].unwrap();
             let old_score = match_state[&current_index].substate_scores()[substate];
             let step = op.movement();
-            old_index += step.0;
-            new_index += step.1;
+            old_index += step[0];
+            new_index += step[1];
             substate = next_substate;
             let current_index = MatrixIndex {
                 row_index: old_index,
@@ -469,10 +469,10 @@ pub fn candidates_dp<AlignmentScoring: AlignmentScoringMethod, SupersectionScori
             };
             let new_score = match_state[&current_index].substate_scores()[substate];
 
-            if step.0 == 1 {
+            if step[0] == 1 {
                 word_to_alignment[0].push(alignment.len());
             }
-            if step.1 == 1 {
+            if step[1] == 1 {
                 word_to_alignment[1].push(alignment.len());
             }
             prefix_scores.push(prefix_scores.last().unwrap() + old_score - new_score);

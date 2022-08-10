@@ -1,4 +1,4 @@
-use super::algorithm::{Diff, DiffOp, FileDiff};
+use super::algorithm::{Diff, FileDiff};
 
 pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
     let mut errors = vec![];
@@ -13,14 +13,11 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
     for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
         let mut last = [None; 2];
         for (op_index, &(op, section_id)) in ops.iter().enumerate() {
-            // TODO: movement()
-            if op != DiffOp::Insert {
-                used[section_id][0].push(format!("{op:?} in file #{file_id} at op index #{op_index}"));
-                last[0] = Some(section_id);
-            }
-            if op != DiffOp::Delete {
-                used[section_id][1].push(format!("{op:?} in file #{file_id} at op index #{op_index}"));
-                last[1] = Some(section_id);
+            for side in 0..2 {
+                if op.movement()[side] != 0 {
+                    used[section_id][side].push(format!("{op:?} in file #{file_id} at op index #{op_index}"));
+                    last[side] = Some(section_id);
+                }
             }
         }
         for side in 0..2 {
@@ -182,8 +179,7 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
             let check_input = || {
                 let mut cursor = 0;
                 for &(op, section_id) in ops {
-                    // TODO: movement()
-                    if (op == DiffOp::Insert && side == 0) || (op == DiffOp::Delete && side == 1) {
+                    if op.movement()[side] == 0 {
                         continue;
                     }
                     for &(_, part) in &diff.sections[section_id].sides[side].text_with_words {

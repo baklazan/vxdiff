@@ -280,11 +280,11 @@ pub enum DiffOp {
 }
 
 impl DiffOp {
-    fn movement(&self) -> (usize, usize) {
+    pub fn movement(&self) -> [usize; 2] {
         match self {
-            DiffOp::Delete => (1, 0),
-            DiffOp::Insert => (0, 1),
-            DiffOp::Match => (1, 1),
+            DiffOp::Delete => [1, 0],
+            DiffOp::Insert => [0, 1],
+            DiffOp::Match => [1, 1],
         }
     }
 }
