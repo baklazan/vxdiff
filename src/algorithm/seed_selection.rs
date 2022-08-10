@@ -45,7 +45,7 @@ fn k_word_hashes(text: &PartitionedText, k: usize, f: &HashFunctionParams) -> Ve
 }
 
 pub fn select_seeds(texts: &[PartitionedText; 2]) -> Vec<Seed> {
-    const K: usize = 20;
+    const K: usize = 10;
     const MOD_P: u64 = 1000000009;
     let mut rng = rand::thread_rng();
     let factor = rng.gen_range(1..MOD_P);

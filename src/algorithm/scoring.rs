@@ -150,15 +150,15 @@ impl AlignmentScoringMethod for SimpleScoring {
 
 pub struct AffineScoring {
     symbols: [Vec<string_interner::symbol::SymbolU32>; 2],
-    information_values: [Vec<TScore>; 2],
+    pub information_values: [Vec<TScore>; 2],
     is_white: [Vec<bool>; 2],
     line_splits_before: [Vec<bool>; 2],
     bound_score: [Vec<TScore>; 2],
 }
 
 impl AffineScoring {
-    const P_END_GAP: f64 = 0.2;
-    const P_START_GAP: f64 = 0.01;
+    const P_END_GAP: f64 = 0.3;
+    const P_START_GAP: f64 = 0.05;
     const NEWLINE_STATE_CHANGE_COEF: f64 = 1.1;
     const P_END_WHITE_GAP: f64 = 0.4;
     const P_START_WHITE_GAP: f64 = 0.2;
