@@ -1,4 +1,5 @@
 use super::seed_selection::*;
+use super::PartitionedText;
 
 use super::scoring::*;
 use super::*;
@@ -13,6 +14,13 @@ pub struct OriginalCandidate {
     pub prefix_scores: Vec<TScore>,
     pub word_to_alignment: [Vec<usize>; 2], // words map to alignment steps
     pub alignment_to_word: [Vec<usize>; 2], // points between alignment steps map to points between words
+}
+
+fn clamp_interval(interval: (usize, usize), bounds: (usize, usize)) -> (usize, usize) {
+    (
+        interval.0.clamp(bounds.0, bounds.1),
+        interval.1.clamp(bounds.0, bounds.1),
+    )
 }
 
 impl OriginalCandidate {
@@ -382,7 +390,7 @@ pub fn filter_seeds(seeds: Vec<Seed>, information_values: &[Vec<TScore>; 2]) -> 
     new_seeds
 }
 
-pub fn supersection_candidates(texts: &[PartitionedText; 2]) -> Vec<OriginalCandidate> {
+pub fn candidate_fragments(texts: &[PartitionedText; 2]) -> Vec<OriginalCandidate> {
     let seeds = select_seeds(texts);
 
     let scoring = AffineScoring::new(&texts);
