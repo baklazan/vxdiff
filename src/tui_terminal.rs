@@ -345,19 +345,21 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
                 for i in begin..end {
                     padded_groups.push(build_padded_group(diff.sections, &ops[i..i + 1]));
                 }
-                // TODO: One-sided expansion and context at beginning/end of file.
 
                 let context = 3; // TODO configurable
-                if length > 2 * context + 1 {
+                let context_before = if begin == 0 { 0 } else { context };
+                let context_after = if end == ops.len() { 0 } else { context };
+                if length > context_before + context_after + 1 {
                     let upper_nid = tree.add_child(file_content_nid, Node::new_branch());
                     tree.add_children(upper_nid, padded_groups.clone());
-                    tree.node_mut(upper_nid).as_branch_mut().visible = 0..context;
+                    tree.node_mut(upper_nid).as_branch_mut().visible = 0..context_before;
 
-                    tree.add_child(file_content_nid, Node::ExpanderLine(length - 2 * context));
+                    let hidden_count = length - context_before - context_after;
+                    tree.add_child(file_content_nid, Node::ExpanderLine(hidden_count));
 
                     let lower_nid = tree.add_child(file_content_nid, Node::new_branch());
                     tree.add_children(lower_nid, padded_groups);
-                    tree.node_mut(lower_nid).as_branch_mut().visible = (length - context)..length;
+                    tree.node_mut(lower_nid).as_branch_mut().visible = (length - context_after)..length;
                 } else {
                     tree.add_children(file_content_nid, padded_groups);
                 }
@@ -1042,6 +1044,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                         }
                     }
                     // TODO: configurable number of lines
+                    // TODO: if at beginning xor end (zero context lines on one side), don't show that button
                     KeyCode::Char('x') => state.expand_expander(state.cursor_pos.parent, 3, Prev),
                     KeyCode::Char('c') => state.expand_expander(state.cursor_pos.parent, 3, Next),
                     _ => write!(terminal.backend_mut(), "\x07")?,

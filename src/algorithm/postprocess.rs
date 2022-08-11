@@ -1,5 +1,3 @@
-use tui::text;
-
 use super::{AlignedFragment, Diff, DiffOp, FileDiff, PartitionedText, Section, SectionSide};
 
 fn highlighted_subsegments<'a>(
