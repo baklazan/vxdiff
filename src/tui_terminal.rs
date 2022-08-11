@@ -5,6 +5,85 @@ use std::cmp::Ordering;
 use std::error::Error;
 use std::io::{self, Write as _};
 use std::ops::{DerefMut as _, Range};
+use unicode_segmentation::UnicodeSegmentation as _;
+use unicode_width::UnicodeWidthStr as _;
+
+struct ExtendedDiffSectionSide {
+    file_id: usize,
+    byte_range: Range<usize>,
+    // TODO: If this encoding works out in practice, replace text_with_words in Diff with this.
+    highlight_points: Vec<(usize, bool)>,
+}
+
+struct ExtendedDiffFileSide<'a> {
+    filename: String,
+    content: &'a str,
+    line_offsets: Vec<usize>,
+}
+
+impl<'a> ExtendedDiffFileSide<'a> {
+    fn byte_offset_to_line_number(&self, offset: usize) -> usize {
+        if offset == 0 {
+            // binary_search() does not guarantee which exact match is returned.
+            1
+        } else {
+            self.line_offsets.binary_search(&offset).unwrap_or_else(|i| i - 1)
+        }
+    }
+}
+
+struct ExtendedDiff<'a> {
+    section_sides: Vec<[Option<ExtendedDiffSectionSide>; 2]>,
+    file_sides: Vec<[ExtendedDiffFileSide<'a>; 2]>,
+    sections: &'a [Section<'a>],
+    files: &'a [FileDiff],
+}
+
+fn make_extended_diff<'a>(diff: &'a Diff, file_input: &'a [[&'a str; 2]]) -> ExtendedDiff<'a> {
+    let mut extended_diff = ExtendedDiff {
+        section_sides: (0..diff.sections.len()).map(|_| [None, None]).collect(),
+        file_sides: (0..diff.files.len())
+            .map(|file_id| {
+                [0, 1].map(|side| ExtendedDiffFileSide {
+                    filename: String::from("input.txt"),
+                    content: file_input[file_id][side],
+                    line_offsets: vec![0, 0],
+                })
+            })
+            .collect(),
+        sections: &diff.sections,
+        files: &diff.files,
+    };
+
+    for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
+        for side in 0..2 {
+            let mut offset = 0;
+            for &(op, section_id) in ops {
+                if op.movement()[side] == 0 {
+                    continue;
+                }
+                let offset_start = offset;
+                let mut highlight_points = vec![];
+                for &(highlight, text) in &diff.sections[section_id].sides[side].text_with_words {
+                    highlight_points.push((offset, highlight));
+                    for ch in text.bytes() {
+                        offset += 1;
+                        if ch == b'\n' {
+                            extended_diff.file_sides[file_id][side].line_offsets.push(offset);
+                        }
+                    }
+                }
+                extended_diff.section_sides[section_id][side] = Some(ExtendedDiffSectionSide {
+                    file_id,
+                    byte_range: offset_start..offset,
+                    highlight_points,
+                });
+            }
+        }
+    }
+
+    extended_diff
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
@@ -23,17 +102,9 @@ enum BorderSide {
 use BorderSide::{First, Last};
 
 #[derive(Clone)]
-struct HalfLine {
-    // TODO: line_number
-    text_with_words: Vec<(bool, String)>, // TODO: byte offset info and proper lifetime
-    newline_highlight: bool,
-}
-
-#[derive(Clone, Default)]
-struct WrappedHalfLine {
-    // TODO: line_number
-    text_with_words: Vec<(bool, String)>, // TODO: byte offset info and proper lifetime
-    newline_highlight: bool,
+enum WrappedHalfLine {
+    FromInput { section_id: usize, offset: usize },
+    Fabricated { content: String },
 }
 
 #[derive(Clone)]
@@ -61,7 +132,7 @@ struct BranchNode {
 #[derive(Clone)]
 struct PaddedGroupNode {
     equal: bool,
-    original: [Vec<HalfLine>; 2],
+    relevant_ops: [Vec<(DiffOp, usize)>; 2],
     cached_wrap: RefCell<Option<(usize, Vec<UILine>)>>,
 }
 
@@ -220,56 +291,25 @@ impl Tree {
 
 fn build_padded_group(sections: &[Section], ops: &[(DiffOp, usize)]) -> Node {
     let mut equal = true;
-    let mut lines = [vec![], vec![]];
+    let mut relevant_ops = [vec![], vec![]];
     for &(op, section_id) in ops {
-        let section = &sections[section_id];
-        // TODO: Add "moved to/from" info line.
-        // - precompute file index & lineno for each section * side
-        // - track local lineno to handle sequences of same moves
         for side in 0..2 {
-            if op.movement()[side] == 0 {
-                continue;
-            }
-            let mut current_line: Vec<(bool, String)> = vec![];
-            for &(highlight, text) in &section.sides[side].text_with_words {
-                for part_with_eol in text.split_inclusive('\n') {
-                    let (part, eol) = match part_with_eol.strip_suffix('\n') {
-                        Some(part) => (part, true),
-                        None => (part_with_eol, false),
-                    };
-                    current_line.push((highlight, part.to_string()));
-                    if eol {
-                        lines[side].push(HalfLine {
-                            text_with_words: current_line,
-                            newline_highlight: highlight,
-                        });
-                        current_line = vec![];
-                    }
-                }
-            }
-            if !current_line.is_empty() {
-                lines[side].push(HalfLine {
-                    text_with_words: current_line,
-                    newline_highlight: false,
-                });
-                lines[side].push(HalfLine {
-                    text_with_words: vec![(false, "No newline at end of file".to_string())],
-                    newline_highlight: false,
-                });
+            if op.movement()[side] != 0 {
+                relevant_ops[side].push((op, section_id));
             }
         }
-        if op != DiffOp::Match || !section.equal {
+        if op != DiffOp::Match || !sections[section_id].equal {
             equal = false;
         }
     }
     Node::PaddedGroup(PaddedGroupNode {
         equal,
-        original: lines,
+        relevant_ops,
         cached_wrap: RefCell::new(None),
     })
 }
 
-fn build_initial_tree(diff: &Diff) -> Tree {
+fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
     fn same_section_group(sections: &[Section], a: (DiffOp, usize), b: (DiffOp, usize)) -> bool {
         (a.0 == DiffOp::Match && b.0 == DiffOp::Match && sections[a.1].equal && sections[b.1].equal)
             || (a.0 != DiffOp::Match && b.0 != DiffOp::Match)
@@ -287,7 +327,7 @@ fn build_initial_tree(diff: &Diff) -> Tree {
         while op_index < ops.len() {
             let begin = op_index;
             let mut end = begin + 1;
-            while end < ops.len() && same_section_group(&diff.sections, ops[begin], ops[end]) {
+            while end < ops.len() && same_section_group(diff.sections, ops[begin], ops[end]) {
                 end += 1;
             }
             op_index = end;
@@ -303,7 +343,7 @@ fn build_initial_tree(diff: &Diff) -> Tree {
                 let length = end - begin;
                 let mut padded_groups = vec![];
                 for i in begin..end {
-                    padded_groups.push(build_padded_group(&diff.sections, &ops[i..i + 1]));
+                    padded_groups.push(build_padded_group(diff.sections, &ops[i..i + 1]));
                 }
                 // TODO: One-sided expansion and context at beginning/end of file.
 
@@ -322,7 +362,7 @@ fn build_initial_tree(diff: &Diff) -> Tree {
                     tree.add_children(file_content_nid, padded_groups);
                 }
             } else {
-                tree.add_child(file_content_nid, build_padded_group(&diff.sections, &ops[begin..end]));
+                tree.add_child(file_content_nid, build_padded_group(diff.sections, &ops[begin..end]));
             }
         }
     }
@@ -330,34 +370,166 @@ fn build_initial_tree(diff: &Diff) -> Tree {
     tree
 }
 
-fn wrap_one_side(lines: &Vec<HalfLine>, wrap_width: usize) -> Vec<WrappedHalfLine> {
-    // TODO: actually wrap
-    let mut out: Vec<WrappedHalfLine> = vec![];
-    for halfline in lines {
-        out.push(WrappedHalfLine {
-            text_with_words: halfline.text_with_words.clone(),
-            newline_highlight: halfline.newline_highlight,
+struct LineCell {
+    egc: String,
+    offset: usize,
+    highlight: bool,
+    fabricated: bool,
+}
+
+struct LineLayout {
+    cells: Vec<LineCell>,
+    newline_highlight: bool,
+}
+
+fn layout_one_line(
+    input: &str,
+    mut highlight_points: &[(usize, bool)],
+    mut offset: usize,
+    end: usize,
+    wrap_width: usize,
+) -> (LineLayout, usize, bool) {
+    let mut cells = vec![];
+
+    let highlight_points_index = highlight_points.partition_point(|&(point, _)| point <= offset);
+    assert!(highlight_points_index > 0);
+    let mut highlight = highlight_points[highlight_points_index - 1].1;
+    highlight_points = &highlight_points[highlight_points_index..];
+
+    for egc in input[offset..end].graphemes(true) {
+        if !highlight_points.is_empty() && offset == highlight_points[0].0 {
+            highlight = highlight_points[0].1;
+            highlight_points = &highlight_points[1..];
+        }
+
+        if egc == "\n" {
+            return (
+                LineLayout {
+                    cells,
+                    newline_highlight: highlight,
+                },
+                offset + egc.len(),
+                true,
+            );
+        }
+
+        assert!(!egc.contains('\n'));
+
+        // TODO: handle "\t", "\r" etc.
+
+        let egc_width = egc.width();
+        assert!(egc_width == 1 || egc_width == 2, "egc_width was {egc_width}");
+
+        if cells.len() + egc_width > wrap_width {
+            return (
+                LineLayout {
+                    cells,
+                    newline_highlight: highlight,
+                },
+                offset,
+                false,
+            );
+        }
+
+        cells.push(LineCell {
+            egc: egc.to_string(),
+            offset,
+            highlight,
+            fabricated: false,
         });
+
+        for _ in 1..egc_width {
+            cells.push(LineCell {
+                egc: String::new(),
+                offset,
+                highlight,
+                fabricated: false,
+            });
+        }
+
+        offset += egc.len();
+    }
+
+    (
+        LineLayout {
+            cells,
+            newline_highlight: highlight,
+        },
+        offset,
+        false,
+    )
+}
+
+fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_width: usize) -> Vec<WrappedHalfLine> {
+    fn fabricate(out: &mut Vec<WrappedHalfLine>, content: String) {
+        // TODO: wrap fabricated lines too
+        out.push(WrappedHalfLine::Fabricated { content });
+    }
+
+    let mut out: Vec<WrappedHalfLine> = vec![];
+    let mut last_move: Option<(DiffOp, usize)> = None;
+    for &(op, section_id) in &node.relevant_ops[side] {
+        let section_side = diff.section_sides[section_id][side].as_ref().unwrap();
+
+        if op != DiffOp::Match {
+            if let Some(section_other_side) = &diff.section_sides[section_id][1 - side] {
+                let Range { start, end } = section_other_side.byte_range;
+                let file_other_side = &diff.file_sides[section_other_side.file_id][1 - side];
+                if last_move != Some((op, start)) {
+                    let direction = if op == DiffOp::Insert { "Moved from" } else { "Moved to" };
+                    let filename = &file_other_side.filename;
+                    let line_number = file_other_side.byte_offset_to_line_number(start);
+                    fabricate(&mut out, format!("{direction} {filename}:{line_number}"));
+                }
+                last_move = Some((op, end));
+            } else {
+                last_move = None;
+            }
+        } else {
+            last_move = None;
+        }
+
+        let mut offset = section_side.byte_range.start;
+        let mut ends_with_newline = true;
+        while offset != section_side.byte_range.end {
+            out.push(WrappedHalfLine::FromInput { section_id, offset });
+            (_, offset, ends_with_newline) = layout_one_line(
+                diff.file_sides[section_side.file_id][side].content,
+                &section_side.highlight_points,
+                offset,
+                section_side.byte_range.end,
+                wrap_width,
+            );
+        }
+
+        if !ends_with_newline {
+            fabricate(&mut out, format!("No newline at end of file"));
+        }
     }
     out
 }
 
-impl Node {
-    /// Calls func with this node's current UILine list, recomputing it if needed.
-    /// Panics if self is a branch node.
+struct TreeView<'a> {
+    diff: &'a ExtendedDiff<'a>,
+    tree: &'a Tree,
+    wrap_width: usize,
+}
+
+impl<'a> TreeView<'a> {
+    /// Calls func with node's current UILine list, recomputing it if needed.
+    /// Panics if node is a branch node.
     /// Don't call with_ui_lines recursively (from inside func).
-    fn with_ui_lines<Ret>(&self, wrap_width: usize, func: impl FnOnce(&[UILine]) -> Ret) -> Ret {
-        match self {
+    fn with_ui_lines<Ret>(&self, node: &Node, func: impl FnOnce(&[UILine]) -> Ret) -> Ret {
+        match node {
             Node::Branch(_) => panic!("unexpected Branch node"),
             Node::PaddedGroup(node) => match node.cached_wrap.borrow_mut().deref_mut() {
-                Some((w, l)) if *w == wrap_width => func(l),
+                Some((w, l)) if *w == self.wrap_width => func(l),
                 cached_wrap => {
-                    let padding = WrappedHalfLine {
-                        // TODO: temporary padding indicators
-                        text_with_words: vec![(false, "@".to_string())],
-                        newline_highlight: false,
+                    // TODO: temporary padding indicators
+                    let padding = WrappedHalfLine::Fabricated {
+                        content: "@".to_string(),
                     };
-                    let wrapped_sides = [0, 1].map(|side| wrap_one_side(&node.original[side], wrap_width));
+                    let wrapped_sides = [0, 1].map(|side| wrap_one_side(self.diff, &node, side, self.wrap_width));
                     let len = std::cmp::max(wrapped_sides[0].len(), wrapped_sides[1].len());
                     let padded_wrapped_sides =
                         wrapped_sides.map(|side| side.into_iter().chain(std::iter::repeat(padding.clone())));
@@ -367,7 +539,7 @@ impl Node {
                         .take(len)
                         .collect();
                     let result = func(&lines);
-                    *cached_wrap = Some((wrap_width, lines));
+                    *cached_wrap = Some((self.wrap_width, lines));
                     result
                 }
             },
@@ -376,75 +548,26 @@ impl Node {
             Node::ExpanderLine(hidden_count) => func(&[UILine::ExpanderLine(*hidden_count)]),
         }
     }
-}
 
-type TheResult = Result<(), Box<dyn Error>>;
-
-fn print_plainly(tree: &Tree, nid: Nid, wrap_width: usize, output: &mut impl io::Write) -> TheResult {
-    let node = tree.node(nid);
-    if let Node::Branch(node) = node {
-        // clone() explanation: https://stackoverflow.com/q/63685464
-        for i in node.visible.clone() {
-            print_plainly(tree, node.children[i], wrap_width, output)?;
-        }
-        return Ok(());
-    }
-    node.with_ui_lines(wrap_width, |lines| -> TheResult {
-        for line in lines {
-            match line {
-                UILine::Sides(sides) => {
-                    let render_half = |whl: &WrappedHalfLine| -> String {
-                        let mut res = String::new();
-                        let mut length = 0;
-                        for (highlight, part) in &whl.text_with_words {
-                            if *highlight {
-                                res.push_str("\x1b[1m");
-                            }
-                            res.push_str(part);
-                            if *highlight {
-                                res.push_str("\x1b[0m");
-                            }
-                            length += part.len();
-                        }
-                        res.push_str(&" ".repeat(wrap_width - length));
-                        res
-                    };
-                    writeln!(output, "{} | {}", render_half(&sides[0]), render_half(&sides[1]))?;
-                }
-                UILine::FileHeaderLine(file_id) => {
-                    writeln!(output, "file #{}", file_id)?;
-                }
-                UILine::ExpanderLine(hidden_count) => {
-                    writeln!(output, "...{} hidden lines...", hidden_count)?;
-                }
+    fn get_wrapped_half_line_layout(&self, whl: &WrappedHalfLine, side: usize) -> LineLayout {
+        match whl {
+            &WrappedHalfLine::FromInput { section_id, offset } => {
+                let section_side = self.diff.section_sides[section_id][side].as_ref().unwrap();
+                layout_one_line(
+                    self.diff.file_sides[section_side.file_id][side].content,
+                    &section_side.highlight_points,
+                    offset,
+                    section_side.byte_range.end,
+                    self.wrap_width,
+                )
+            }
+            WrappedHalfLine::Fabricated { content } => {
+                layout_one_line(content, &[(0, false)], 0, content.len(), self.wrap_width)
             }
         }
-        Ok(())
-    })
-}
-
-pub fn print_side_by_side_diff_plainly(diff: &Diff, output: &mut impl io::Write) -> TheResult {
-    let mut tree = build_initial_tree(diff);
-
-    // Gotta expand the file headers in order to see any content.
-    let mut child_option_nid = tree.bordering_child(tree.root, First);
-    while let Some(child_nid) = child_option_nid {
-        let child_branch_node = tree.node_mut(child_nid).as_branch_mut();
-        assert!(child_branch_node.visible == (0..1));
-        assert!(child_branch_node.children.len() == 2);
-        child_branch_node.visible = 0..2;
-        child_option_nid = tree.sibling(child_nid, Next);
+        .0
     }
 
-    print_plainly(&tree, tree.root, 80, output)
-}
-
-struct TreeView<'a> {
-    tree: &'a Tree,
-    wrap_width: usize,
-}
-
-impl<'a> TreeView<'a> {
     /// Returns the first/last visible leaf under `nid`, if it exists.
     fn bordering_leaf_under(&self, nid: Nid, side: BorderSide) -> Option<LeafPosition> {
         let node = self.tree.node(nid);
@@ -462,7 +585,7 @@ impl<'a> TreeView<'a> {
             }
             None
         } else {
-            node.with_ui_lines(self.wrap_width, |lines| {
+            self.with_ui_lines(node, |lines| {
                 if lines.is_empty() {
                     None
                 } else {
@@ -486,7 +609,7 @@ impl<'a> TreeView<'a> {
             Prev => leaf.line_index.wrapping_sub(1),
         };
         let parent = self.tree.node(leaf.parent);
-        if next_line_index < parent.with_ui_lines(self.wrap_width, |lines| lines.len()) {
+        if next_line_index < self.with_ui_lines(parent, |lines| lines.len()) {
             return Some(LeafPosition {
                 parent: leaf.parent,
                 line_index: next_line_index,
@@ -544,18 +667,89 @@ impl<'a> TreeView<'a> {
     }
 }
 
-struct State {
+type TheResult = Result<(), Box<dyn Error>>;
+
+fn print_plainly(tree_view: &TreeView, nid: Nid, output: &mut impl io::Write) -> TheResult {
+    let node = tree_view.tree.node(nid);
+    if let Node::Branch(node) = node {
+        // clone() explanation: https://stackoverflow.com/q/63685464
+        for i in node.visible.clone() {
+            print_plainly(tree_view, node.children[i], output)?;
+        }
+        return Ok(());
+    }
+    tree_view.with_ui_lines(node, |lines| -> TheResult {
+        for line in lines {
+            match line {
+                UILine::Sides(sides) => {
+                    let render_half = |side: usize| -> String {
+                        let layout = tree_view.get_wrapped_half_line_layout(&sides[side], side);
+                        fn show_cell(cell: &LineCell) -> String {
+                            format!(
+                                "{}{}{}",
+                                if cell.highlight { "\x1b[1m" } else { "" },
+                                cell.egc,
+                                if cell.highlight { "\x1b[0m" } else { "" }
+                            )
+                        }
+                        layout.cells.iter().map(show_cell).collect::<String>()
+                            + &" ".repeat(tree_view.wrap_width - layout.cells.len())
+                    };
+                    writeln!(output, "{} | {}", render_half(0), render_half(1))?;
+                }
+                UILine::FileHeaderLine(file_id) => {
+                    writeln!(output, "file #{}", file_id)?;
+                }
+                UILine::ExpanderLine(hidden_count) => {
+                    writeln!(output, "...{} hidden lines...", hidden_count)?;
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+pub fn print_side_by_side_diff_plainly(
+    diff: &Diff,
+    file_input: &[[&str; 2]],
+    output: &mut impl io::Write,
+) -> TheResult {
+    let diff = make_extended_diff(diff, file_input);
+    let mut tree = build_initial_tree(&diff);
+
+    // Gotta expand the file headers in order to see any content.
+    let mut child_option_nid = tree.bordering_child(tree.root, First);
+    while let Some(child_nid) = child_option_nid {
+        let child_branch_node = tree.node_mut(child_nid).as_branch_mut();
+        assert!(child_branch_node.visible == (0..1));
+        assert!(child_branch_node.children.len() == 2);
+        child_branch_node.visible = 0..2;
+        child_option_nid = tree.sibling(child_nid, Next);
+    }
+
+    let tree_view = TreeView {
+        tree: &tree,
+        diff: &diff,
+        wrap_width: 80,
+    };
+
+    print_plainly(&tree_view, tree.root, output)
+}
+
+struct State<'a> {
     tree: Tree,
+    diff: &'a ExtendedDiff<'a>,
     scroll_pos: LeafPosition,
     cursor_pos: LeafPosition,
     wrap_width: usize,
     scroll_height: usize,
 }
 
-impl State {
+impl<'a> State<'a> {
     fn tree_view(&self) -> TreeView {
         TreeView {
             tree: &self.tree,
+            diff: self.diff,
             wrap_width: self.wrap_width,
         }
     }
@@ -649,18 +843,21 @@ where
 
 type TheTerminal = tui::terminal::Terminal<tui::backend::CrosstermBackend<io::Stdout>>;
 
-pub fn run_tui(diff: &Diff, terminal: &mut TheTerminal) -> TheResult {
+pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal) -> TheResult {
     let mut size = terminal.size()?;
 
-    let initial_tree = build_initial_tree(diff);
+    let diff = make_extended_diff(diff, file_input);
+    let initial_tree = build_initial_tree(&diff);
     let initial_scroll = TreeView {
         tree: &initial_tree,
+        diff: &diff,
         wrap_width: 80,
     }
     .bordering_leaf_under(initial_tree.root, First)
     .unwrap();
     let mut state = State {
         tree: initial_tree,
+        diff: &diff,
         scroll_pos: initial_scroll,
         cursor_pos: initial_scroll,
         wrap_width: 80,
@@ -688,37 +885,37 @@ pub fn run_tui(diff: &Diff, terminal: &mut TheTerminal) -> TheResult {
                             .bg(tui::style::Color::Blue),
                     );
                 }
-                fn get_style(highlight: bool, side: usize, equal: bool) -> tui::style::Style {
-                    let mut style = tui::style::Style::default();
-                    if highlight {
-                        style = style.add_modifier(tui::style::Modifier::BOLD | tui::style::Modifier::UNDERLINED);
-                    }
-                    if !equal {
-                        style = style.fg([tui::style::Color::Red, tui::style::Color::Green][side]);
-                    }
-                    style
-                }
                 let parent_node = state.tree.node(pos.parent);
-                parent_node.with_ui_lines(state.wrap_width, |lines| match &lines[pos.line_index] {
+                let tree_view = state.tree_view();
+                tree_view.with_ui_lines(parent_node, |lines| match &lines[pos.line_index] {
                     UILine::Sides(sides) => {
                         let equal = match parent_node {
                             Node::PaddedGroup(node) => node.equal,
                             _ => panic!("wat"),
                         };
                         for side in 0..2 {
-                            let spans = sides[side]
-                                .text_with_words
-                                .iter()
-                                .map(|(highlight, part)| {
-                                    tui::text::Span::styled(part, get_style(*highlight, side, equal))
-                                })
-                                .collect();
-                            buffer.set_spans(
-                                u16::try_from(1 + side * (state.wrap_width + 3)).unwrap(),
-                                u16::try_from(y).unwrap(),
-                                &tui::text::Spans(spans),
-                                u16::try_from(state.wrap_width).unwrap(),
-                            );
+                            let layout = tree_view.get_wrapped_half_line_layout(&sides[side], side);
+                            for (x, LineCell { egc, highlight, .. }) in layout.cells.into_iter().enumerate() {
+                                let x = 1 + side * (state.wrap_width + 3) + x;
+                                let x = u16::try_from(x).unwrap();
+                                let y = u16::try_from(y).unwrap();
+                                *buffer.get_mut(x, y) = tui::buffer::Cell {
+                                    symbol: if egc.is_empty() { " ".to_string() } else { egc },
+                                    fg: if equal {
+                                        tui::style::Color::Reset
+                                    } else if side == 0 {
+                                        tui::style::Color::Red
+                                    } else {
+                                        tui::style::Color::Green
+                                    },
+                                    bg: tui::style::Color::Reset,
+                                    modifier: if highlight {
+                                        tui::style::Modifier::BOLD | tui::style::Modifier::UNDERLINED
+                                    } else {
+                                        tui::style::Modifier::empty()
+                                    },
+                                };
+                            }
                         }
                         buffer.set_string(
                             u16::try_from(1 + state.wrap_width + 1).unwrap(),
@@ -763,7 +960,7 @@ pub fn run_tui(diff: &Diff, terminal: &mut TheTerminal) -> TheResult {
                         );
                     }
                 });
-                if let Some(next) = state.tree_view().next_leaf(pos, Next) {
+                if let Some(next) = tree_view.next_leaf(pos, Next) {
                     pos = next;
                 } else {
                     break;

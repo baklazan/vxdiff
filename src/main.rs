@@ -17,16 +17,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let new = &read_to_string(&args[3])?;
 
     let diff = algorithm::diff_file(old, new);
+    let file_input: [[&str; 2]; 1] = [[old, new]];
 
-    validate::print_errors(&validate::validate(&diff, &[[old, new]]));
+    validate::print_errors(&validate::validate(&diff, &file_input));
 
     let mode = args[1].to_str().unwrap_or("???");
     match mode {
         "debug" => println!("{diff:#?}"),
         "unified" => basic_terminal::print(&diff, &mut std::io::stdout())?,
         "side" => basic_terminal::print_side_by_side(&diff, &mut std::io::stdout())?,
-        "tuiplain" => tui_terminal::print_side_by_side_diff_plainly(&diff, &mut std::io::stdout())?,
-        "tui" => tui_terminal::run_in_terminal(|terminal| tui_terminal::run_tui(&diff, terminal))?,
+        "tuiplain" => tui_terminal::print_side_by_side_diff_plainly(&diff, &file_input, &mut std::io::stdout())?,
+        "tui" => tui_terminal::run_in_terminal(|terminal| tui_terminal::run_tui(&diff, &file_input, terminal))?,
         _ => eprintln!("invalid mode: {mode}"),
     }
 

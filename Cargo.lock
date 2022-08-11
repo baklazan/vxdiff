@@ -338,6 +338,8 @@ dependencies = [
  "rand",
  "string-interner",
  "tui",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]
