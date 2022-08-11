@@ -371,6 +371,8 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
 }
 
 struct LineCell {
+    /// Double-width characters are represented by a first LineCell with some egc and a second
+    /// LineCell with an empty string.
     egc: String,
     offset: usize,
     highlight: bool,
@@ -396,6 +398,14 @@ fn layout_one_line(
     let mut highlight = highlight_points[highlight_points_index - 1].1;
     highlight_points = &highlight_points[highlight_points_index..];
 
+    let new_layout = |cells, newline_highlight| LineLayout {
+        cells,
+        newline_highlight,
+    };
+
+    // The algorithm uses `unicode-segmentation` to split the line into EGCs, and `unicode-width`
+    // to compute the width of each EGC. I don't know if it's correct (precisely matches what
+    // terminal emulators do), but at least it matches the behavior of our library (tui-rs).
     for egc in input[offset..end].graphemes(true) {
         if !highlight_points.is_empty() && offset == highlight_points[0].0 {
             highlight = highlight_points[0].1;
@@ -403,61 +413,48 @@ fn layout_one_line(
         }
 
         if egc == "\n" {
-            return (
-                LineLayout {
-                    cells,
-                    newline_highlight: highlight,
-                },
-                offset + egc.len(),
-                true,
-            );
+            return (new_layout(cells, highlight), offset + egc.len(), true);
         }
 
         assert!(!egc.contains('\n'));
 
-        // TODO: handle "\t", "\r" etc.
+        let split = |string: &str| (string.chars().map(|c| c.to_string()).collect(), true);
 
-        let egc_width = egc.width();
-        assert!(egc_width == 1 || egc_width == 2, "egc_width was {egc_width}");
+        let (cell_strings, fabricated) = match egc {
+            "\t" => split(&" ".repeat(8 - cells.len() % 8)),
+            _ => {
+                assert!(!egc.contains('\t'));
+                let egc_width = egc.width();
+                match egc_width {
+                    // Replace nonprintable characters with an escape sequence. escape_debug is
+                    // nicer than escape_default because it shows zero bytes as \0, not \u{0}.
+                    0 => split(&egc.escape_debug().to_string()),
+                    1 => (vec![egc.to_string()], false),
+                    2 => (vec![egc.to_string(), "".to_string()], false),
+                    _ => panic!("egc width was {egc_width}"),
+                }
+            }
+        };
 
-        if cells.len() + egc_width > wrap_width {
-            return (
-                LineLayout {
-                    cells,
-                    newline_highlight: highlight,
-                },
-                offset,
-                false,
-            );
+        assert!(cell_strings.len() <= wrap_width);
+
+        if cells.len() + cell_strings.len() > wrap_width {
+            return (new_layout(cells, highlight), offset, false);
         }
 
-        cells.push(LineCell {
-            egc: egc.to_string(),
-            offset,
-            highlight,
-            fabricated: false,
-        });
-
-        for _ in 1..egc_width {
+        for cell_string in cell_strings {
             cells.push(LineCell {
-                egc: String::new(),
+                egc: cell_string,
                 offset,
                 highlight,
-                fabricated: false,
+                fabricated,
             });
         }
 
         offset += egc.len();
     }
 
-    (
-        LineLayout {
-            cells,
-            newline_highlight: highlight,
-        },
-        offset,
-        false,
-    )
+    (new_layout(cells, highlight), offset, false)
 }
 
 fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_width: usize) -> Vec<WrappedHalfLine> {
@@ -863,7 +860,6 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
         wrap_width: 80,
         scroll_height: usize::try_from(size.height)?,
     };
-    // recompute_wrap(&state.tree, 80);
 
     loop {
         let render = |new_size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
@@ -895,25 +891,44 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                         };
                         for side in 0..2 {
                             let layout = tree_view.get_wrapped_half_line_layout(&sides[side], side);
-                            for (x, LineCell { egc, highlight, .. }) in layout.cells.into_iter().enumerate() {
+                            for (x, cell) in layout.cells.into_iter().enumerate() {
+                                let LineCell {
+                                    egc,
+                                    highlight,
+                                    fabricated,
+                                    offset: _,
+                                } = cell;
                                 let x = 1 + side * (state.wrap_width + 3) + x;
                                 let x = u16::try_from(x).unwrap();
                                 let y = u16::try_from(y).unwrap();
-                                *buffer.get_mut(x, y) = tui::buffer::Cell {
-                                    symbol: if egc.is_empty() { " ".to_string() } else { egc },
-                                    fg: if equal {
-                                        tui::style::Color::Reset
-                                    } else if side == 0 {
-                                        tui::style::Color::Red
-                                    } else {
-                                        tui::style::Color::Green
-                                    },
-                                    bg: tui::style::Color::Reset,
-                                    modifier: if highlight {
-                                        tui::style::Modifier::BOLD | tui::style::Modifier::UNDERLINED
-                                    } else {
-                                        tui::style::Modifier::empty()
-                                    },
+                                // tui-rs encodes double-width characters as one normal cell and
+                                // one default cell (containing a " "). See Buffer::set_stringn()
+                                // and Cell::reset(). We don't call set_stringn here, but let's try
+                                // to match its result. The " " in the second cell won't be printed
+                                // because Buffer::diff skips over it.
+                                *buffer.get_mut(x, y) = if egc.is_empty() {
+                                    tui::buffer::Cell::default()
+                                } else {
+                                    tui::buffer::Cell {
+                                        symbol: egc,
+                                        fg: if equal {
+                                            tui::style::Color::Reset
+                                        } else if side == 0 {
+                                            tui::style::Color::Red
+                                        } else {
+                                            tui::style::Color::Green
+                                        },
+                                        bg: if fabricated {
+                                            tui::style::Color::Cyan
+                                        } else {
+                                            tui::style::Color::Reset
+                                        },
+                                        modifier: if highlight {
+                                            tui::style::Modifier::BOLD | tui::style::Modifier::UNDERLINED
+                                        } else {
+                                            tui::style::Modifier::empty()
+                                        },
+                                    }
                                 };
                             }
                         }
