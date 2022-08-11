@@ -866,8 +866,19 @@ type TheTerminal = tui::terminal::Terminal<tui::backend::CrosstermBackend<io::St
 pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal) -> TheResult {
     let diff = make_extended_diff(diff, file_input);
 
+    // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
+    let line_number_width = diff
+        .file_sides
+        .iter()
+        .flat_map(|file_sides| file_sides)
+        .map(|file_side| file_side.line_offsets.len() - 1)
+        .max()
+        .unwrap_or(0)
+        .to_string()
+        .len();
+
     // TODO: Configurable wrap_width behavior (e.g. fixed 80, multiples of 10, fluid)
-    let compute_wrap_width = |terminal_width: usize| (terminal_width - 4) / 2;
+    let compute_wrap_width = |terminal_width: usize| (terminal_width - 6 - line_number_width * 2) / 2;
 
     let mut size = terminal.size()?;
 
@@ -922,6 +933,28 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                             _ => panic!("wat"),
                         };
                         for side in 0..2 {
+                            let line_number_str = match sides[side] {
+                                WrappedHalfLine::FromInput { section_id, offset } => {
+                                    let file_id = diff.section_sides[section_id][side].as_ref().unwrap().file_id;
+                                    let file_side = &diff.file_sides[file_id][side];
+                                    let line_number = file_side.byte_offset_to_line_number(offset);
+                                    if offset == file_side.line_offsets[line_number] {
+                                        format!("{line_number:>line_number_width$}")
+                                    } else {
+                                        let my_width = line_number.to_string().len();
+                                        " ".repeat(line_number_width - my_width) + &"+".repeat(my_width)
+                                    }
+                                }
+                                WrappedHalfLine::Fabricated { .. } => " ".repeat(line_number_width),
+                            };
+                            let lx = 1 + side * (line_number_width + 1 + state.wrap_width + 3 + state.wrap_width + 1);
+                            buffer.set_string(
+                                u16::try_from(lx).unwrap(),
+                                u16::try_from(y).unwrap(),
+                                line_number_str,
+                                Default::default(),
+                            );
+
                             let layout = tree_view.get_wrapped_half_line_layout(&sides[side], side);
                             for (x, cell) in layout.cells.into_iter().enumerate() {
                                 let LineCell {
@@ -930,7 +963,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                     fabricated,
                                     offset: _,
                                 } = cell;
-                                let x = 1 + side * (state.wrap_width + 3) + x;
+                                let x = 1 + line_number_width + 1 + side * (state.wrap_width + 3) + x;
                                 let x = u16::try_from(x).unwrap();
                                 let y = u16::try_from(y).unwrap();
                                 // tui-rs encodes double-width characters as one normal cell and
@@ -965,7 +998,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                             }
                         }
                         buffer.set_string(
-                            u16::try_from(1 + state.wrap_width + 1).unwrap(),
+                            u16::try_from(1 + line_number_width + 1 + state.wrap_width + 1).unwrap(),
                             u16::try_from(y).unwrap(),
                             tui::symbols::line::VERTICAL,
                             Default::default(),
