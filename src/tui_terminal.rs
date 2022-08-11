@@ -458,10 +458,15 @@ fn layout_one_line(
 }
 
 fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_width: usize) -> Vec<WrappedHalfLine> {
-    fn fabricate(out: &mut Vec<WrappedHalfLine>, content: String) {
-        // TODO: wrap fabricated lines too
-        out.push(WrappedHalfLine::Fabricated { content });
-    }
+    let fabricate = |out: &mut Vec<WrappedHalfLine>, mut content: &str| {
+        while !content.is_empty() {
+            let (_, offset, _) = layout_one_line(content, &[(0, false)], 0, content.len(), wrap_width);
+            out.push(WrappedHalfLine::Fabricated {
+                content: content[0..offset].to_string(),
+            });
+            content = &content[offset..];
+        }
+    };
 
     let mut out: Vec<WrappedHalfLine> = vec![];
     let mut last_move: Option<(DiffOp, usize)> = None;
@@ -476,7 +481,7 @@ fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_
                     let direction = if op == DiffOp::Insert { "Moved from" } else { "Moved to" };
                     let filename = &file_other_side.filename;
                     let line_number = file_other_side.byte_offset_to_line_number(start);
-                    fabricate(&mut out, format!("{direction} {filename}:{line_number}"));
+                    fabricate(&mut out, &format!("{direction} {filename}:{line_number}"));
                 }
                 last_move = Some((op, end));
             } else {
@@ -500,7 +505,7 @@ fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_
         }
 
         if !ends_with_newline {
-            fabricate(&mut out, format!("No newline at end of file"));
+            fabricate(&mut out, &"No newline at end of file");
         }
     }
     out
