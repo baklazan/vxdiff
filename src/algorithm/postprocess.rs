@@ -1,3 +1,5 @@
+use tui::text;
+
 use super::{AlignedFragment, Diff, DiffOp, FileDiff, PartitionedText, Section, SectionSide};
 
 fn highlighted_subsegments<'a>(
@@ -104,6 +106,15 @@ pub fn build_diff<'a>(texts: &[PartitionedText<'a>; 2], fragments: Vec<(AlignedF
     let mut sections = vec![];
 
     for (fragment, _is_main) in fragments.iter() {
+        for side in 0..2 {
+            if texts[side].get_word(fragment.ends[side] - 1) != "\n" {
+                println!(
+                    "Bad fragment side:\n{}",
+                    &texts[side].text
+                        [texts[side].word_bounds[fragment.starts[side]]..texts[side].word_bounds[fragment.ends[side]]]
+                );
+            }
+        }
         let parts = [
             get_partitioned_subtext(&texts[0], fragment.starts[0], fragment.ends[0]),
             get_partitioned_subtext(&texts[1], fragment.starts[1], fragment.ends[1]),
@@ -116,7 +127,10 @@ pub fn build_diff<'a>(texts: &[PartitionedText<'a>; 2], fragments: Vec<(AlignedF
 
     let mut file_ops = vec![];
 
-    let mut make_unaligned_sections = |side: usize, word_range: (usize, usize), file_ops: &mut Vec<(DiffOp, usize)>| {
+    let make_unaligned_sections = |side: usize,
+                                   word_range: (usize, usize),
+                                   sections: &mut Vec<Section<'a>>,
+                                   file_ops: &mut Vec<(DiffOp, usize)>| {
         let mut parts = [
             PartitionedText {
                 text: "",
@@ -137,13 +151,30 @@ pub fn build_diff<'a>(texts: &[PartitionedText<'a>; 2], fragments: Vec<(AlignedF
         sections.append(&mut indel_sections);
     };
 
-    let add_fragment_sections = |fragment_id: usize, op: DiffOp, file_ops: &mut Vec<(DiffOp, usize)>| {
-        for section_id in first_section_from_fragment[fragment_id]
-            ..first_section_from_fragment[fragment_id] + sections_count_from_fragment[fragment_id]
-        {
-            file_ops.push((op, section_id));
-        }
-    };
+    let add_fragment_sections =
+        |fragment_id: usize, fragment_op: DiffOp, sections: &Vec<Section<'a>>, file_ops: &mut Vec<(DiffOp, usize)>| {
+            for section_id in first_section_from_fragment[fragment_id]
+                ..first_section_from_fragment[fragment_id] + sections_count_from_fragment[fragment_id]
+            {
+                let section = &sections[section_id];
+                let mut relevant_sides = fragment_op.movement();
+                for side in 0..2 {
+                    if section.sides[side].text_with_words.is_empty() {
+                        relevant_sides[side] = 0;
+                    }
+                }
+                let section_op = match relevant_sides {
+                    [1, 1] => DiffOp::Match,
+                    [1, 0] => DiffOp::Delete,
+                    [0, 1] => DiffOp::Insert,
+                    [0, 0] => {
+                        continue;
+                    }
+                    _ => unreachable!(),
+                };
+                file_ops.push((section_op, section_id));
+            }
+        };
 
     let mut ids_by_start = [vec![], vec![]];
     for side in 0..2 {
@@ -163,10 +194,15 @@ pub fn build_diff<'a>(texts: &[PartitionedText<'a>; 2], fragments: Vec<(AlignedF
                 let fragment_id = ids_by_start[side][fragment_indices[side]].1;
                 let fragment = &fragments[fragment_id].0;
                 if word_indices[side] < fragment.starts[side] {
-                    make_unaligned_sections(side, (word_indices[side], fragment.starts[side]), &mut file_ops);
+                    make_unaligned_sections(
+                        side,
+                        (word_indices[side], fragment.starts[side]),
+                        &mut sections,
+                        &mut file_ops,
+                    );
                 }
                 let indel_op = [DiffOp::Delete, DiffOp::Insert][side];
-                add_fragment_sections(fragment_id, indel_op, &mut file_ops);
+                add_fragment_sections(fragment_id, indel_op, &sections, &mut file_ops);
                 word_indices[side] = fragment.ends[side];
                 fragment_indices[side] += 1;
             }
@@ -178,7 +214,12 @@ pub fn build_diff<'a>(texts: &[PartitionedText<'a>; 2], fragments: Vec<(AlignedF
                 texts[side].word_count()
             };
             if word_indices[side] < next_fragment_start {
-                make_unaligned_sections(side, (word_indices[side], next_fragment_start), &mut file_ops);
+                make_unaligned_sections(
+                    side,
+                    (word_indices[side], next_fragment_start),
+                    &mut sections,
+                    &mut file_ops,
+                );
             }
         }
         if fragment_indices[0] >= ids_by_start[0].len() {
@@ -187,7 +228,7 @@ pub fn build_diff<'a>(texts: &[PartitionedText<'a>; 2], fragments: Vec<(AlignedF
         }
         let fragment_id = ids_by_start[0][fragment_indices[0]].1;
         assert!(ids_by_start[1][fragment_indices[1]].1 == fragment_id);
-        add_fragment_sections(fragment_id, DiffOp::Match, &mut file_ops);
+        add_fragment_sections(fragment_id, DiffOp::Match, &sections, &mut file_ops);
         word_indices[0] = fragments[fragment_id].0.ends[0];
         word_indices[1] = fragments[fragment_id].0.ends[1];
         fragment_indices[0] += 1;
@@ -195,6 +236,28 @@ pub fn build_diff<'a>(texts: &[PartitionedText<'a>; 2], fragments: Vec<(AlignedF
     }
 
     let file_diff = FileDiff { ops: file_ops };
+
+    for section in sections.iter() {
+        let mut is_weird = false;
+        for side in 0..2 {
+            let words = &section.sides[side].text_with_words;
+            if !words.is_empty() && !words.last().unwrap().1.ends_with("\n") {
+                is_weird = true;
+            }
+        }
+        if is_weird {
+            println!("left:");
+            for word in section.sides[0].text_with_words.iter() {
+                print!("{}", word.1);
+            }
+            println!();
+            println!("right:");
+            for word in section.sides[1].text_with_words.iter() {
+                print!("{}", word.1);
+            }
+            println!();
+        }
+    }
 
     Diff {
         sections,
