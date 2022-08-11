@@ -827,6 +827,22 @@ impl<'a> State<'a> {
             }
         }
     }
+
+    fn resize(&mut self, wrap_width: usize, scroll_height: usize) {
+        self.wrap_width = wrap_width;
+        self.scroll_height = scroll_height;
+        fn fix_position(tree_view: &TreeView, pos: LeafPosition) -> LeafPosition {
+            let parent = tree_view.tree.node(pos.parent);
+            let new_len = tree_view.with_ui_lines(parent, |lines| lines.len());
+            LeafPosition {
+                parent: pos.parent,
+                line_index: std::cmp::min(pos.line_index, new_len - 1),
+            }
+        }
+        self.scroll_pos = fix_position(&self.tree_view(), self.scroll_pos);
+        self.cursor_pos = fix_position(&self.tree_view(), self.cursor_pos);
+        self.fix_scroll_invariants(false);
+    }
 }
 
 // This hack is needed because tui-rs doesn't have a way to get Buffer from Frame. The only thing
@@ -846,32 +862,41 @@ where
 type TheTerminal = tui::terminal::Terminal<tui::backend::CrosstermBackend<io::Stdout>>;
 
 pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal) -> TheResult {
+    let diff = make_extended_diff(diff, file_input);
+
+    // TODO: Configurable wrap_width behavior (e.g. fixed 80, multiples of 10, fluid)
+    let compute_wrap_width = |terminal_width: usize| (terminal_width - 4) / 2;
+
     let mut size = terminal.size()?;
 
-    let diff = make_extended_diff(diff, file_input);
-    let initial_tree = build_initial_tree(&diff);
-    let initial_scroll = TreeView {
-        tree: &initial_tree,
-        diff: &diff,
-        wrap_width: 80,
-    }
-    .bordering_leaf_under(initial_tree.root, First)
-    .unwrap();
-    let mut state = State {
-        tree: initial_tree,
-        diff: &diff,
-        scroll_pos: initial_scroll,
-        cursor_pos: initial_scroll,
-        wrap_width: 80,
-        scroll_height: usize::try_from(size.height)?,
+    let mut state = {
+        let initial_tree = build_initial_tree(&diff);
+        let initial_wrap_width = compute_wrap_width(usize::try_from(size.width).unwrap());
+        let initial_scroll = TreeView {
+            tree: &initial_tree,
+            diff: &diff,
+            wrap_width: initial_wrap_width,
+        }
+        .bordering_leaf_under(initial_tree.root, First)
+        .unwrap();
+        State {
+            tree: initial_tree,
+            diff: &diff,
+            scroll_pos: initial_scroll,
+            cursor_pos: initial_scroll,
+            wrap_width: initial_wrap_width,
+            scroll_height: usize::try_from(size.height).unwrap(),
+        }
     };
 
     loop {
         let render = |new_size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
             if new_size != size {
-                // TODO: resize, and afterwards:
-                // size = new_size;
-                // state.wrap_width = ...; state.scroll_height = ...;
+                size = new_size;
+                state.resize(
+                    compute_wrap_width(usize::try_from(size.width).unwrap()),
+                    usize::try_from(size.height).unwrap(),
+                );
             }
 
             let mut pos = state.scroll_pos;
