@@ -289,31 +289,47 @@ impl Tree {
     // - fix `index_in_parent` in all next siblings
 }
 
-fn build_padded_group(sections: &[Section], ops: &[(DiffOp, usize)]) -> Node {
-    let mut equal = true;
-    let mut relevant_ops = [vec![], vec![]];
-    for &(op, section_id) in ops {
-        for side in 0..2 {
-            if op.movement()[side] != 0 {
-                relevant_ops[side].push((op, section_id));
+fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
+    let phantom_rendering = true;
+
+    let is_phantom = |(op, section_id): (DiffOp, usize)| -> bool {
+        phantom_rendering
+            && op != DiffOp::Match
+            && !diff.sections[section_id].sides[0].text_with_words.is_empty()
+            && !diff.sections[section_id].sides[1].text_with_words.is_empty()
+    };
+
+    let build_padded_group = |ops: &[(DiffOp, usize)]| -> Node {
+        let mut equal = true;
+        let mut relevant_ops = [vec![], vec![]];
+        for &(op, section_id) in ops {
+            for side in 0..2 {
+                if is_phantom((op, section_id)) || op.movement()[side] != 0 {
+                    relevant_ops[side].push((op, section_id));
+                }
+            }
+            if op != DiffOp::Match || !diff.sections[section_id].equal {
+                equal = false;
             }
         }
-        if op != DiffOp::Match || !sections[section_id].equal {
-            equal = false;
-        }
-    }
-    Node::PaddedGroup(PaddedGroupNode {
-        equal,
-        relevant_ops,
-        cached_wrap: RefCell::new(None),
-    })
-}
+        Node::PaddedGroup(PaddedGroupNode {
+            equal,
+            relevant_ops,
+            cached_wrap: RefCell::new(None),
+        })
+    };
 
-fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
-    fn same_section_group(sections: &[Section], a: (DiffOp, usize), b: (DiffOp, usize)) -> bool {
-        (a.0 == DiffOp::Match && b.0 == DiffOp::Match && sections[a.1].equal && sections[b.1].equal)
-            || (a.0 != DiffOp::Match && b.0 != DiffOp::Match)
-    }
+    let same_section_group = |a: (DiffOp, usize), b: (DiffOp, usize)| -> bool {
+        if a.0 == DiffOp::Match && b.0 == DiffOp::Match && diff.sections[a.1].equal && diff.sections[b.1].equal {
+            true
+        } else if a.0 == DiffOp::Match || b.0 == DiffOp::Match {
+            false
+        } else if is_phantom(a) || is_phantom(b) {
+            false
+        } else {
+            true
+        }
+    };
 
     let mut tree = Tree::new(Node::new_branch());
 
@@ -327,15 +343,10 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
         while op_index < ops.len() {
             let begin = op_index;
             let mut end = begin + 1;
-            while end < ops.len() && same_section_group(diff.sections, ops[begin], ops[end]) {
+            while end < ops.len() && same_section_group(ops[begin], ops[end]) {
                 end += 1;
             }
             op_index = end;
-
-            // TODO: ghost rendering (blue rendering) will be this:
-            // - if Insert/Delete is a move from/to (both sides are non-empty), same_section_group
-            //   returns false.
-            // - build_padded_group stops checking movement() for those groups.
 
             let section_group_is_match_equal = ops[begin].0 == DiffOp::Match && diff.sections[ops[begin].1].equal;
 
@@ -343,7 +354,7 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
                 let length = end - begin;
                 let mut padded_groups = vec![];
                 for i in begin..end {
-                    padded_groups.push(build_padded_group(diff.sections, &ops[i..i + 1]));
+                    padded_groups.push(build_padded_group(&ops[i..i + 1]));
                 }
 
                 let context = 3; // TODO configurable
@@ -364,7 +375,7 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
                     tree.add_children(file_content_nid, padded_groups);
                 }
             } else {
-                tree.add_child(file_content_nid, build_padded_group(diff.sections, &ops[begin..end]));
+                tree.add_child(file_content_nid, build_padded_group(&ops[begin..end]));
             }
         }
     }
