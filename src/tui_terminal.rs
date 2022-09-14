@@ -5,6 +5,8 @@ use std::cmp::Ordering;
 use std::error::Error;
 use std::io::{self, Write as _};
 use std::ops::{DerefMut as _, Range};
+use std::rc::Rc;
+use tui::text::Text;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
@@ -103,8 +105,14 @@ use BorderSide::{First, Last};
 
 #[derive(Clone)]
 enum WrappedHalfLine {
-    FromInput { section_id: usize, offset: usize },
-    Fabricated { content: String },
+    FromInput {
+        op: DiffOp,
+        section_id: usize,
+        offset: usize,
+    },
+    Fabricated {
+        content: String,
+    },
 }
 
 #[derive(Clone)]
@@ -133,6 +141,7 @@ struct BranchNode {
 struct PaddedGroupNode {
     equal: bool,
     relevant_ops: [Vec<(DiffOp, usize)>; 2],
+    offsets: [usize; 2],
     cached_wrap: RefCell<Option<(usize, Vec<UILine>)>>,
 }
 
@@ -299,13 +308,17 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
             && !diff.sections[section_id].sides[1].text_with_words.is_empty()
     };
 
-    let build_padded_group = |ops: &[(DiffOp, usize)]| -> Node {
+    let build_padded_group = |offsets: &mut [usize; 2], ops: &[(DiffOp, usize)]| -> Node {
+        let start_offsets = *offsets;
         let mut equal = true;
         let mut relevant_ops = [vec![], vec![]];
         for &(op, section_id) in ops {
             for side in 0..2 {
                 if is_phantom((op, section_id)) || op.movement()[side] != 0 {
                     relevant_ops[side].push((op, section_id));
+                }
+                if op.movement()[side] != 0 {
+                    (*offsets)[side] = diff.section_sides[section_id][side].as_ref().unwrap().byte_range.end;
                 }
             }
             if op != DiffOp::Match || !diff.sections[section_id].equal {
@@ -315,6 +328,7 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
         Node::PaddedGroup(PaddedGroupNode {
             equal,
             relevant_ops,
+            offsets: start_offsets,
             cached_wrap: RefCell::new(None),
         })
     };
@@ -339,6 +353,7 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
         let file_content_nid = tree.add_child(file_nid, Node::new_branch());
         tree.node_mut(file_nid).as_branch_mut().visible = 0..1;
 
+        let mut offsets = [0; 2];
         let mut op_index = 0;
         while op_index < ops.len() {
             let begin = op_index;
@@ -354,7 +369,7 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
                 let length = end - begin;
                 let mut padded_groups = vec![];
                 for i in begin..end {
-                    padded_groups.push(build_padded_group(&ops[i..i + 1]));
+                    padded_groups.push(build_padded_group(&mut offsets, &ops[i..i + 1]));
                 }
 
                 let context = 3; // TODO configurable
@@ -375,7 +390,7 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
                     tree.add_children(file_content_nid, padded_groups);
                 }
             } else {
-                tree.add_child(file_content_nid, build_padded_group(&ops[begin..end]));
+                tree.add_child(file_content_nid, build_padded_group(&mut offsets, &ops[begin..end]));
             }
         }
     }
@@ -395,6 +410,8 @@ struct LineCell {
 struct LineLayout {
     cells: Vec<LineCell>,
     newline_highlight: bool,
+    /// Offset after this line, including the newline if present.
+    offset_after: usize,
 }
 
 fn layout_one_line(
@@ -403,7 +420,7 @@ fn layout_one_line(
     mut offset: usize,
     end: usize,
     wrap_width: usize,
-) -> (LineLayout, usize, bool) {
+) -> (LineLayout, bool) {
     let mut cells = vec![];
 
     let highlight_points_index = highlight_points.partition_point(|&(point, _)| point <= offset);
@@ -411,9 +428,10 @@ fn layout_one_line(
     let mut highlight = highlight_points[highlight_points_index - 1].1;
     highlight_points = &highlight_points[highlight_points_index..];
 
-    let new_layout = |cells, newline_highlight| LineLayout {
+    let new_layout = |cells, newline_highlight, offset_after| LineLayout {
         cells,
         newline_highlight,
+        offset_after,
     };
 
     // The algorithm uses `unicode-segmentation` to split the line into EGCs, and `unicode-width`
@@ -426,7 +444,7 @@ fn layout_one_line(
         }
 
         if egc == "\n" {
-            return (new_layout(cells, highlight), offset + egc.len(), true);
+            return (new_layout(cells, highlight, offset + egc.len()), true);
         }
 
         assert!(!egc.contains('\n'));
@@ -452,7 +470,7 @@ fn layout_one_line(
         assert!(cell_strings.len() <= wrap_width);
 
         if cells.len() + cell_strings.len() > wrap_width {
-            return (new_layout(cells, highlight), offset, false);
+            return (new_layout(cells, highlight, offset), false);
         }
 
         for cell_string in cell_strings {
@@ -467,13 +485,15 @@ fn layout_one_line(
         offset += egc.len();
     }
 
-    (new_layout(cells, highlight), offset, false)
+    (new_layout(cells, highlight, offset), false)
 }
 
 fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_width: usize) -> Vec<WrappedHalfLine> {
     let fabricate = |out: &mut Vec<WrappedHalfLine>, mut content: &str| {
         while !content.is_empty() {
-            let (_, offset, _) = layout_one_line(content, &[(0, false)], 0, content.len(), wrap_width);
+            let offset = layout_one_line(content, &[(0, false)], 0, content.len(), wrap_width)
+                .0
+                .offset_after;
             out.push(WrappedHalfLine::Fabricated {
                 content: content[0..offset].to_string(),
             });
@@ -507,14 +527,16 @@ fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_
         let mut offset = section_side.byte_range.start;
         let mut ends_with_newline = true;
         while offset != section_side.byte_range.end {
-            out.push(WrappedHalfLine::FromInput { section_id, offset });
-            (_, offset, ends_with_newline) = layout_one_line(
+            out.push(WrappedHalfLine::FromInput { op, section_id, offset });
+            let res = layout_one_line(
                 diff.file_sides[section_side.file_id][side].content,
                 &section_side.highlight_points,
                 offset,
                 section_side.byte_range.end,
                 wrap_width,
             );
+            offset = res.0.offset_after;
+            ends_with_newline = res.1;
         }
 
         if !ends_with_newline {
@@ -566,7 +588,7 @@ impl<'a> TreeView<'a> {
 
     fn get_wrapped_half_line_layout(&self, whl: &WrappedHalfLine, side: usize) -> LineLayout {
         match whl {
-            &WrappedHalfLine::FromInput { section_id, offset } => {
+            &WrappedHalfLine::FromInput { section_id, offset, .. } => {
                 let section_side = self.diff.section_sides[section_id][side].as_ref().unwrap();
                 layout_one_line(
                     self.diff.file_sides[section_side.file_id][side].content,
@@ -751,6 +773,14 @@ pub fn print_side_by_side_diff_plainly(
     print_plainly(&tree_view, tree.root, output)
 }
 
+struct SelectionState {
+    file_id: usize,
+    side: usize,
+    selecting: bool,
+    start_offset: usize,
+    current_offset: usize,
+}
+
 struct State<'a> {
     tree: Tree,
     diff: &'a ExtendedDiff<'a>,
@@ -758,6 +788,7 @@ struct State<'a> {
     cursor_pos: LeafPosition,
     wrap_width: usize,
     scroll_height: usize,
+    selection: Option<SelectionState>,
 }
 
 impl<'a> State<'a> {
@@ -874,6 +905,13 @@ where
 
 type TheTerminal = tui::terminal::Terminal<tui::backend::CrosstermBackend<io::Stdout>>;
 
+fn usto16(number: usize) -> u16 {
+    u16::try_from(number).unwrap()
+}
+fn u16tos(number: u16) -> usize {
+    usize::try_from(number).unwrap()
+}
+
 pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal) -> TheResult {
     let diff = make_extended_diff(diff, file_input);
 
@@ -895,7 +933,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
 
     let mut state = {
         let initial_tree = build_initial_tree(&diff);
-        let initial_wrap_width = compute_wrap_width(usize::try_from(size.width).unwrap());
+        let initial_wrap_width = compute_wrap_width(u16tos(size.width));
         let initial_scroll = TreeView {
             tree: &initial_tree,
             diff: &diff,
@@ -909,26 +947,44 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
             scroll_pos: initial_scroll,
             cursor_pos: initial_scroll,
             wrap_width: initial_wrap_width,
-            scroll_height: usize::try_from(size.height).unwrap(),
+            scroll_height: u16tos(size.height),
+            selection: None,
         }
     };
 
+    // TODO
+    state.selection = Some(SelectionState {
+        file_id: 0,
+        side: 1,
+        selecting: false,
+        start_offset: 42,
+        current_offset: 447,
+    });
+
+    #[derive(Clone)]
+    enum MouseCell {
+        Inert,
+        Button(Rc<dyn Fn(&mut State)>),
+        Text { file_id: usize, side: usize, offset: usize },
+    }
+
     loop {
+        let mut mouse_cells: Vec<Vec<MouseCell>> = vec![];
+
         let render = |new_size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
             if new_size != size {
                 size = new_size;
-                state.resize(
-                    compute_wrap_width(usize::try_from(size.width).unwrap()),
-                    usize::try_from(size.height).unwrap(),
-                );
+                state.resize(compute_wrap_width(u16tos(size.width)), u16tos(size.height));
             }
+
+            mouse_cells = vec![vec![MouseCell::Inert; u16tos(size.width)]; u16tos(size.height)];
 
             let mut pos = state.scroll_pos;
             for y in 0..state.scroll_height {
                 if pos == state.cursor_pos {
                     buffer.set_string(
                         0,
-                        u16::try_from(y).unwrap(),
+                        usto16(y),
                         ">",
                         tui::style::Style::default()
                             .fg(tui::style::Color::White)
@@ -943,9 +999,15 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                             Node::PaddedGroup(node) => node.equal,
                             _ => panic!("wat"),
                         };
+
                         for side in 0..2 {
+                            let is_selectable = match sides[side] {
+                                WrappedHalfLine::FromInput { op, .. } => op.movement()[side] != 0,
+                                WrappedHalfLine::Fabricated { .. } => false,
+                            };
+                            let file_id = 0; // TODO
                             let line_number_str = match sides[side] {
-                                WrappedHalfLine::FromInput { section_id, offset } => {
+                                WrappedHalfLine::FromInput { section_id, offset, .. } => {
                                     let file_id = diff.section_sides[section_id][side].as_ref().unwrap().file_id;
                                     let file_side = &diff.file_sides[file_id][side];
                                     let line_number = file_side.byte_offset_to_line_number(offset);
@@ -959,24 +1021,35 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                 WrappedHalfLine::Fabricated { .. } => " ".repeat(line_number_width),
                             };
                             let lx = 1 + side * (line_number_width + 1 + state.wrap_width + 3 + state.wrap_width + 1);
-                            buffer.set_string(
-                                u16::try_from(lx).unwrap(),
-                                u16::try_from(y).unwrap(),
-                                line_number_str,
-                                Default::default(),
-                            );
+                            buffer.set_string(usto16(lx), usto16(y), line_number_str, Default::default());
 
                             let layout = tree_view.get_wrapped_half_line_layout(&sides[side], side);
+                            let screen_start_x = 1 + line_number_width + 1 + side * (state.wrap_width + 3);
+                            let num_cells = layout.cells.len();
                             for (x, cell) in layout.cells.into_iter().enumerate() {
                                 let LineCell {
                                     egc,
                                     highlight,
                                     fabricated,
-                                    offset: _,
+                                    offset,
                                 } = cell;
-                                let x = 1 + line_number_width + 1 + side * (state.wrap_width + 3) + x;
-                                let x = u16::try_from(x).unwrap();
-                                let y = u16::try_from(y).unwrap();
+                                let selected = match &state.selection {
+                                    Some(selection) => {
+                                        file_id == selection.file_id
+                                            && side == selection.side
+                                            && offset >= std::cmp::min(selection.start_offset, selection.current_offset)
+                                            && offset < std::cmp::max(selection.start_offset, selection.current_offset)
+                                    }
+                                    None => false,
+                                };
+                                let x = screen_start_x + x;
+
+                                if is_selectable {
+                                    mouse_cells[y][x] = MouseCell::Text { file_id, side, offset };
+                                }
+
+                                let x = usto16(x);
+                                let y = usto16(y);
                                 // tui-rs encodes double-width characters as one normal cell and
                                 // one default cell (containing a " "). See Buffer::set_stringn()
                                 // and Cell::reset(). We don't call set_stringn here, but let's try
@@ -988,13 +1061,19 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                     tui::buffer::Cell {
                                         symbol: egc,
                                         fg: if equal {
-                                            tui::style::Color::Reset
+                                            if selected {
+                                                tui::style::Color::Black
+                                            } else {
+                                                tui::style::Color::Reset
+                                            }
                                         } else if side == 0 {
                                             tui::style::Color::Red
                                         } else {
                                             tui::style::Color::Green
                                         },
-                                        bg: if fabricated {
+                                        bg: if selected {
+                                            tui::style::Color::White
+                                        } else if fabricated {
                                             tui::style::Color::Cyan
                                         } else {
                                             tui::style::Color::Reset
@@ -1007,10 +1086,21 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                     }
                                 };
                             }
+                            if is_selectable {
+                                for x in num_cells..state.wrap_width {
+                                    mouse_cells[y][screen_start_x + x] = MouseCell::Text {
+                                        file_id,
+                                        side,
+                                        offset: layout.offset_after,
+                                    };
+                                }
+                            }
+
+                            // TODO: Set mouse_cells at end of line to MouseCell::Text
                         }
                         buffer.set_string(
-                            u16::try_from(1 + line_number_width + 1 + state.wrap_width + 1).unwrap(),
-                            u16::try_from(y).unwrap(),
+                            usto16(1 + line_number_width + 1 + state.wrap_width + 1),
+                            usto16(y),
                             tui::symbols::line::VERTICAL,
                             Default::default(),
                         );
@@ -1025,7 +1115,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                         };
                         buffer.set_string(
                             1,
-                            u16::try_from(y).unwrap(),
+                            usto16(y),
                             format!(
                                 "file #{} (press z to {})",
                                 file_id,
@@ -1043,7 +1133,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                     UILine::ExpanderLine(hidden_count) => {
                         buffer.set_string(
                             1,
-                            u16::try_from(y).unwrap(),
+                            usto16(y),
                             format!("...{} hidden lines... (press x/c to expand)", hidden_count),
                             tui::style::Style::default()
                                 .fg(tui::style::Color::Black)
@@ -1063,6 +1153,25 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
             frame.render_widget(WidgetWrapper(render), frame.size());
             // TODO: eventually might want to call frame.set_cursor() for /search etc
         })?;
+
+        let update_selection_position = |selection: &mut SelectionState, mut x: usize, mut y: usize| {
+            while y < u16tos(size.height) {
+                match mouse_cells[y][x] {
+                    MouseCell::Text { file_id, side, offset } => {
+                        if file_id == selection.file_id && side == selection.side {
+                            selection.current_offset = offset;
+                            return;
+                        }
+                    }
+                    _ => {}
+                }
+                x += 1;
+                if x == u16tos(size.width) {
+                    x = 0;
+                    y += 1;
+                }
+            }
+        };
 
         loop {
             match crossterm::event::read()? {
@@ -1094,6 +1203,43 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                     _ => write!(terminal.backend_mut(), "\x07")?,
                 },
                 crossterm::event::Event::Mouse(e) => {
+                    let x = u16tos(e.column);
+                    let y = u16tos(e.row);
+                    match e.kind {
+                        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                            match mouse_cells[y][x] {
+                                MouseCell::Text { file_id, side, offset } => {
+                                    state.selection = Some(SelectionState {
+                                        file_id,
+                                        side,
+                                        selecting: true,
+                                        start_offset: offset,
+                                        current_offset: offset,
+                                    });
+                                }
+                                MouseCell::Button(ref fun) => fun(&mut state),
+                                MouseCell::Inert => {}
+                            }
+                        }
+                        crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                            match state.selection {
+                                Some(ref mut selection) if selection.selecting => {
+                                    update_selection_position(selection, x, y);
+                                }
+                                _ => {}
+                            }
+                        }
+                        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                            match state.selection {
+                                Some(ref mut selection) if selection.selecting => {
+                                    update_selection_position(selection, x, y);
+                                    selection.selecting = false;
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    };
                     // TODO
                 }
                 crossterm::event::Event::Resize(_, _) => {}
