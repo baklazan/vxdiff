@@ -1,7 +1,7 @@
 use super::PartitionedText;
 use rand::Rng;
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct Seed {
     pub start: [usize; 2],
     pub end: [usize; 2],

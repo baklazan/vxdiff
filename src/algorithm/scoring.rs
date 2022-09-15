@@ -1,5 +1,6 @@
 use super::*;
 use string_interner::StringInterner;
+use tui::layout::Direction;
 
 pub type TScore = f64;
 
@@ -11,9 +12,17 @@ pub trait ScoreState: Clone {
     fn substate_movements(&self) -> &[Option<(DiffOp, usize)>];
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DpDirection {
+    Backward,
+    Forward
+}
+
+
 pub trait AlignmentScoringMethod {
     type State: ScoreState;
-
+    
+    
     fn starting_state(&self, starting_score: TScore) -> Self::State;
     fn consider_step(
         &self,
@@ -22,6 +31,7 @@ pub trait AlignmentScoringMethod {
         state_after_move: Self::State,
         state: &mut Self::State,
         step: DiffOp,
+        direction: DpDirection
     );
 }
 
@@ -134,9 +144,13 @@ impl AlignmentScoringMethod for SimpleScoring {
         state_after_move: Self::State,
         state: &mut Self::State,
         step: DiffOp,
+        direction: DpDirection
     ) {
         let step_score = if step == DiffOp::Match {
-            self.match_score(old_index, new_index)
+            match direction {
+                DpDirection::Backward => self.match_score(old_index, new_index),
+                DpDirection::Forward => self.match_score(old_index - 1, new_index - 1)
+            }
         } else {
             Self::gap_score()
         };
@@ -164,7 +178,7 @@ impl AffineScoring {
     const P_START_WHITE_GAP: f64 = 0.2;
 
     const BASE_BOUND_SCORE: TScore = -1.0;
-    const LINE_CONTENT_COEF: TScore = -0.5;
+    const LINE_CONTENT_COEF: TScore = -0.8;
 
     const MATCH: usize = 0;
     const GAP: usize = 1;
@@ -235,7 +249,13 @@ impl AlignmentScoringMethod for AffineScoring {
         state_after_move: Self::State,
         state: &mut Self::State,
         step: DiffOp,
+        direction: DpDirection
     ) {
+        let index_correction = match direction {
+            DpDirection::Backward => 0,
+            DpDirection::Forward => 1
+        };
+        
         let mut improve = |substate: usize, proposed: TScore, proposed_movement: &Option<(DiffOp, usize)>| {
             if state.scores[substate] < proposed {
                 state.scores[substate] = proposed;
@@ -250,10 +270,10 @@ impl AlignmentScoringMethod for AffineScoring {
         };
 
         if step == DiffOp::Match {
-            if self.symbols[0][old_index] != self.symbols[1][new_index] {
+            if self.symbols[0][old_index - index_correction] != self.symbols[1][new_index - index_correction] {
                 return;
             }
-            let score_without_transition = state_after_move.scores[Self::MATCH] + self.information_values[0][old_index];
+            let score_without_transition = state_after_move.scores[Self::MATCH] + self.information_values[0][old_index - index_correction];
             let movement = Some((DiffOp::Match, Self::MATCH));
             let p_stay_match = 1.0 - (Self::P_START_GAP/*+ Self::P_START_WHITE_GAP*/) * change_coef;
             improve(Self::MATCH, score_without_transition + p_stay_match.log2(), &movement);
@@ -280,8 +300,8 @@ impl AlignmentScoringMethod for AffineScoring {
                 score_without_transition + (1.0 - Self::P_END_GAP * change_coef).log2(),
                 &movement,
             );
-            if step == DiffOp::Insert && self.is_white[1][new_index]
-                || step == DiffOp::Delete && self.is_white[0][old_index]
+            if step == DiffOp::Insert && self.is_white[1][new_index - index_correction]
+                || step == DiffOp::Delete && self.is_white[0][old_index - index_correction]
             {
                 let score_without_transition = state_after_move.scores[Self::WHITE_GAP];
                 let movement = Some((step, Self::WHITE_GAP));
@@ -300,18 +320,23 @@ impl AlignmentScoringMethod for AffineScoring {
     }
 }
 
-pub trait SupersectionBoundsScoringMethod {
+pub trait FragmentBoundsScoringMethod {
     const SUPERSECTION_THRESHOLD: TScore;
     const MOVED_SUPERSECTION_THRESHOLD: TScore;
 
-    fn supersection_bound_penalty(&self, old_index: usize, new_index: usize) -> TScore;
+    fn fragment_bound_penalty(&self, old_index: usize, new_index: usize) -> TScore;
+    fn is_viable_bound(&self, side: usize, index: usize) -> bool;
 }
 
-impl SupersectionBoundsScoringMethod for AffineScoring {
+impl FragmentBoundsScoringMethod for AffineScoring {
     const SUPERSECTION_THRESHOLD: TScore = 5.0;
     const MOVED_SUPERSECTION_THRESHOLD: TScore = 10.0;
 
-    fn supersection_bound_penalty(&self, old_index: usize, new_index: usize) -> TScore {
+    fn fragment_bound_penalty(&self, old_index: usize, new_index: usize) -> TScore {
         self.bound_score[0][old_index] + self.bound_score[1][new_index]
+    }
+    
+    fn is_viable_bound(&self, side: usize, index: usize) -> bool {
+        self.bound_score[side][index] != TScore::NEG_INFINITY
     }
 }
