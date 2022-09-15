@@ -1242,7 +1242,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                     };
                     // TODO
                 }
-                crossterm::event::Event::Resize(_, _) => {}
+                _ => {}
             };
             if !crossterm::event::poll(std::time::Duration::ZERO)? {
                 break;
