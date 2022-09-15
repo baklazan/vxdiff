@@ -1,12 +1,11 @@
 use super::algorithm::{Diff, DiffOp, FileDiff, Section};
-use crossterm::{self, event::KeyCode};
+use crossterm::event::KeyCode;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::error::Error;
 use std::io::{self, Write as _};
 use std::ops::{DerefMut as _, Range};
 use std::rc::Rc;
-use tui::text::Text;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
@@ -1238,6 +1237,8 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                 _ => {}
                             }
                         }
+                        crossterm::event::MouseEventKind::ScrollUp => state.scroll_by(3, Prev),
+                        crossterm::event::MouseEventKind::ScrollDown => state.scroll_by(3, Next),
                         _ => {}
                     };
                     // TODO
