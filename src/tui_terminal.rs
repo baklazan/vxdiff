@@ -7,8 +7,102 @@ use std::io::{self, Write as _};
 use std::ops::{DerefMut as _, Range};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use tui::style::{Color, Modifier, Style};
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
+
+struct Theme {
+    cursor: Style,
+    line_numbers_default: Style,
+    line_numbers_phantom: Style,
+    text_equal: Style,
+    text_padding: Style,
+    text_change_old: Style,
+    text_change_new: Style,
+    text_move_old: Style,
+    text_move_new: Style,
+    text_phantom_old: Style,
+    text_phantom_new: Style,
+    highlight_change_old: Style,
+    highlight_change_new: Style,
+    highlight_move_old: Style,
+    highlight_move_new: Style,
+    highlight_phantom_old: Style,
+    highlight_phantom_new: Style,
+    fabricated_symbol: Style,
+}
+
+fn default_theme() -> Theme {
+    let highlight = Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    Theme {
+        cursor: Style::default().fg(Color::White).bg(Color::Blue),
+        line_numbers_default: Style::default(),
+        line_numbers_phantom: Style::default().fg(Color::Cyan),
+        text_equal: Style::default(),
+        text_padding: Style::default().fg(Color::DarkGray),
+        text_change_old: Style::default().fg(Color::Red),
+        text_change_new: Style::default().fg(Color::Green),
+        text_move_old: Style::default().fg(Color::Yellow),
+        text_move_new: Style::default().fg(Color::Yellow),
+        text_phantom_old: Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+        text_phantom_new: Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+        highlight_change_old: highlight,
+        highlight_change_new: highlight,
+        highlight_move_old: highlight,
+        highlight_move_new: highlight,
+        highlight_phantom_old: highlight,
+        highlight_phantom_new: highlight,
+        fabricated_symbol: Style::default().bg(Color::Cyan),
+    }
+}
+
+fn new_theme() -> Theme {
+    let black = Color::Indexed(16); // #000000
+    let white = Color::Indexed(253); // #DADADA
+    let darkest_red = Color::Indexed(52); // #5F0000
+    let darkest_green = Color::Indexed(22); // #005F00
+    let darkest_yellow = Color::Indexed(58); // #5F5F00
+    let darkest_cyan = Color::Indexed(23); // #005F5F
+    let highlight = Style::default().add_modifier(Modifier::BOLD);
+    Theme {
+        cursor: Style::default().fg(Color::White).bg(Color::Blue),
+        line_numbers_default: Style::default(),
+        line_numbers_phantom: Style::default().fg(Color::Cyan),
+        text_equal: Style::default().fg(white).bg(black),
+        text_padding: Style::default().fg(Color::DarkGray).bg(Color::Indexed(238)),
+        text_change_old: Style::default().fg(white).bg(darkest_red),
+        text_change_new: Style::default().fg(white).bg(darkest_green),
+        text_move_old: Style::default().fg(white).bg(darkest_yellow),
+        text_move_new: Style::default().fg(white).bg(darkest_yellow),
+        text_phantom_old: Style::default().fg(white).bg(darkest_cyan).add_modifier(Modifier::DIM),
+        text_phantom_new: Style::default().fg(white).bg(darkest_cyan).add_modifier(Modifier::DIM),
+        highlight_change_old: highlight.bg(Color::Indexed(88)),
+        highlight_change_new: highlight.bg(Color::Indexed(28)),
+        highlight_move_old: highlight.bg(Color::Indexed(100)),
+        highlight_move_new: highlight.bg(Color::Indexed(100)),
+        highlight_phantom_old: highlight.bg(Color::Indexed(30)),
+        highlight_phantom_new: highlight.bg(Color::Indexed(30)),
+        fabricated_symbol: highlight.fg(Color::Cyan),
+    }
+}
+
+struct Config {
+    context_lines: usize,
+    mouse_wheel_scroll_lines: usize,
+    phantom_rendering: bool,
+    highlight_newlines: bool,
+    theme: Theme,
+}
+
+fn default_config() -> Config {
+    Config {
+        context_lines: 3,
+        mouse_wheel_scroll_lines: 3,
+        phantom_rendering: true,
+        highlight_newlines: false,
+        theme: new_theme(),
+    }
+}
 
 struct ExtendedDiffSectionSide {
     file_id: usize,
@@ -320,9 +414,7 @@ impl Tree {
     // - fix `index_in_parent` in all next siblings
 }
 
-fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
-    let phantom_rendering = true;
-
+fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> Tree {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum SectionType {
         MatchEqual,
@@ -354,7 +446,7 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
                 SectionType::MatchUnequal
             }
         } else {
-            if phantom_rendering && is_move((op, section_id)) {
+            if config.phantom_rendering && is_move((op, section_id)) {
                 SectionType::Phantom
             } else {
                 SectionType::InsertDelete
@@ -459,9 +551,8 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
                         padded_groups.push(Node::PaddedGroup(padded_group));
                     }
 
-                    let context = 3; // TODO configurable
-                    let context_before = if begin == 0 { 0 } else { context };
-                    let context_after = if end == ops.len() { 0 } else { context };
+                    let context_before = if begin == 0 { 0 } else { config.context_lines };
+                    let context_after = if end == ops.len() { 0 } else { config.context_lines };
                     if length > context_before + context_after + 1 {
                         let upper_nid = tree.add_child(file_content_nid, Node::new_branch());
                         tree.add_children(upper_nid, padded_groups.clone());
@@ -871,7 +962,8 @@ pub fn print_side_by_side_diff_plainly(
     output: &mut impl io::Write,
 ) -> TheResult {
     let diff = make_extended_diff(diff, file_input);
-    let mut tree = build_initial_tree(&diff);
+    let config = default_config();
+    let mut tree = build_initial_tree(&config, &diff);
 
     // Gotta expand the file headers in order to see any content.
     let mut child_option_nid = tree.bordering_child(tree.root, First);
@@ -1033,6 +1125,7 @@ fn u16tos(number: u16) -> usize {
 
 pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal) -> TheResult {
     let diff = make_extended_diff(diff, file_input);
+    let config = default_config();
 
     // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
     let line_number_width = diff
@@ -1051,7 +1144,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
     let mut size = terminal.size()?;
 
     let mut state = {
-        let initial_tree = build_initial_tree(&diff);
+        let initial_tree = build_initial_tree(&config, &diff);
         let initial_wrap_width = compute_wrap_width(u16tos(size.width));
         let initial_scroll = TreeView {
             tree: &initial_tree,
@@ -1101,14 +1194,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
             let mut pos = state.scroll_pos;
             for y in 0..state.scroll_height {
                 if pos == state.cursor_pos {
-                    buffer.set_string(
-                        0,
-                        usto16(y),
-                        ">",
-                        tui::style::Style::default()
-                            .fg(tui::style::Color::White)
-                            .bg(tui::style::Color::Blue),
-                    );
+                    buffer.set_string(0, usto16(y), ">", config.theme.cursor);
                 }
                 let parent_node = state.tree.node(pos.parent);
                 let tree_view = state.tree_view();
@@ -1133,8 +1219,8 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                             };
                             let lx = 1 + side * (line_number_width + 1 + state.wrap_width + 3 + state.wrap_width + 1);
                             let line_number_style = match whl.style {
-                                HalfLineStyle::Phantom => tui::style::Style::default().fg(tui::style::Color::Cyan),
-                                _ => Default::default(),
+                                HalfLineStyle::Phantom => config.theme.line_numbers_phantom,
+                                _ => config.theme.line_numbers_default,
                             };
                             buffer.set_string(usto16(lx), usto16(y), line_number_str, line_number_style);
 
@@ -1178,7 +1264,19 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                 }
                             };
 
-                            for (x, cell) in layout.cells.into_iter().enumerate() {
+                            // TODO: Is this correct? Can it be merged with the above loop? WIP.
+                            for (x, cell) in layout
+                                .cells
+                                .into_iter()
+                                .chain(std::iter::repeat_with(|| LineCell {
+                                    egc: " ".to_string(),
+                                    highlight: config.highlight_newlines && layout.newline_highlight,
+                                    fabricated_symbol: false,
+                                    offset: layout.offset_after,
+                                }))
+                                .take(state.wrap_width)
+                                .enumerate()
+                            {
                                 let LineCell {
                                     egc,
                                     highlight,
@@ -1214,43 +1312,43 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                 *buffer.get_mut(x, y) = if egc.is_empty() {
                                     tui::buffer::Cell::default()
                                 } else {
-                                    let mut fg = tui::style::Color::Reset;
-                                    let mut bg = tui::style::Color::Reset;
-                                    let mut modifier = tui::style::Modifier::empty();
-                                    match whl.style {
-                                        HalfLineStyle::Equal => {}
-                                        HalfLineStyle::Padding => fg = tui::style::Color::DarkGray,
-                                        HalfLineStyle::Change => {
-                                            fg = if side == 0 {
-                                                tui::style::Color::Red
-                                            } else {
-                                                tui::style::Color::Green
-                                            }
-                                        }
-                                        HalfLineStyle::Move => fg = tui::style::Color::Yellow,
-                                        HalfLineStyle::Phantom => {
-                                            fg = tui::style::Color::Cyan;
-                                            modifier |= tui::style::Modifier::DIM;
-                                        }
-                                    }
+                                    let mut style = Style::default();
+                                    style = style.patch(match (whl.style, side != 0) {
+                                        (HalfLineStyle::Equal, _) => config.theme.text_equal,
+                                        (HalfLineStyle::Padding, _) => config.theme.text_padding,
+                                        (HalfLineStyle::Change, false) => config.theme.text_change_old,
+                                        (HalfLineStyle::Change, true) => config.theme.text_change_new,
+                                        (HalfLineStyle::Move, false) => config.theme.text_move_old,
+                                        (HalfLineStyle::Move, true) => config.theme.text_move_new,
+                                        (HalfLineStyle::Phantom, false) => config.theme.text_phantom_old,
+                                        (HalfLineStyle::Phantom, true) => config.theme.text_phantom_new,
+                                    });
                                     if highlight {
-                                        modifier |= tui::style::Modifier::BOLD | tui::style::Modifier::UNDERLINED;
+                                        style = style.patch(match (whl.style, side != 0) {
+                                            (HalfLineStyle::Equal, _) => Style::default(),
+                                            (HalfLineStyle::Padding, _) => Style::default(),
+                                            (HalfLineStyle::Change, false) => config.theme.highlight_change_old,
+                                            (HalfLineStyle::Change, true) => config.theme.highlight_change_new,
+                                            (HalfLineStyle::Move, false) => config.theme.highlight_move_old,
+                                            (HalfLineStyle::Move, true) => config.theme.highlight_move_new,
+                                            (HalfLineStyle::Phantom, false) => config.theme.highlight_phantom_old,
+                                            (HalfLineStyle::Phantom, true) => config.theme.highlight_phantom_new,
+                                        });
                                     }
                                     if fabricated_symbol {
-                                        bg = tui::style::Color::Cyan;
+                                        style = style.patch(config.theme.fabricated_symbol);
                                     }
                                     if selected {
-                                        if fg == tui::style::Color::Reset {
-                                            fg = tui::style::Color::Black;
+                                        // TODO: Fix this and make it configurable too.
+                                        if style.fg == None || style.fg == Some(Color::Reset) {
+                                            style = style.fg(Color::Black);
                                         }
-                                        bg = tui::style::Color::White;
+                                        style = style.bg(Color::White);
                                     }
-                                    tui::buffer::Cell {
-                                        symbol: egc,
-                                        fg,
-                                        bg,
-                                        modifier,
-                                    }
+                                    let mut cell = tui::buffer::Cell::default();
+                                    cell.symbol = egc;
+                                    cell.set_style(style);
+                                    cell
                                 };
                             }
                         }
@@ -1277,13 +1375,9 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                 file_id,
                                 if is_open { "close" } else { "open" }
                             ),
-                            tui::style::Style::default()
-                                .fg(tui::style::Color::Black)
-                                .bg(if is_open {
-                                    tui::style::Color::Green
-                                } else {
-                                    tui::style::Color::Red
-                                }),
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(if is_open { Color::Green } else { Color::Red }),
                         );
                     }
                     UILine::ExpanderLine(hidden_count) => {
@@ -1291,9 +1385,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                             1,
                             usto16(y),
                             format!("...{} hidden lines... (press x/c to expand)", hidden_count),
-                            tui::style::Style::default()
-                                .fg(tui::style::Color::Black)
-                                .bg(tui::style::Color::White),
+                            Style::default().fg(Color::Black).bg(Color::White),
                         );
                     }
                 });
@@ -1396,8 +1488,12 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                 _ => {}
                             }
                         }
-                        crossterm::event::MouseEventKind::ScrollUp => state.scroll_by(3, Prev),
-                        crossterm::event::MouseEventKind::ScrollDown => state.scroll_by(3, Next),
+                        crossterm::event::MouseEventKind::ScrollUp => {
+                            state.scroll_by(config.mouse_wheel_scroll_lines, Prev);
+                        }
+                        crossterm::event::MouseEventKind::ScrollDown => {
+                            state.scroll_by(config.mouse_wheel_scroll_lines, Next);
+                        }
                         _ => {}
                     };
                 }
