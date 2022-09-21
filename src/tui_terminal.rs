@@ -102,16 +102,26 @@ enum BorderSide {
 
 use BorderSide::{First, Last};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HalfLineStyle {
+    Equal,
+    Change,
+    Move,
+    Phantom,
+    Padding,
+}
+
 #[derive(Clone)]
-enum WrappedHalfLine {
-    FromInput {
-        op: DiffOp,
-        section_id: usize,
-        offset: usize,
-    },
-    Fabricated {
-        content: String,
-    },
+enum WrappedHalfLineContent {
+    FromInput { section_id: usize, offset: usize },
+    Fabricated(String),
+}
+
+#[derive(Clone)]
+struct WrappedHalfLine {
+    style: HalfLineStyle,
+    offset_override_for_selection: Option<usize>,
+    content: WrappedHalfLineContent,
 }
 
 #[derive(Clone)]
@@ -137,10 +147,22 @@ struct BranchNode {
 }
 
 #[derive(Clone)]
+enum PaddedGroupRawElementContent {
+    Section(usize),
+    Fabricated(String),
+}
+
+#[derive(Clone)]
+struct PaddedGroupRawElement {
+    style: HalfLineStyle,
+    offset_override_for_selection: Option<usize>,
+    content: PaddedGroupRawElementContent,
+}
+
+#[derive(Clone)]
 struct PaddedGroupNode {
-    equal: bool,
-    relevant_ops: [Vec<(DiffOp, usize)>; 2],
-    offsets: [usize; 2],
+    raw_elements: [Vec<PaddedGroupRawElement>; 2],
+    end_offsets_for_selection: [usize; 2],
     cached_wrap: RefCell<Option<(usize, Vec<UILine>)>>,
 }
 
@@ -300,48 +322,103 @@ impl Tree {
 fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
     let phantom_rendering = true;
 
-    let is_phantom = |(op, section_id): (DiffOp, usize)| -> bool {
-        phantom_rendering
-            && op != DiffOp::Match
-            && !diff.sections[section_id].sides[0].text_with_words.is_empty()
-            && !diff.sections[section_id].sides[1].text_with_words.is_empty()
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum SectionType {
+        MatchEqual,
+        MatchUnequal,
+        InsertDelete,
+        Phantom,
+    }
+
+    let is_move = |(op, section_id): (DiffOp, usize)| -> bool {
+        op != DiffOp::Match
+            && diff.section_sides[section_id][0].is_some()
+            && diff.section_sides[section_id][1].is_some()
     };
 
-    let build_padded_group = |offsets: &mut [usize; 2], ops: &[(DiffOp, usize)]| -> Node {
-        let start_offsets = *offsets;
-        let mut equal = true;
-        let mut relevant_ops = [vec![], vec![]];
-        for &(op, section_id) in ops {
-            for side in 0..2 {
-                if is_phantom((op, section_id)) || op.movement()[side] != 0 {
-                    relevant_ops[side].push((op, section_id));
-                }
-                if op.movement()[side] != 0 {
-                    (*offsets)[side] = diff.section_sides[section_id][side].as_ref().unwrap().byte_range.end;
-                }
-            }
-            if op != DiffOp::Match || !diff.sections[section_id].equal {
-                equal = false;
-            }
-        }
-        Node::PaddedGroup(PaddedGroupNode {
-            equal,
-            relevant_ops,
-            offsets: start_offsets,
-            cached_wrap: RefCell::new(None),
-        })
+    let is_continuing_move = |a: (DiffOp, usize), b: (DiffOp, usize)| -> bool {
+        let other_side = if a.0 == DiffOp::Insert { 0 } else { 1 };
+        is_move(a)
+            && is_move(b)
+            && a.0 == b.0
+            && diff.section_sides[a.1][other_side].as_ref().unwrap().byte_range.end
+                == diff.section_sides[b.1][other_side].as_ref().unwrap().byte_range.start
     };
 
-    let same_section_group = |a: (DiffOp, usize), b: (DiffOp, usize)| -> bool {
-        if a.0 == DiffOp::Match && b.0 == DiffOp::Match && diff.sections[a.1].equal && diff.sections[b.1].equal {
-            true
-        } else if a.0 == DiffOp::Match || b.0 == DiffOp::Match {
-            false
-        } else if is_phantom(a) || is_phantom(b) {
-            false
+    let get_type = |(op, section_id): (DiffOp, usize)| -> SectionType {
+        if op == DiffOp::Match {
+            if diff.sections[section_id].equal {
+                SectionType::MatchEqual
+            } else {
+                SectionType::MatchUnequal
+            }
         } else {
-            true
+            if phantom_rendering && is_move((op, section_id)) {
+                SectionType::Phantom
+            } else {
+                SectionType::InsertDelete
+            }
         }
+    };
+
+    let new_padded_group = |offsets: &[usize; 2]| PaddedGroupNode {
+        raw_elements: [vec![], vec![]],
+        end_offsets_for_selection: offsets.clone(),
+        cached_wrap: RefCell::new(None),
+    };
+
+    let add_fabricated_to_padded_group =
+        |padded_group: &mut PaddedGroupNode, style: HalfLineStyle, side: usize, content: String| {
+            padded_group.raw_elements[side].push(PaddedGroupRawElement {
+                style,
+                offset_override_for_selection: Some(padded_group.end_offsets_for_selection[side]),
+                content: PaddedGroupRawElementContent::Fabricated(content),
+            });
+        };
+
+    let add_section_to_padded_group = |padded_group: &mut PaddedGroupNode,
+                                       offsets: &mut [usize; 2],
+                                       styles: [HalfLineStyle; 2],
+                                       (op, section_id): (DiffOp, usize),
+                                       both_sides: bool| {
+        for side in 0..2 {
+            if both_sides || op.movement()[side] != 0 {
+                let style = styles[side];
+                let section_side = diff.section_sides[section_id][side].as_ref().unwrap();
+                let offset_override_for_selection = if op.movement()[side] != 0 {
+                    (*offsets)[side] = section_side.byte_range.end;
+                    padded_group.end_offsets_for_selection[side] = section_side.byte_range.end;
+                    None
+                } else {
+                    Some((*offsets)[side])
+                };
+                padded_group.raw_elements[side].push(PaddedGroupRawElement {
+                    style,
+                    offset_override_for_selection,
+                    content: PaddedGroupRawElementContent::Section(section_id),
+                });
+                if diff.file_sides[section_side.file_id][side].content.as_bytes()[section_side.byte_range.end - 1]
+                    != b'\n'
+                {
+                    add_fabricated_to_padded_group(padded_group, style, side, "No newline at end of file".to_string());
+                }
+            }
+        }
+    };
+
+    let get_description_of_move = |(op, section_id): (DiffOp, usize), render_side: usize| -> String {
+        let other_side = if op == DiffOp::Delete { 1 } else { 0 };
+        let section_other_side = diff.section_sides[section_id][other_side].as_ref().unwrap();
+        let start = section_other_side.byte_range.start;
+        let file_other_side = &diff.file_sides[section_other_side.file_id][other_side];
+        let filename = &file_other_side.filename;
+        let line_number = file_other_side.byte_offset_to_line_number(start);
+        let direction = match (other_side, render_side) {
+            (0, 1) => "Moved from",
+            (1, 0) => "Moved to",
+            _ => "Preview of",
+        };
+        format!("{direction} {filename}:{line_number}")
     };
 
     let mut tree = Tree::new(Node::new_branch());
@@ -356,40 +433,103 @@ fn build_initial_tree(diff: &ExtendedDiff) -> Tree {
         let mut op_index = 0;
         while op_index < ops.len() {
             let begin = op_index;
+            let section_type = get_type(ops[begin]);
             let mut end = begin + 1;
-            while end < ops.len() && same_section_group(ops[begin], ops[end]) {
-                end += 1;
+            if section_type == SectionType::MatchEqual || section_type == SectionType::InsertDelete {
+                while end < ops.len() && get_type(ops[end]) == section_type {
+                    end += 1;
+                }
             }
             op_index = end;
 
-            let section_group_is_match_equal = ops[begin].0 == DiffOp::Match && diff.sections[ops[begin].1].equal;
+            match section_type {
+                SectionType::MatchEqual => {
+                    let length = end - begin;
+                    let mut padded_groups = vec![];
+                    for i in begin..end {
+                        let mut padded_group = new_padded_group(&offsets);
+                        add_section_to_padded_group(
+                            &mut padded_group,
+                            &mut offsets,
+                            [HalfLineStyle::Equal; 2],
+                            ops[i],
+                            true,
+                        );
+                        padded_groups.push(Node::PaddedGroup(padded_group));
+                    }
 
-            if section_group_is_match_equal {
-                let length = end - begin;
-                let mut padded_groups = vec![];
-                for i in begin..end {
-                    padded_groups.push(build_padded_group(&mut offsets, &ops[i..i + 1]));
+                    let context = 3; // TODO configurable
+                    let context_before = if begin == 0 { 0 } else { context };
+                    let context_after = if end == ops.len() { 0 } else { context };
+                    if length > context_before + context_after + 1 {
+                        let upper_nid = tree.add_child(file_content_nid, Node::new_branch());
+                        tree.add_children(upper_nid, padded_groups.clone());
+                        tree.node_mut(upper_nid).as_branch_mut().visible = 0..context_before;
+
+                        let hidden_count = length - context_before - context_after;
+                        tree.add_child(file_content_nid, Node::ExpanderLine(hidden_count));
+
+                        let lower_nid = tree.add_child(file_content_nid, Node::new_branch());
+                        tree.add_children(lower_nid, padded_groups);
+                        tree.node_mut(lower_nid).as_branch_mut().visible = (length - context_after)..length;
+                    } else {
+                        tree.add_children(file_content_nid, padded_groups);
+                    }
                 }
-
-                let context = 3; // TODO configurable
-                let context_before = if begin == 0 { 0 } else { context };
-                let context_after = if end == ops.len() { 0 } else { context };
-                if length > context_before + context_after + 1 {
-                    let upper_nid = tree.add_child(file_content_nid, Node::new_branch());
-                    tree.add_children(upper_nid, padded_groups.clone());
-                    tree.node_mut(upper_nid).as_branch_mut().visible = 0..context_before;
-
-                    let hidden_count = length - context_before - context_after;
-                    tree.add_child(file_content_nid, Node::ExpanderLine(hidden_count));
-
-                    let lower_nid = tree.add_child(file_content_nid, Node::new_branch());
-                    tree.add_children(lower_nid, padded_groups);
-                    tree.node_mut(lower_nid).as_branch_mut().visible = (length - context_after)..length;
-                } else {
-                    tree.add_children(file_content_nid, padded_groups);
+                SectionType::MatchUnequal => {
+                    let mut padded_group = new_padded_group(&offsets);
+                    add_section_to_padded_group(
+                        &mut padded_group,
+                        &mut offsets,
+                        [HalfLineStyle::Change; 2],
+                        ops[begin],
+                        true,
+                    );
+                    tree.add_child(file_content_nid, Node::PaddedGroup(padded_group));
                 }
-            } else {
-                tree.add_child(file_content_nid, build_padded_group(&mut offsets, &ops[begin..end]));
+                SectionType::InsertDelete => {
+                    let mut padded_group = new_padded_group(&offsets);
+                    for i in begin..end {
+                        let style = if is_move(ops[i]) {
+                            HalfLineStyle::Move
+                        } else {
+                            HalfLineStyle::Change
+                        };
+                        if is_move(ops[i]) && (i == 0 || !is_continuing_move(ops[i - 1], ops[i])) {
+                            let side = if ops[i].0 == DiffOp::Delete { 0 } else { 1 };
+                            add_fabricated_to_padded_group(
+                                &mut padded_group,
+                                style,
+                                side,
+                                get_description_of_move(ops[i], side),
+                            );
+                        }
+                        add_section_to_padded_group(&mut padded_group, &mut offsets, [style; 2], ops[i], false);
+                    }
+                    tree.add_child(file_content_nid, Node::PaddedGroup(padded_group));
+                }
+                SectionType::Phantom => {
+                    let styles = if ops[begin].0 == DiffOp::Delete {
+                        [HalfLineStyle::Move, HalfLineStyle::Phantom]
+                    } else {
+                        [HalfLineStyle::Phantom, HalfLineStyle::Move]
+                    };
+                    if begin == 0 || !is_continuing_move(ops[begin - 1], ops[begin]) {
+                        let mut padded_group = new_padded_group(&offsets);
+                        for side in 0..2 {
+                            add_fabricated_to_padded_group(
+                                &mut padded_group,
+                                styles[side],
+                                side,
+                                get_description_of_move(ops[begin], side),
+                            );
+                        }
+                        tree.add_child(file_content_nid, Node::PaddedGroup(padded_group));
+                    }
+                    let mut padded_group = new_padded_group(&offsets);
+                    add_section_to_padded_group(&mut padded_group, &mut offsets, styles, ops[begin], true);
+                    tree.add_child(file_content_nid, Node::PaddedGroup(padded_group));
+                }
             }
         }
     }
@@ -403,7 +543,7 @@ struct LineCell {
     egc: String,
     offset: usize,
     highlight: bool,
-    fabricated: bool,
+    fabricated_symbol: bool,
 }
 
 struct LineLayout {
@@ -419,7 +559,7 @@ fn layout_one_line(
     mut offset: usize,
     end: usize,
     wrap_width: usize,
-) -> (LineLayout, bool) {
+) -> LineLayout {
     let mut cells = vec![];
 
     let highlight_points_index = highlight_points.partition_point(|&(point, _)| point <= offset);
@@ -443,14 +583,14 @@ fn layout_one_line(
         }
 
         if egc == "\n" {
-            return (new_layout(cells, highlight, offset + egc.len()), true);
+            return new_layout(cells, highlight, offset + egc.len());
         }
 
         assert!(!egc.contains('\n'));
 
         let split = |string: &str| (string.chars().map(|c| c.to_string()).collect(), true);
 
-        let (cell_strings, fabricated) = match egc {
+        let (cell_strings, fabricated_symbol) = match egc {
             "\t" => split(&" ".repeat(8 - cells.len() % 8)),
             _ => {
                 assert!(!egc.contains('\t'));
@@ -469,7 +609,7 @@ fn layout_one_line(
         assert!(cell_strings.len() <= wrap_width);
 
         if cells.len() + cell_strings.len() > wrap_width {
-            return (new_layout(cells, highlight, offset), false);
+            return new_layout(cells, highlight, offset);
         }
 
         for cell_string in cell_strings {
@@ -477,69 +617,45 @@ fn layout_one_line(
                 egc: cell_string,
                 offset,
                 highlight,
-                fabricated,
+                fabricated_symbol,
             });
         }
 
         offset += egc.len();
     }
 
-    (new_layout(cells, highlight, offset), false)
+    new_layout(cells, highlight, offset)
 }
 
 fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_width: usize) -> Vec<WrappedHalfLine> {
-    let fabricate = |out: &mut Vec<WrappedHalfLine>, mut content: &str| {
-        while !content.is_empty() {
-            let offset = layout_one_line(content, &[(0, false)], 0, content.len(), wrap_width)
-                .0
-                .offset_after;
-            out.push(WrappedHalfLine::Fabricated {
-                content: content[0..offset].to_string(),
-            });
-            content = &content[offset..];
-        }
-    };
-
     let mut out: Vec<WrappedHalfLine> = vec![];
-    let mut last_move: Option<(DiffOp, usize)> = None;
-    for &(op, section_id) in &node.relevant_ops[side] {
-        let section_side = diff.section_sides[section_id][side].as_ref().unwrap();
-
-        if op != DiffOp::Match {
-            if let Some(section_other_side) = &diff.section_sides[section_id][1 - side] {
-                let Range { start, end } = section_other_side.byte_range;
-                let file_other_side = &diff.file_sides[section_other_side.file_id][1 - side];
-                if last_move != Some((op, start)) {
-                    let direction = if op == DiffOp::Insert { "Moved from" } else { "Moved to" };
-                    let filename = &file_other_side.filename;
-                    let line_number = file_other_side.byte_offset_to_line_number(start);
-                    fabricate(&mut out, &format!("{direction} {filename}:{line_number}"));
-                }
-                last_move = Some((op, end));
-            } else {
-                last_move = None;
+    for raw_element in &node.raw_elements[side] {
+        let (content, byte_range, highlight_points): (&str, _, &[_]) = match raw_element.content {
+            PaddedGroupRawElementContent::Section(section_id) => {
+                let section_side = diff.section_sides[section_id][side].as_ref().unwrap();
+                let content = diff.file_sides[section_side.file_id][side].content;
+                (content, section_side.byte_range.clone(), &section_side.highlight_points)
             }
-        } else {
-            last_move = None;
-        }
+            PaddedGroupRawElementContent::Fabricated(ref content) => (content, 0..content.len(), &[(0, false)]),
+        };
 
-        let mut offset = section_side.byte_range.start;
-        let mut ends_with_newline = true;
-        while offset != section_side.byte_range.end {
-            out.push(WrappedHalfLine::FromInput { op, section_id, offset });
-            let res = layout_one_line(
-                diff.file_sides[section_side.file_id][side].content,
-                &section_side.highlight_points,
-                offset,
-                section_side.byte_range.end,
-                wrap_width,
-            );
-            offset = res.0.offset_after;
-            ends_with_newline = res.1;
-        }
-
-        if !ends_with_newline {
-            fabricate(&mut out, &"No newline at end of file");
+        let mut pos = byte_range.start;
+        while pos != byte_range.end {
+            let next = layout_one_line(content, highlight_points, pos, byte_range.end, wrap_width).offset_after;
+            out.push(WrappedHalfLine {
+                style: raw_element.style,
+                offset_override_for_selection: raw_element.offset_override_for_selection,
+                content: match raw_element.content {
+                    PaddedGroupRawElementContent::Section(section_id) => WrappedHalfLineContent::FromInput {
+                        section_id,
+                        offset: pos,
+                    },
+                    PaddedGroupRawElementContent::Fabricated(..) => {
+                        WrappedHalfLineContent::Fabricated(content[pos..next].to_string())
+                    }
+                },
+            });
+            pos = next;
         }
     }
     out
@@ -561,14 +677,18 @@ impl<'a> TreeView<'a> {
             Node::PaddedGroup(node) => match node.cached_wrap.borrow_mut().deref_mut() {
                 Some((w, l)) if *w == self.wrap_width => func(l),
                 cached_wrap => {
-                    // TODO: temporary padding indicators
-                    let padding = WrappedHalfLine::Fabricated {
-                        content: "@".to_string(),
-                    };
-                    let wrapped_sides = [0, 1].map(|side| wrap_one_side(self.diff, &node, side, self.wrap_width));
-                    let len = std::cmp::max(wrapped_sides[0].len(), wrapped_sides[1].len());
-                    let padded_wrapped_sides =
-                        wrapped_sides.map(|side| side.into_iter().chain(std::iter::repeat(padding.clone())));
+                    let wrapped_sides =
+                        [0, 1].map(|side| (side, wrap_one_side(self.diff, &node, side, self.wrap_width)));
+                    let len = std::cmp::max(wrapped_sides[0].1.len(), wrapped_sides[1].1.len());
+                    let padded_wrapped_sides = wrapped_sides.map(|(side, whls)| {
+                        // TODO: temporary padding indicators
+                        let padding = WrappedHalfLine {
+                            style: HalfLineStyle::Padding,
+                            offset_override_for_selection: Some(node.end_offsets_for_selection[side]),
+                            content: WrappedHalfLineContent::Fabricated("@".to_string()),
+                        };
+                        whls.into_iter().chain(std::iter::repeat(padding))
+                    });
                     let [side0, side1] = padded_wrapped_sides;
                     let lines: Vec<UILine> = std::iter::zip(side0, side1)
                         .map(|(line0, line1)| UILine::Sides([line0, line1]))
@@ -586,8 +706,8 @@ impl<'a> TreeView<'a> {
     }
 
     fn get_wrapped_half_line_layout(&self, whl: &WrappedHalfLine, side: usize) -> LineLayout {
-        match whl {
-            &WrappedHalfLine::FromInput { section_id, offset, .. } => {
+        match whl.content {
+            WrappedHalfLineContent::FromInput { section_id, offset } => {
                 let section_side = self.diff.section_sides[section_id][side].as_ref().unwrap();
                 layout_one_line(
                     self.diff.file_sides[section_side.file_id][side].content,
@@ -597,11 +717,10 @@ impl<'a> TreeView<'a> {
                     self.wrap_width,
                 )
             }
-            WrappedHalfLine::Fabricated { content } => {
+            WrappedHalfLineContent::Fabricated(ref content) => {
                 layout_one_line(content, &[(0, false)], 0, content.len(), self.wrap_width)
             }
         }
-        .0
     }
 
     /// Returns the first/last visible leaf under `nid`, if it exists.
@@ -994,47 +1113,82 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                 let tree_view = state.tree_view();
                 tree_view.with_ui_lines(parent_node, |lines| match &lines[pos.line_index] {
                     UILine::Sides(sides) => {
-                        let equal = match parent_node {
-                            Node::PaddedGroup(node) => node.equal,
-                            _ => panic!("wat"),
-                        };
-
                         for side in 0..2 {
-                            let is_selectable = match sides[side] {
-                                WrappedHalfLine::FromInput { op, .. } => op.movement()[side] != 0,
-                                WrappedHalfLine::Fabricated { .. } => false,
-                            };
-                            let file_id = 0; // TODO
-                            let line_number_str = match sides[side] {
-                                WrappedHalfLine::FromInput { section_id, offset, .. } => {
+                            let whl = &sides[side];
+                            let (file_id_for_rendering, line_number_str) = match whl.content {
+                                WrappedHalfLineContent::FromInput { section_id, offset, .. } => {
                                     let file_id = diff.section_sides[section_id][side].as_ref().unwrap().file_id;
                                     let file_side = &diff.file_sides[file_id][side];
                                     let line_number = file_side.byte_offset_to_line_number(offset);
-                                    if offset == file_side.line_offsets[line_number] {
+                                    let line_number_str = if offset == file_side.line_offsets[line_number] {
                                         format!("{line_number:>line_number_width$}")
                                     } else {
                                         let my_width = line_number.to_string().len();
                                         " ".repeat(line_number_width - my_width) + &"+".repeat(my_width)
-                                    }
+                                    };
+                                    (Some(file_id), line_number_str)
                                 }
-                                WrappedHalfLine::Fabricated { .. } => " ".repeat(line_number_width),
+                                WrappedHalfLineContent::Fabricated(..) => (None, " ".repeat(line_number_width)),
                             };
                             let lx = 1 + side * (line_number_width + 1 + state.wrap_width + 3 + state.wrap_width + 1);
-                            buffer.set_string(usto16(lx), usto16(y), line_number_str, Default::default());
+                            let line_number_style = match whl.style {
+                                HalfLineStyle::Phantom => tui::style::Style::default().fg(tui::style::Color::Cyan),
+                                _ => Default::default(),
+                            };
+                            buffer.set_string(usto16(lx), usto16(y), line_number_str, line_number_style);
 
-                            let layout = tree_view.get_wrapped_half_line_layout(&sides[side], side);
                             let screen_start_x = 1 + line_number_width + 1 + side * (state.wrap_width + 3);
-                            let num_cells = layout.cells.len();
+
+                            let layout = tree_view.get_wrapped_half_line_layout(whl, side);
+
+                            // TODO: This loop runs at most a few times, but it might be nicer to avoid it.
+                            let file_id_for_selection = {
+                                let mut nid = pos.parent;
+                                loop {
+                                    if tree_view.tree.node_meta(nid).index_in_parent == 1 {
+                                        let sibling_nid = tree_view.tree.sibling(nid, Prev).unwrap();
+                                        if let Node::FileHeaderLine(file_id) = tree_view.tree.node(sibling_nid) {
+                                            break Some(*file_id);
+                                        }
+                                    }
+                                    if let Some(parent_nid) = tree_view.tree.parent(nid) {
+                                        nid = parent_nid;
+                                    } else {
+                                        break None;
+                                    }
+                                }
+                            };
+
+                            if let Some(file_id_for_selection) = file_id_for_selection {
+                                for x in 0..state.wrap_width {
+                                    if let Some(offset) = whl.offset_override_for_selection {
+                                        mouse_cells[y][screen_start_x + x] = MouseCell::Text {
+                                            file_id: file_id_for_selection,
+                                            side,
+                                            offset,
+                                        };
+                                    } else if file_id_for_rendering == Some(file_id_for_selection) {
+                                        mouse_cells[y][screen_start_x + x] = MouseCell::Text {
+                                            file_id: file_id_for_selection,
+                                            side,
+                                            offset: layout.offset_after,
+                                        };
+                                    }
+                                }
+                            };
+
                             for (x, cell) in layout.cells.into_iter().enumerate() {
                                 let LineCell {
                                     egc,
                                     highlight,
-                                    fabricated,
+                                    fabricated_symbol,
                                     offset,
                                 } = cell;
                                 let selected = match &state.selection {
                                     Some(selection) => {
-                                        file_id == selection.file_id
+                                        file_id_for_selection == Some(selection.file_id)
+                                            && file_id_for_rendering == Some(selection.file_id)
+                                            && whl.offset_override_for_selection.is_none()
                                             && side == selection.side
                                             && offset >= std::cmp::min(selection.start_offset, selection.current_offset)
                                             && offset < std::cmp::max(selection.start_offset, selection.current_offset)
@@ -1043,8 +1197,10 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                 };
                                 let x = screen_start_x + x;
 
-                                if is_selectable {
-                                    mouse_cells[y][x] = MouseCell::Text { file_id, side, offset };
+                                if whl.offset_override_for_selection.is_none() {
+                                    if let Some(file_id) = file_id_for_selection {
+                                        mouse_cells[y][x] = MouseCell::Text { file_id, side, offset };
+                                    }
                                 }
 
                                 let x = usto16(x);
@@ -1057,45 +1213,45 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                 *buffer.get_mut(x, y) = if egc.is_empty() {
                                     tui::buffer::Cell::default()
                                 } else {
+                                    let mut fg = tui::style::Color::Reset;
+                                    let mut bg = tui::style::Color::Reset;
+                                    let mut modifier = tui::style::Modifier::empty();
+                                    match whl.style {
+                                        HalfLineStyle::Equal => {}
+                                        HalfLineStyle::Padding => fg = tui::style::Color::DarkGray,
+                                        HalfLineStyle::Change => {
+                                            fg = if side == 0 {
+                                                tui::style::Color::Red
+                                            } else {
+                                                tui::style::Color::Green
+                                            }
+                                        }
+                                        HalfLineStyle::Move => fg = tui::style::Color::Yellow,
+                                        HalfLineStyle::Phantom => {
+                                            fg = tui::style::Color::Cyan;
+                                            modifier |= tui::style::Modifier::DIM;
+                                        }
+                                    }
+                                    if highlight {
+                                        modifier |= tui::style::Modifier::BOLD | tui::style::Modifier::UNDERLINED;
+                                    }
+                                    if fabricated_symbol {
+                                        bg = tui::style::Color::Cyan;
+                                    }
+                                    if selected {
+                                        if fg == tui::style::Color::Reset {
+                                            fg = tui::style::Color::Black;
+                                        }
+                                        bg = tui::style::Color::White;
+                                    }
                                     tui::buffer::Cell {
                                         symbol: egc,
-                                        fg: if equal {
-                                            if selected {
-                                                tui::style::Color::Black
-                                            } else {
-                                                tui::style::Color::Reset
-                                            }
-                                        } else if side == 0 {
-                                            tui::style::Color::Red
-                                        } else {
-                                            tui::style::Color::Green
-                                        },
-                                        bg: if selected {
-                                            tui::style::Color::White
-                                        } else if fabricated {
-                                            tui::style::Color::Cyan
-                                        } else {
-                                            tui::style::Color::Reset
-                                        },
-                                        modifier: if highlight {
-                                            tui::style::Modifier::BOLD | tui::style::Modifier::UNDERLINED
-                                        } else {
-                                            tui::style::Modifier::empty()
-                                        },
+                                        fg,
+                                        bg,
+                                        modifier,
                                     }
                                 };
                             }
-                            if is_selectable {
-                                for x in num_cells..state.wrap_width {
-                                    mouse_cells[y][screen_start_x + x] = MouseCell::Text {
-                                        file_id,
-                                        side,
-                                        offset: layout.offset_after,
-                                    };
-                                }
-                            }
-
-                            // TODO: Set mouse_cells at end of line to MouseCell::Text
                         }
                         buffer.set_string(
                             usto16(1 + line_number_width + 1 + state.wrap_width + 1),
@@ -1241,7 +1397,6 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                         crossterm::event::MouseEventKind::ScrollDown => state.scroll_by(3, Next),
                         _ => {}
                     };
-                    // TODO
                 }
                 _ => {}
             };
