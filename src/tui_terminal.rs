@@ -1,11 +1,12 @@
 use super::algorithm::{Diff, DiffOp, FileDiff, Section};
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::error::Error;
 use std::io::{self, Write as _};
 use std::ops::{DerefMut as _, Range};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
@@ -1332,9 +1333,10 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(e) => match e.code {
                     KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Char('c') if e.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
                     KeyCode::Up => state.scroll_by(1, Prev),
                     KeyCode::Down => state.scroll_by(1, Next),
-                    KeyCode::PageUp => state.scroll_by(state.scroll_height, Prev),
+                    KeyCode::PageUp | KeyCode::Char('b') => state.scroll_by(state.scroll_height, Prev),
                     KeyCode::PageDown | KeyCode::Char(' ') => state.scroll_by(state.scroll_height, Next),
                     KeyCode::Char('w') | KeyCode::Char('k') => state.move_cursor_by(1, Prev),
                     KeyCode::Char('s') | KeyCode::Char('j') => state.move_cursor_by(1, Next),
@@ -1355,6 +1357,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                     // TODO: if at beginning xor end (zero context lines on one side), don't show that button
                     KeyCode::Char('x') => state.expand_expander(state.cursor_pos.parent, 3, Prev),
                     KeyCode::Char('c') => state.expand_expander(state.cursor_pos.parent, 3, Next),
+                    KeyCode::Char('p') if e.modifiers.contains(KeyModifiers::CONTROL) => panic!("intentional panic"),
                     _ => write!(terminal.backend_mut(), "\x07")?,
                 },
                 crossterm::event::Event::Mouse(e) => {
@@ -1417,17 +1420,28 @@ pub fn run_in_terminal(f: impl FnOnce(&mut TheTerminal) -> TheResult) -> TheResu
     let backend = tui::backend::CrosstermBackend::new(io::stdout());
     let mut terminal = tui::Terminal::new(backend)?;
 
-    // TODO: Register a panic/signal/??? handler that cleans up the terminal.
+    fn reset_terminal() -> TheResult {
+        crossterm::terminal::disable_raw_mode()?;
+        crossterm::execute!(
+            io::stdout(),
+            crossterm::event::DisableMouseCapture,
+            crossterm::terminal::LeaveAlternateScreen
+        )?;
+        Ok(())
+    }
+
+    let original_hook = Arc::new(Mutex::new(std::panic::take_hook()));
+    let original_hook_ref = original_hook.clone();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        reset_terminal().unwrap();
+        original_hook_ref.lock().unwrap()(panic_info);
+    }));
 
     let result = f(&mut terminal);
 
-    terminal.show_cursor()?;
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        io::stdout(),
-        crossterm::event::DisableMouseCapture,
-        crossterm::terminal::LeaveAlternateScreen
-    )?;
+    std::panic::set_hook(std::mem::replace(&mut *original_hook.lock().unwrap(), Box::new(|_| {})));
+
+    reset_terminal()?;
 
     result
 }
