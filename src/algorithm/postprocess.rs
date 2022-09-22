@@ -30,15 +30,11 @@ fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> 
     let mut section_contains_match = false;
     let mut current_line_start = [0, 0]; // indices into section_contents
 
-    for (i, op) in alignment.iter().enumerate() {
+    for (i, &op) in alignment.iter().enumerate() {
         let is_last = i + 1 >= alignment.len();
 
-        let (used_words, is_match) = match op {
-            DiffOp::Delete => ([1, 0], false),
-            DiffOp::Insert => ([0, 1], false),
-            DiffOp::Match => ([1, 1], true),
-        };
-
+        let is_match = op == DiffOp::Match;
+        let used_words = op.movement();
         let mut is_newline = false;
 
         for side in 0..2 {
@@ -104,15 +100,6 @@ pub fn build_diff<'a>(texts: &[PartitionedText<'a>; 2], fragments: Vec<(AlignedF
     let mut sections = vec![];
 
     for (fragment, _is_main) in fragments.iter() {
-        for side in 0..2 {
-            if texts[side].get_word(fragment.ends[side] - 1) != "\n" {
-                println!(
-                    "Bad fragment side:\n{}",
-                    &texts[side].text
-                        [texts[side].word_bounds[fragment.starts[side]]..texts[side].word_bounds[fragment.ends[side]]]
-                );
-            }
-        }
         let parts = [
             get_partitioned_subtext(&texts[0], fragment.starts[0], fragment.ends[0]),
             get_partitioned_subtext(&texts[1], fragment.starts[1], fragment.ends[1]),
@@ -234,28 +221,6 @@ pub fn build_diff<'a>(texts: &[PartitionedText<'a>; 2], fragments: Vec<(AlignedF
     }
 
     let file_diff = FileDiff { ops: file_ops };
-
-    for section in sections.iter() {
-        let mut is_weird = false;
-        for side in 0..2 {
-            let words = &section.sides[side].text_with_words;
-            if !words.is_empty() && !words.last().unwrap().1.ends_with("\n") {
-                is_weird = true;
-            }
-        }
-        if is_weird {
-            println!("left:");
-            for word in section.sides[0].text_with_words.iter() {
-                print!("{}", word.1);
-            }
-            println!();
-            println!("right:");
-            for word in section.sides[1].text_with_words.iter() {
-                print!("{}", word.1);
-            }
-            println!();
-        }
-    }
 
     Diff {
         sections,

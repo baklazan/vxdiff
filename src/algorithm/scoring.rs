@@ -1,6 +1,5 @@
 use super::*;
 use string_interner::StringInterner;
-use tui::layout::Direction;
 
 pub type TScore = f64;
 
@@ -15,14 +14,12 @@ pub trait ScoreState: Clone {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DpDirection {
     Backward,
-    Forward
+    Forward,
 }
-
 
 pub trait AlignmentScoringMethod {
     type State: ScoreState;
-    
-    
+
     fn starting_state(&self, starting_score: TScore) -> Self::State;
     fn consider_step(
         &self,
@@ -31,8 +28,9 @@ pub trait AlignmentScoringMethod {
         state_after_move: Self::State,
         state: &mut Self::State,
         step: DiffOp,
-        direction: DpDirection
+        direction: DpDirection,
     );
+    fn is_match(&self, old_index: usize, new_index: usize) -> bool;
 }
 
 #[derive(Clone)]
@@ -144,12 +142,12 @@ impl AlignmentScoringMethod for SimpleScoring {
         state_after_move: Self::State,
         state: &mut Self::State,
         step: DiffOp,
-        direction: DpDirection
+        direction: DpDirection,
     ) {
         let step_score = if step == DiffOp::Match {
             match direction {
                 DpDirection::Backward => self.match_score(old_index, new_index),
-                DpDirection::Forward => self.match_score(old_index - 1, new_index - 1)
+                DpDirection::Forward => self.match_score(old_index - 1, new_index - 1),
             }
         } else {
             Self::gap_score()
@@ -159,6 +157,10 @@ impl AlignmentScoringMethod for SimpleScoring {
             state.scores[0] = proposed_score;
             state.next_steps[0] = Some((step, 0));
         }
+    }
+
+    fn is_match(&self, old_index: usize, new_index: usize) -> bool {
+        self.symbols[0][old_index] == self.symbols[1][new_index]
     }
 }
 
@@ -249,13 +251,13 @@ impl AlignmentScoringMethod for AffineScoring {
         state_after_move: Self::State,
         state: &mut Self::State,
         step: DiffOp,
-        direction: DpDirection
+        direction: DpDirection,
     ) {
         let index_correction = match direction {
             DpDirection::Backward => 0,
-            DpDirection::Forward => 1
+            DpDirection::Forward => 1,
         };
-        
+
         let mut improve = |substate: usize, proposed: TScore, proposed_movement: &Option<(DiffOp, usize)>| {
             if state.scores[substate] < proposed {
                 state.scores[substate] = proposed;
@@ -273,7 +275,8 @@ impl AlignmentScoringMethod for AffineScoring {
             if self.symbols[0][old_index - index_correction] != self.symbols[1][new_index - index_correction] {
                 return;
             }
-            let score_without_transition = state_after_move.scores[Self::MATCH] + self.information_values[0][old_index - index_correction];
+            let score_without_transition =
+                state_after_move.scores[Self::MATCH] + self.information_values[0][old_index - index_correction];
             let movement = Some((DiffOp::Match, Self::MATCH));
             let p_stay_match = 1.0 - (Self::P_START_GAP/*+ Self::P_START_WHITE_GAP*/) * change_coef;
             improve(Self::MATCH, score_without_transition + p_stay_match.log2(), &movement);
@@ -318,6 +321,10 @@ impl AlignmentScoringMethod for AffineScoring {
             }
         }
     }
+
+    fn is_match(&self, old_index: usize, new_index: usize) -> bool {
+        self.symbols[0][old_index] == self.symbols[1][new_index]
+    }
 }
 
 pub trait FragmentBoundsScoringMethod {
@@ -335,7 +342,7 @@ impl FragmentBoundsScoringMethod for AffineScoring {
     fn fragment_bound_penalty(&self, old_index: usize, new_index: usize) -> TScore {
         self.bound_score[0][old_index] + self.bound_score[1][new_index]
     }
-    
+
     fn is_viable_bound(&self, side: usize, index: usize) -> bool {
         self.bound_score[side][index] != TScore::NEG_INFINITY
     }

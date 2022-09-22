@@ -5,10 +5,7 @@ mod preprocess;
 mod scoring;
 mod seed_selection;
 
-use dynamic_programming::*;
-use scoring::*;
-
-use self::{fragment_selection::{select_candidates, greedy_fragments}, preprocess::partition_into_words};
+use self::{fragment_selection::greedy_fragments, preprocess::partition_into_words};
 
 #[derive(Debug)]
 pub struct Diff<'a> {
@@ -35,13 +32,6 @@ pub struct SectionSide<'a> {
 pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
     let texts = [partition_into_words(old), partition_into_words(new)];
 
-    /*let alignment_candidates = candidate_fragments(&texts);
-    let aligned_fragments = select_candidates(
-        &alignment_candidates,
-        [texts[0].word_count(), texts[1].word_count()],
-        AffineScoring::SUPERSECTION_THRESHOLD,
-        AffineScoring::MOVED_SUPERSECTION_THRESHOLD,
-    );*/
     let aligned_fragments = greedy_fragments(&texts);
     postprocess::build_diff(&texts, aligned_fragments)
 }
