@@ -86,12 +86,26 @@ fn new_theme() -> Theme {
     }
 }
 
+enum ClipboardMechanism {
+    /// Copy to clipboard using the OSC 52 escape sequence.
+    /// Needs support from the terminal.
+    /// See also: https://github.com/zyedidia/micro/blob/master/runtime/help/copypaste.md
+    Terminal,
+
+    /// Copy to clipboard by running a helper such as xclip, xsel or pbcopy.
+    ExternalHelper,
+
+    /// Don't copy to system clipboard.
+    None,
+}
+
 struct Config {
     context_lines: usize,
     mouse_wheel_scroll_lines: usize,
     phantom_rendering: bool,
     highlight_newlines: bool,
     theme: Theme,
+    clipboard_mechanism: ClipboardMechanism,
 }
 
 fn default_config() -> Config {
@@ -101,6 +115,11 @@ fn default_config() -> Config {
         phantom_rendering: true,
         highlight_newlines: false,
         theme: new_theme(),
+        clipboard_mechanism: if std::env::var_os("VXDIFF_EXTCOPY").is_some() {
+            ClipboardMechanism::ExternalHelper
+        } else {
+            ClipboardMechanism::Terminal
+        },
     }
 }
 
@@ -1114,6 +1133,71 @@ where
     }
 }
 
+fn copy_to_clipboard(mechanism: &ClipboardMechanism, text: &str) -> TheResult {
+    match mechanism {
+        ClipboardMechanism::Terminal => {
+            // https://terminalguide.namepad.de/seq/osc-52/
+            io::stdout().write(format!("\x1b]52;c;{}\x1b\\", base64::encode(text)).as_bytes())?;
+        }
+        ClipboardMechanism::ExternalHelper => {
+            let mut found_candidate = false;
+            let mut try_candidate = |cmd: &str, args: &[&str]| -> TheResult {
+                if !found_candidate {
+                    match std::process::Command::new(cmd)
+                        .args(args)
+                        .current_dir("/")
+                        .stdin(std::process::Stdio::piped())
+                        .spawn()
+                    {
+                        Ok(mut child) => {
+                            found_candidate = true;
+                            // TODO: We should use threads or select() or something.
+                            child.stdin.take().unwrap().write(text.as_bytes())?;
+                            let status = child.wait()?;
+                            if !status.success() {
+                                return TheResult::Err(
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        &*format!("{cmd} exited with status {status}"),
+                                    )
+                                    .into(),
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            if err.kind() != std::io::ErrorKind::NotFound {
+                                return TheResult::Err(err.into());
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            };
+            // https://github.com/neovim/neovim/blob/cd96fe06e188bcd6e64f78cb078a307fb45f31f0/runtime/autoload/provider/clipboard.vim
+            #[cfg(target_os = "macos")]
+            try_candidate("pbcopy", &[])?;
+            #[cfg(not(target_os = "macos"))]
+            {
+                if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                    try_candidate("wl-copy", &["--primary", "--type", "text/plain"])?;
+                }
+                if std::env::var_os("DISPLAY").is_some() {
+                    try_candidate("xclip", &["-i", "-selection", "primary"])?;
+                    try_candidate("xsel", &["-i", "-p"])?;
+                }
+                try_candidate("lemonade", &["copy"])?;
+                try_candidate("doitclient", &["wclip"])?;
+                try_candidate("termux-clipboard-set", &[])?;
+                if std::env::var_os("TMUX").is_some() {
+                    try_candidate("tmux", &["load-buffer", "-"])?;
+                }
+            }
+        }
+        ClipboardMechanism::None => {}
+    }
+    Ok(())
+}
+
 type TheTerminal = tui::terminal::Terminal<tui::backend::CrosstermBackend<io::Stdout>>;
 
 fn usto16(number: usize) -> u16 {
@@ -1484,6 +1568,12 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                 Some(ref mut selection) if selection.selecting => {
                                     update_selection_position(selection, x, y);
                                     selection.selecting = false;
+                                    let from = std::cmp::min(selection.start_offset, selection.current_offset);
+                                    let to = std::cmp::max(selection.start_offset, selection.current_offset);
+                                    copy_to_clipboard(
+                                        &config.clipboard_mechanism,
+                                        &file_input[selection.file_id][selection.side][from..to],
+                                    )?;
                                 }
                                 _ => {}
                             }
