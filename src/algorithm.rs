@@ -59,6 +59,7 @@ pub struct AlignedFragment {
     alignment: Vec<DiffOp>,
 }
 
+#[derive(Default)]
 pub struct PartitionedText<'a> {
     pub text: &'a str,
     pub word_bounds: Vec<usize>,

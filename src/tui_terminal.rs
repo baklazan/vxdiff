@@ -32,6 +32,7 @@ struct Theme {
     fabricated_symbol: Style,
 }
 
+#[allow(dead_code)]
 fn default_theme() -> Theme {
     let highlight = Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     Theme {
@@ -56,6 +57,7 @@ fn default_theme() -> Theme {
     }
 }
 
+#[allow(dead_code)]
 fn new_theme() -> Theme {
     let black = Color::Indexed(16); // #000000
     let white = Color::Indexed(253); // #DADADA
