@@ -128,8 +128,8 @@ fn default_config() -> Config {
 struct ExtendedDiffSectionSide {
     file_id: usize,
     byte_range: Range<usize>,
-    // TODO: If this encoding works out in practice, replace text_with_words in Diff with this.
-    highlight_points: Vec<(usize, bool)>,
+    highlight_bounds: Vec<usize>,
+    highlight_first: bool,
 }
 
 struct ExtendedDiffFileSide<'a> {
@@ -180,21 +180,25 @@ fn make_extended_diff<'a>(diff: &'a Diff, file_input: &'a [[&'a str; 2]]) -> Ext
                     continue;
                 }
                 let offset_start = offset;
-                let mut highlight_points = vec![];
-                for &(highlight, text) in &diff.sections[section_id].sides[side].text_with_words {
-                    highlight_points.push((offset, highlight));
-                    for ch in text.bytes() {
-                        offset += 1;
-                        if ch == b'\n' {
-                            extended_diff.file_sides[file_id][side].line_offsets.push(offset);
-                        }
-                    }
+                let mut highlight_bounds = vec![];
+                let text_with_words = &diff.sections[section_id].sides[side].text_with_words;
+                let highlight_first = !text_with_words.is_empty() && text_with_words[0].0;
+                for &(highlight, text) in text_with_words {
+                    highlight_bounds.push(offset);
+                    offset += text.len();
                 }
+                highlight_bounds.push(offset);
                 extended_diff.section_sides[section_id][side] = Some(ExtendedDiffSectionSide {
                     file_id,
                     byte_range: offset_start..offset,
-                    highlight_points,
+                    highlight_bounds,
+                    highlight_first,
                 });
+            }
+            for (i, c) in file_input[file_id][side].char_indices() {
+                if c == '\n' {
+                    extended_diff.file_sides[file_id][side].line_offsets.push(i + 1);
+                }
             }
         }
     }
@@ -668,17 +672,16 @@ struct LineLayout {
 
 fn layout_one_line(
     input: &str,
-    mut highlight_points: &[(usize, bool)],
+    highlight_bounds: &[usize],
+    highlight_first: bool,
     mut offset: usize,
     end: usize,
     wrap_width: usize,
 ) -> LineLayout {
     let mut cells = vec![];
 
-    let highlight_points_index = highlight_points.partition_point(|&(point, _)| point <= offset);
-    assert!(highlight_points_index > 0);
-    let mut highlight = highlight_points[highlight_points_index - 1].1;
-    highlight_points = &highlight_points[highlight_points_index..];
+    let mut highlight_bounds_index = highlight_bounds.partition_point(|&point| point <= offset) - 1;
+    let mut highlight = highlight_first ^ (highlight_bounds_index % 2 == 1);
 
     let new_layout = |cells, newline_highlight, offset_after| LineLayout {
         cells,
@@ -690,9 +693,10 @@ fn layout_one_line(
     // to compute the width of each EGC. I don't know if it's correct (precisely matches what
     // terminal emulators do), but at least it matches the behavior of our library (tui-rs).
     for egc in input[offset..end].graphemes(true) {
-        if !highlight_points.is_empty() && offset == highlight_points[0].0 {
-            highlight = highlight_points[0].1;
-            highlight_points = &highlight_points[1..];
+        assert!(highlight_bounds_index + 1 < highlight_bounds.len());
+        if offset == highlight_bounds[highlight_bounds_index + 1] {
+            highlight_bounds_index += 1;
+            highlight = !highlight;
         }
 
         if egc == "\n" {
@@ -743,18 +747,23 @@ fn layout_one_line(
 fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_width: usize) -> Vec<WrappedHalfLine> {
     let mut out: Vec<WrappedHalfLine> = vec![];
     for raw_element in &node.raw_elements[side] {
-        let (content, byte_range, highlight_points): (&str, _, &[_]) = match raw_element.content {
+        let mut fabricated_highlight_bounds = vec![];
+        let (content, byte_range, highlight_bounds, highlight_first): (&str, _, &[_], _) = match raw_element.content {
             PaddedGroupRawElementContent::Section(section_id) => {
                 let section_side = diff.section_sides[section_id][side].as_ref().unwrap();
                 let content = diff.file_sides[section_side.file_id][side].content;
-                (content, section_side.byte_range.clone(), &section_side.highlight_points)
+                (content, section_side.byte_range.clone(), &section_side.highlight_bounds, section_side.highlight_first)
             }
-            PaddedGroupRawElementContent::Fabricated(ref content) => (content, 0..content.len(), &[(0, false)]),
+            PaddedGroupRawElementContent::Fabricated(ref content) => {
+                // TODO: Ugh
+                fabricated_highlight_bounds = vec![0, content.len()];
+                (content, 0..content.len(), &fabricated_highlight_bounds, false)
+            }
         };
 
         let mut pos = byte_range.start;
         while pos != byte_range.end {
-            let next = layout_one_line(content, highlight_points, pos, byte_range.end, wrap_width).offset_after;
+            let next = layout_one_line(content, highlight_bounds, highlight_first, pos, byte_range.end, wrap_width).offset_after;
             out.push(WrappedHalfLine {
                 style: raw_element.style,
                 offset_override_for_selection: raw_element.offset_override_for_selection,
@@ -824,14 +833,15 @@ impl<'a> TreeView<'a> {
                 let section_side = self.diff.section_sides[section_id][side].as_ref().unwrap();
                 layout_one_line(
                     self.diff.file_sides[section_side.file_id][side].content,
-                    &section_side.highlight_points,
+                    &section_side.highlight_bounds,
+                    section_side.highlight_first,
                     offset,
                     section_side.byte_range.end,
                     self.wrap_width,
                 )
             }
             WrappedHalfLineContent::Fabricated(ref content) => {
-                layout_one_line(content, &[(0, false)], 0, content.len(), self.wrap_width)
+                layout_one_line(content, &[0, content.len()], false, 0, content.len(), self.wrap_width)
             }
         }
     }
@@ -1249,15 +1259,6 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
             selection: None,
         }
     };
-
-    // TODO
-    state.selection = Some(SelectionState {
-        file_id: 0,
-        side: 1,
-        selecting: false,
-        start_offset: 42,
-        current_offset: 447,
-    });
 
     #[derive(Clone)]
     enum MouseCell {
