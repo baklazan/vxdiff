@@ -278,7 +278,7 @@ impl AlignmentScoringMethod for AffineScoring {
             let score_without_transition =
                 state_after_move.scores[Self::MATCH] + self.information_values[0][old_index - index_correction];
             let movement = Some((DiffOp::Match, Self::MATCH));
-            let p_stay_match = 1.0 - (Self::P_START_GAP/*+ Self::P_START_WHITE_GAP*/) * change_coef;
+            let p_stay_match = 1.0 - (Self::P_START_GAP + Self::P_START_WHITE_GAP) * change_coef;
             improve(Self::MATCH, score_without_transition + p_stay_match.log2(), &movement);
             improve(
                 Self::GAP,
@@ -344,6 +344,6 @@ impl FragmentBoundsScoringMethod for AffineScoring {
     }
 
     fn is_viable_bound(&self, side: usize, index: usize) -> bool {
-        self.bound_score[side][index] != TScore::NEG_INFINITY
+        index < self.bound_score[side].len() && self.bound_score[side][index] != TScore::NEG_INFINITY
     }
 }

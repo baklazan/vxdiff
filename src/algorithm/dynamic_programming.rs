@@ -63,10 +63,11 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
             DpDirection::Backward => left >= right,
         };
 
-        let mut dp: Vec<Vec<AlignmentScoring::State>> = vec![];
-        let mut row_starts = vec![];
-        let mut mismatch_score: Vec<Vec<TScore>> = vec![];
-        let mut is_alive = vec![];
+        let mut dp: Vec<Vec<AlignmentScoring::State>> =
+            vec![vec![alignment_scoring.starting_state(TScore::NEG_INFINITY)]];
+        let mut row_starts = vec![start[1]];
+        let mut mismatch_score: Vec<Vec<TScore>> = vec![vec![TScore::NEG_INFINITY]];
+        let mut is_alive: Vec<Vec<Vec<bool>>> = vec![vec![vec![true; AlignmentScoring::State::SUBSTATES_COUNT]]];
 
         let mut best_start = (0, 0, 0);
         let mut best_score = TScore::NEG_INFINITY;
@@ -78,68 +79,98 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
             DpDirection::Forward => 1,
         };
 
-        let mut previous_row_score_before_match: Vec<Vec<TScore>> = vec![];
-        let mut long_match_active = false;
-
         for row_index in 0..=directed_sub(bound[0], start[0]) {
             let old_index = start[0].wrapping_add(row_index.wrapping_mul(dp_step));
 
-            let mut row_start = best_new_in_previous_row;
-            let mut row_end = best_new_in_previous_row;
-
-            if long_match_active {
-                long_match_active = false;
-                if old_index != bound[0] && best_new_in_previous_row != bound[1] {
-                    let long_match_continuation_old = std::cmp::min(old_index, old_index.wrapping_sub(dp_step));
-                    let long_match_continuation_new =
-                        std::cmp::min(best_new_in_previous_row, best_new_in_previous_row.wrapping_add(dp_step));
-                    if alignment_scoring.is_match(long_match_continuation_old, long_match_continuation_new) {
-                        row_start = best_new_in_previous_row.wrapping_add(dp_step);
-                        row_end = row_start;
-                        long_match_active = true;
-                    }
-                }
-            }
-            if !long_match_active {
-                let mut seen_eols_beforeq = if bounds_scoring.is_viable_bound(1, row_start) {
-                    1
-                } else {
-                    0
-                };
-                while row_start != start[1] && seen_eols_beforeq < BAND_EOLS_BEFOREQ_BEST {
-                    row_start = row_start.wrapping_sub(dp_step);
-                    if bounds_scoring.is_viable_bound(1, row_start) {
-                        seen_eols_beforeq += 1;
-                    }
-                }
-
-                let mut seen_eols_after = 0;
-                while row_end != bound[1] && seen_eols_after < BAND_EOLS_AFTER_BEST {
-                    row_end = row_end.wrapping_add(dp_step);
-                    if bounds_scoring.is_viable_bound(1, row_end) {
-                        seen_eols_after += 1;
-                    }
-                }
-            }
-            let row_size = directed_sub(row_end, row_start) + 1;
-            row_starts.push(row_start);
-
-            dp.push(vec![alignment_scoring.starting_state(TScore::NEG_INFINITY); row_size]);
-            let just_ended_long_match = row_index > 0 && dp[row_index - 1].len() == 1;
-            let default_mismatch_score = if just_ended_long_match {
-                mismatch_score[row_index - 1][0]
+            let central_new = if row_index == 0 {
+                start[1]
             } else {
-                TScore::NEG_INFINITY
+                if best_new_in_previous_row == bound[1] {
+                    best_new_in_previous_row
+                } else {
+                    best_new_in_previous_row.wrapping_add(dp_step)
+                }
             };
-            mismatch_score.push(vec![default_mismatch_score; row_size]);
-            is_alive.push(vec![vec![false; AlignmentScoring::State::SUBSTATES_COUNT]; row_size]);
 
-            let mut current_row_score_before_match =
-                vec![vec![TScore::INFINITY; AlignmentScoring::State::SUBSTATES_COUNT]; row_size];
+            if bounds_scoring.is_viable_bound(0, old_index) && old_index != bound[0] {
+                // compute matrix row starts for the next row of old text
+                let mut used_match_heuristic = false;
+                if bounds_scoring.is_viable_bound(1, central_new) && central_new != bound[1] {
+                    // check if the following text lines are matching
+                    let mut next_line_end_old = old_index.wrapping_add(dp_step);
+                    while !bounds_scoring.is_viable_bound(0, next_line_end_old) {
+                        next_line_end_old = next_line_end_old.wrapping_add(dp_step);
+                    }
+                    let line_start_index_old = std::cmp::min(old_index, next_line_end_old);
+                    let line_length = directed_sub(next_line_end_old, old_index);
+                    let next_line_end_new = central_new.wrapping_add(line_length.wrapping_mul(dp_step));
+                    let mut lines_matching = bounds_scoring.is_viable_bound(1, next_line_end_new);
+                    let line_start_index_new = std::cmp::min(central_new, next_line_end_new);
 
+                    for i in 0..line_length {
+                        lines_matching &=
+                            alignment_scoring.is_match(line_start_index_old + i, line_start_index_new + i);
+                    }
+
+                    if lines_matching {
+                        for i in 1..=line_length {
+                            row_starts.push(central_new.wrapping_add(i.wrapping_mul(dp_step)));
+                            dp.push(vec![alignment_scoring.starting_state(TScore::NEG_INFINITY); 1]);
+                            mismatch_score.push(vec![TScore::NEG_INFINITY; 1]);
+                            is_alive.push(vec![vec![false; AlignmentScoring::State::SUBSTATES_COUNT]; 1]);
+                        }
+                        used_match_heuristic = true;
+                    }
+                }
+
+                if !used_match_heuristic {
+                    let mut row_start = central_new;
+                    let current_row_start = row_starts[row_index];
+                    let mut row_end = central_new;
+
+                    let mut seen_eols_beforeq = if bounds_scoring.is_viable_bound(1, row_start) {
+                        1
+                    } else {
+                        0
+                    };
+                    while row_start != current_row_start && seen_eols_beforeq < BAND_EOLS_BEFOREQ_BEST {
+                        row_start = row_start.wrapping_sub(dp_step);
+                        if bounds_scoring.is_viable_bound(1, row_start) {
+                            seen_eols_beforeq += 1;
+                        }
+                    }
+
+                    let mut seen_eols_after = 0;
+                    while row_end != bound[1] && seen_eols_after < BAND_EOLS_AFTER_BEST {
+                        row_end = row_end.wrapping_add(dp_step);
+                        if bounds_scoring.is_viable_bound(1, row_end) {
+                            seen_eols_after += 1;
+                        }
+                    }
+
+                    let current_row_size = directed_sub(row_end, current_row_start) + 1;
+                    while dp[row_index].len() < current_row_size {
+                        dp[row_index].push(alignment_scoring.starting_state(TScore::NEG_INFINITY));
+                        mismatch_score[row_index].push(TScore::NEG_INFINITY);
+                        is_alive[row_index].push(vec![false; AlignmentScoring::State::SUBSTATES_COUNT]);
+                    }
+                    let row_size = directed_sub(row_end, row_start) + 1;
+                    let mut i = old_index.wrapping_add(dp_step);
+                    loop {
+                        row_starts.push(row_start);
+                        dp.push(vec![alignment_scoring.starting_state(TScore::NEG_INFINITY); row_size]);
+                        mismatch_score.push(vec![TScore::NEG_INFINITY; row_size]);
+                        is_alive.push(vec![vec![false; AlignmentScoring::State::SUBSTATES_COUNT]; row_size]);
+                        if bounds_scoring.is_viable_bound(0, i) {
+                            break;
+                        }
+                        i = i.wrapping_add(dp_step);
+                    }
+                }
+            }
             let mut best_alive_score_in_previous_row = TScore::NEG_INFINITY;
-            for col_index in 0..row_size {
-                let new_index = row_start.wrapping_add(col_index.wrapping_mul(dp_step));
+            for col_index in 0..dp[row_index].len() {
+                let new_index = row_starts[row_index].wrapping_add(col_index.wrapping_mul(dp_step));
 
                 let mut valid_steps = vec![];
                 for op in [DiffOp::Delete, DiffOp::Insert, DiffOp::Match] {
@@ -197,22 +228,9 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                         continue;
                     }
 
-                    let movement = dp[row_index][col_index].substate_movements()[substate];
-                    if movement.is_some() && movement.unwrap().0 == DiffOp::Match {
-                        let new_after = new_index.wrapping_sub(dp_step);
-                        let col_index_after = directed_sub(new_after, row_starts[row_index - 1]);
-                        current_row_score_before_match[col_index][substate] =
-                            previous_row_score_before_match[col_index_after][movement.unwrap().1];
-                    } else {
-                        current_row_score_before_match[col_index][substate] = score;
-                    }
-
                     if score > best_alive_score_in_previous_row {
                         best_alive_score_in_previous_row = score;
                         best_new_in_previous_row = new_index;
-                        const LONG_MATCH_SCORE_THRESHOLD: TScore = 20.0;
-                        long_match_active =
-                            (score - current_row_score_before_match[col_index][substate]) > LONG_MATCH_SCORE_THRESHOLD;
                     }
 
                     let proposed_score = score + change_state_score;
@@ -228,8 +246,6 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
             if best_alive_score_in_previous_row == TScore::NEG_INFINITY {
                 break;
             }
-
-            previous_row_score_before_match = current_row_score_before_match;
         }
         let mut alignment = vec![];
         let mut old_index = best_start.0;
