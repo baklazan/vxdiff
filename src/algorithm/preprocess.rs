@@ -1,7 +1,5 @@
-use super::PartitionedText;
-
-pub fn partition_into_words<'a>(text: &'a str) -> PartitionedText<'a> {
-    let mut word_bounds = Vec::new();
+pub fn partition_into_words<'a>(text: &'a str) -> Vec<usize> {
+    let mut word_bounds = vec![];
     let mut was_last_alphabetic = false;
     let mut was_last_numeric = false;
     for (i, c) in text.char_indices() {
@@ -16,5 +14,5 @@ pub fn partition_into_words<'a>(text: &'a str) -> PartitionedText<'a> {
         word_bounds.push(i);
     }
     word_bounds.push(text.len());
-    PartitionedText { text, word_bounds }
+    word_bounds
 }

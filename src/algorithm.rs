@@ -8,8 +8,8 @@ mod seed_selection;
 use self::{fragment_selection::greedy_fragments, preprocess::partition_into_words};
 
 #[derive(Debug)]
-pub struct Diff<'a> {
-    pub sections: Vec<Section<'a>>,
+pub struct Diff {
+    pub sections: Vec<Section>,
     pub files: Vec<FileDiff>,
 }
 
@@ -19,18 +19,29 @@ pub struct FileDiff {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Section<'a> {
-    pub sides: [SectionSide<'a>; 2],
+pub struct Section {
+    pub sides: [SectionSide; 2],
     pub equal: bool,
 }
 
 #[derive(Debug, PartialEq)]
-pub struct SectionSide<'a> {
-    pub text_with_words: Vec<(bool, &'a str)>,
+pub struct SectionSide {
+    pub highlight_bounds: Vec<usize>,
+    pub highlight_first: bool,
 }
 
-pub fn diff_file<'a>(old: &'a str, new: &'a str) -> Diff<'a> {
-    let texts = [partition_into_words(old), partition_into_words(new)];
+pub fn diff_file(old: &str, new: &str) -> Diff {
+    let word_bounds = [partition_into_words(old), partition_into_words(new)];
+    let texts = [
+        PartitionedText {
+            text: old,
+            word_bounds: &word_bounds[0],
+        },
+        PartitionedText {
+            text: new,
+            word_bounds: &word_bounds[1],
+        },
+    ];
 
     let aligned_fragments = greedy_fragments(&texts);
     postprocess::build_diff(&texts, aligned_fragments)
@@ -62,7 +73,7 @@ pub struct AlignedFragment {
 #[derive(Default)]
 pub struct PartitionedText<'a> {
     pub text: &'a str,
-    pub word_bounds: Vec<usize>,
+    pub word_bounds: &'a [usize],
 }
 
 impl<'a> PartitionedText<'a> {

@@ -125,10 +125,10 @@ fn default_config() -> Config {
     }
 }
 
-struct ExtendedDiffSectionSide {
+struct ExtendedDiffSectionSide<'a> {
     file_id: usize,
     byte_range: Range<usize>,
-    highlight_bounds: Vec<usize>,
+    highlight_bounds: &'a [usize],
     highlight_first: bool,
 }
 
@@ -150,9 +150,9 @@ impl<'a> ExtendedDiffFileSide<'a> {
 }
 
 struct ExtendedDiff<'a> {
-    section_sides: Vec<[Option<ExtendedDiffSectionSide>; 2]>,
+    section_sides: Vec<[Option<ExtendedDiffSectionSide<'a>>; 2]>,
     file_sides: Vec<[ExtendedDiffFileSide<'a>; 2]>,
-    sections: &'a [Section<'a>],
+    sections: &'a [Section],
     files: &'a [FileDiff],
 }
 
@@ -174,25 +174,16 @@ fn make_extended_diff<'a>(diff: &'a Diff, file_input: &'a [[&'a str; 2]]) -> Ext
 
     for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
         for side in 0..2 {
-            let mut offset = 0;
             for &(op, section_id) in ops {
                 if op.movement()[side] == 0 {
                     continue;
                 }
-                let offset_start = offset;
-                let mut highlight_bounds = vec![];
-                let text_with_words = &diff.sections[section_id].sides[side].text_with_words;
-                let highlight_first = !text_with_words.is_empty() && text_with_words[0].0;
-                for &(highlight, text) in text_with_words {
-                    highlight_bounds.push(offset);
-                    offset += text.len();
-                }
-                highlight_bounds.push(offset);
+                let section_side = &diff.sections[section_id].sides[side];
                 extended_diff.section_sides[section_id][side] = Some(ExtendedDiffSectionSide {
                     file_id,
-                    byte_range: offset_start..offset,
-                    highlight_bounds,
-                    highlight_first,
+                    byte_range: section_side.highlight_bounds[0]..*section_side.highlight_bounds.last().unwrap(),
+                    highlight_bounds: &section_side.highlight_bounds,
+                    highlight_first: section_side.highlight_first,
                 });
             }
             for (i, c) in file_input[file_id][side].char_indices() {
@@ -752,7 +743,12 @@ fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_
             PaddedGroupRawElementContent::Section(section_id) => {
                 let section_side = diff.section_sides[section_id][side].as_ref().unwrap();
                 let content = diff.file_sides[section_side.file_id][side].content;
-                (content, section_side.byte_range.clone(), &section_side.highlight_bounds, section_side.highlight_first)
+                (
+                    content,
+                    section_side.byte_range.clone(),
+                    &section_side.highlight_bounds,
+                    section_side.highlight_first,
+                )
             }
             PaddedGroupRawElementContent::Fabricated(ref content) => {
                 // TODO: Ugh
@@ -763,7 +759,15 @@ fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_
 
         let mut pos = byte_range.start;
         while pos != byte_range.end {
-            let next = layout_one_line(content, highlight_bounds, highlight_first, pos, byte_range.end, wrap_width).offset_after;
+            let next = layout_one_line(
+                content,
+                highlight_bounds,
+                highlight_first,
+                pos,
+                byte_range.end,
+                wrap_width,
+            )
+            .offset_after;
             out.push(WrappedHalfLine {
                 style: raw_element.style,
                 offset_override_for_selection: raw_element.offset_override_for_selection,

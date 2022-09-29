@@ -9,15 +9,26 @@ type TheResult = Result<(), Box<dyn Error>>;
 fn print_side(
     prefix: char,
     style_var: &Style,
-    side: &SectionSide,
+    section_side: &SectionSide,
+    file_input_side: &str,
     write_line: &mut impl FnMut(&str, usize, &Style) -> TheResult,
 ) -> TheResult {
+    if section_side.highlight_bounds.is_empty() {
+        return Ok(());
+    }
+
     let highlighted_style = style_var.clone().on_yellow();
 
     let mut current_line = "".to_string();
     let mut current_line_visible_length = 0;
-    for (highlight, text) in &side.text_with_words {
-        let my_style = if *highlight { &highlighted_style } else { &style_var };
+
+    for i in 0..(section_side.highlight_bounds.len() - 1) {
+        let highlight = section_side.highlight_first ^ (i % 2 == 1);
+        let start_offset = section_side.highlight_bounds[i];
+        let end_offset = section_side.highlight_bounds[i + 1];
+        let text = &file_input_side[start_offset..end_offset];
+
+        let my_style = if highlight { &highlighted_style } else { &style_var };
         for part_with_eol in text.split_inclusive('\n') {
             let (part, eol) = match part_with_eol.strip_suffix('\n') {
                 Some(part) => (part, true),
@@ -45,7 +56,7 @@ fn print_side(
     Ok(())
 }
 
-pub fn print(diff: &Diff, output: &mut impl io::Write) -> TheResult {
+pub fn print(diff: &Diff, file_input: &[[&str; 2]], output: &mut impl io::Write) -> TheResult {
     let mut write_line = |line: &str, _visible_length: usize, _newline_style: &Style| {
         // Never highlight the final newline because terminals are bad.
         write!(output, "{}\n", line)?;
@@ -57,24 +68,48 @@ pub fn print(diff: &Diff, output: &mut impl io::Write) -> TheResult {
             DiffOp::Match => {
                 if section.equal {
                     // TODO: Check old == new.
-                    print_side(' ', &Style::new(), &section.sides[0], &mut write_line)?;
+                    print_side(' ', &Style::new(), &section.sides[0], file_input[0][0], &mut write_line)?;
                 } else {
-                    print_side('-', &Style::new().red(), &section.sides[0], &mut write_line)?;
-                    print_side('+', &Style::new().green(), &section.sides[1], &mut write_line)?;
+                    print_side(
+                        '-',
+                        &Style::new().red(),
+                        &section.sides[0],
+                        file_input[0][0],
+                        &mut write_line,
+                    )?;
+                    print_side(
+                        '+',
+                        &Style::new().green(),
+                        &section.sides[1],
+                        file_input[0][1],
+                        &mut write_line,
+                    )?;
                 }
             }
             DiffOp::Insert => {
-                print_side('+', &Style::new().green(), &section.sides[1], &mut write_line)?;
+                print_side(
+                    '+',
+                    &Style::new().green(),
+                    &section.sides[1],
+                    file_input[0][1],
+                    &mut write_line,
+                )?;
             }
             DiffOp::Delete => {
-                print_side('-', &Style::new().red(), &section.sides[0], &mut write_line)?;
+                print_side(
+                    '-',
+                    &Style::new().red(),
+                    &section.sides[0],
+                    file_input[0][0],
+                    &mut write_line,
+                )?;
             }
         }
     }
     Ok(())
 }
 
-pub fn print_side_by_side(diff: &Diff, output: &mut impl io::Write) -> TheResult {
+pub fn print_side_by_side(diff: &Diff, file_input: &[[&str; 2]], output: &mut impl io::Write) -> TheResult {
     let width = 121;
     let empty = String::from("x") + &" ".repeat(width - 1);
 
@@ -98,7 +133,13 @@ pub fn print_side_by_side(diff: &Diff, output: &mut impl io::Write) -> TheResult
                 lines[i].push(line.to_string() + &" ".repeat(width - visible_length));
                 Ok(())
             };
-            print_side(styles[i].0, &styles[i].1, &section.sides[i], &mut write_line)?;
+            print_side(
+                styles[i].0,
+                &styles[i].1,
+                &section.sides[i],
+                file_input[0][i],
+                &mut write_line,
+            )?;
         }
         for i in 0..std::cmp::max(lines[0].len(), lines[1].len()) {
             let left = lines[0].get(i).unwrap_or(&empty);

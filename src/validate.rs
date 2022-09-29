@@ -9,6 +9,7 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
     }
 
     let mut used: Vec<[Vec<String>; 2]> = vec![Default::default(); diff.sections.len()];
+    let mut content: Vec<[&str; 2]> = vec![[""; 2]; diff.sections.len()];
     let mut at_eof: Vec<[bool; 2]> = vec![Default::default(); diff.sections.len()];
     for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
         let mut last = [None; 2];
@@ -17,6 +18,11 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
                 if op.movement()[side] != 0 {
                     used[section_id][side].push(format!("{op:?} in file #{file_id} at op index #{op_index}"));
                     last[side] = Some(section_id);
+                    let highlight_bounds = &diff.sections[section_id].sides[side].highlight_bounds;
+                    if !highlight_bounds.is_empty() {
+                        content[section_id][side] =
+                            &file_input[file_id][side][highlight_bounds[0]..*highlight_bounds.last().unwrap()];
+                    }
                 }
             }
         }
@@ -47,13 +53,22 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
         }
     }
 
+    // Each section side's higlight_bounds should be either empty or have at least 2 elements (start and end).
+    for (section_id, section) in diff.sections.iter().enumerate() {
+        for (side, section_side) in section.sides.iter().enumerate() {
+            if section_side.highlight_bounds.len() == 1 {
+                errors.push(format!("{} has highlight_bounds length 1", side_str(section_id, side),));
+            }
+        }
+    }
+
     // Each section side should be non-empty if-and-only-if it's used.
     // TODO: Currently the algorithm sometimes generates a Match with one empty side. The renderer
     // is OK with that, but it would be better to have an Insert/Delete so it can be merged with
     // surrounding Inserts/Deletes into one padded group.
     for (section_id, section) in diff.sections.iter().enumerate() {
         for (side, section_side) in section.sides.iter().enumerate() {
-            let is_empty = section_side.text_with_words.is_empty();
+            let is_empty = section_side.highlight_bounds.is_empty();
             let is_used = !used[section_id][side].is_empty();
             if is_empty && is_used {
                 errors.push(format!(
@@ -71,26 +86,32 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
         }
     }
 
-    // Each section side should end with a '\n', unless it's at the end of file.
+    // Each non-empty section side should end with a '\n', unless it's at the end of file.
     for (section_id, section) in diff.sections.iter().enumerate() {
         for (side, section_side) in section.sides.iter().enumerate() {
-            let ends_with_newline = match section_side.text_with_words.last() {
-                None => true,
-                Some((_, part)) => part.ends_with("\n"),
-            };
-            if !at_eof[section_id][side] && !ends_with_newline {
+            let is_empty = section_side.highlight_bounds.is_empty();
+            let ends_with_newline = content[section_id][side].ends_with("\n");
+            if !at_eof[section_id][side] && !is_empty && !ends_with_newline {
                 errors.push(format!("{} does not end with a newline", side_str(section_id, side)));
             }
         }
     }
 
-    // Every '\n' should be highlighted, except the '\n' at the end of a section.
+    // Every '\n' should be highlighted, except the '\n' at the end of a section (that one doesn't matter).
     // Because sections should be split by matching newlines so we can add padding.
     // TODO: Decide whether we really want this, and in which cases (equal/non-equal).
     for (section_id, section) in diff.sections.iter().enumerate() {
         for (side, section_side) in section.sides.iter().enumerate() {
-            for (i, &(highlight, part)) in section_side.text_with_words.iter().enumerate() {
-                let part: &str = if i == section_side.text_with_words.len() - 1 && part.ends_with("\n") {
+            let highlight_bounds = &diff.sections[section_id].sides[side].highlight_bounds;
+            if highlight_bounds.is_empty() {
+                continue;
+            }
+            for i in 0..(highlight_bounds.len() - 1) {
+                let highlight = section_side.highlight_first ^ (i % 2 == 1);
+                let rel_start_offset = highlight_bounds[i] - highlight_bounds[0];
+                let rel_end_offset = highlight_bounds[i + 1] - highlight_bounds[0];
+                let part = &content[section_id][side][rel_start_offset..rel_end_offset];
+                let part: &str = if i == highlight_bounds.len() - 2 && part.ends_with("\n") {
                     &part[0..part.len() - 1]
                 } else {
                     part
@@ -108,7 +129,7 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
     // Sections with `section.equal == true` should contain the same string on both sides.
     // At least for now. We might change this later when ignoring whitespace is enabled.
     for (section_id, section) in diff.sections.iter().enumerate() {
-        if section.equal && section.sides[0].text_with_words != section.sides[1].text_with_words {
+        if section.equal && content[section_id][0] != content[section_id][1] {
             errors.push(format!(
                 "Section {section_id} has equal==true, but its sides actually differ"
             ));
@@ -117,21 +138,28 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
 
     // Sections with `section.equal == true` should not contain any highlighted words.
     for (section_id, section) in diff.sections.iter().enumerate() {
-        if section.equal && section.sides[0].text_with_words.iter().any(|&(highlight, _)| highlight) {
-            errors.push(format!(
-                "Section {section_id} has equal==true, but it contains highlighted text"
-            ));
+        for (side, section_side) in section.sides.iter().enumerate() {
+            if section.equal && (section_side.highlight_first || section_side.highlight_bounds.len() > 2) {
+                errors.push(format!(
+                    "{} has equal==true, but it contains highlighted text",
+                    side_str(section_id, side)
+                ));
+            }
         }
     }
 
-    // Each word in text_with_words should be non-empty.
+    // Byte offsets in highlight_bounds should be increasing.
     for (section_id, section) in diff.sections.iter().enumerate() {
         for (side, section_side) in section.sides.iter().enumerate() {
-            for (i, (_, part)) in section_side.text_with_words.iter().enumerate() {
-                if part.is_empty() {
+            for i in 1..section_side.highlight_bounds.len() {
+                if !(section_side.highlight_bounds[i - 1] < section_side.highlight_bounds[i]) {
                     errors.push(format!(
-                        "{} has an empty string in text_with_words at {i}",
-                        side_str(section_id, side)
+                        "{} highlight_bounds has {} at {} which is not smaller than {} at {}",
+                        side_str(section_id, side),
+                        section_side.highlight_bounds[i - 1],
+                        i - 1,
+                        section_side.highlight_bounds[i],
+                        i
                     ));
                 }
             }
@@ -141,11 +169,22 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
     // The non-highlighted words should match between each section's sides.
     for (section_id, section) in diff.sections.iter().enumerate() {
         let non_highlighted_bytes = |side: usize| {
-            section.sides[side]
-                .text_with_words
-                .iter()
-                .filter(|(highlight, _)| !highlight)
-                .flat_map(|(_, part)| part.bytes())
+            let content_ref = &content;
+            let highlight_bounds = &section.sides[side].highlight_bounds;
+            let inner_iterator = if highlight_bounds.is_empty() {
+                None
+            } else {
+                Some(
+                    (0..(highlight_bounds.len() - 1))
+                        .filter(move |i| !(section.sides[side].highlight_first ^ (i % 2 == 1)))
+                        .flat_map(move |i| {
+                            let rel_start_offset = highlight_bounds[i] - highlight_bounds[0];
+                            let rel_end_offset = highlight_bounds[i + 1] - highlight_bounds[0];
+                            content_ref[section_id][side][rel_start_offset..rel_end_offset].bytes()
+                        }),
+                )
+            };
+            inner_iterator.into_iter().flatten()
         };
         if !non_highlighted_bytes(0).eq(non_highlighted_bytes(1)) {
             errors.push(format!(
@@ -154,60 +193,28 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
         }
     }
 
-    // Highlights in text_with_words should alternate between true and false.
-    for (section_id, section) in diff.sections.iter().enumerate() {
-        for (side, section_side) in section.sides.iter().enumerate() {
-            let mut last: Option<bool> = None;
-            for (i, &(highlight, _)) in section_side.text_with_words.iter().enumerate() {
-                if last == Some(highlight) {
-                    errors.push(format!(
-                        "{} has the same highlight boolean twice text_with_words at {i}",
-                        side_str(section_id, side)
-                    ));
-                }
-                last = Some(highlight);
-            }
-        }
-    }
-
-    // The diff fragments of each file and side match the original file content.
+    // The sections of each file should exactly cover the file content.
     for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
         for side in 0..2 {
             let side_name = ["left", "right"][side];
-            let prefix = format!("Diff output of {side_name} side of file {file_id} does not match string input");
-            let input = file_input[file_id][side];
-            let check_input = || {
-                let mut cursor = 0;
-                for &(op, section_id) in ops {
-                    if op.movement()[side] == 0 {
-                        continue;
-                    }
-                    for &(_, part) in &diff.sections[section_id].sides[side].text_with_words {
-                        let end = cursor + part.len();
-                        if end > input.len() {
-                            return Some(format!(
-                                "{prefix} at {cursor}: part {part:?} in diff continues beyond EOF in input"
-                            ));
-                        }
-                        if let Some(input_part) = input.get(cursor..end) {
-                            if part != input_part {
-                                return Some(format!("{prefix} at {cursor}: part {part:?} in diff does not match part {input_part:?} in input"));
-                            }
-                        } else {
-                            return Some(format!("{prefix} at {cursor}: part {part:?} at {cursor} does not match character boundaries in input"));
-                        }
-                        cursor = end;
-                    }
+            let mut current_offset = 0;
+            for &(op, section_id) in ops {
+                if op.movement()[side] == 0 {
+                    continue;
                 }
-                if cursor != input.len() {
-                    return Some(format!(
-                        "{prefix} at {cursor}: diff ended too early before EOF in input"
-                    ));
+                let highlight_bounds = &diff.sections[section_id].sides[side].highlight_bounds;
+                if highlight_bounds.is_empty() {
+                    continue; // We already complained.
                 }
-                None
-            };
-            if let Some(error) = check_input() {
-                errors.push(error);
+                let start_offset = highlight_bounds[0];
+                if current_offset != start_offset {
+                    errors.push(format!("The {side_name} side of file {file_id} has section {section_id} which starts at offset {start_offset}, but it should start at offset {current_offset}"));
+                }
+                current_offset = highlight_bounds[highlight_bounds.len() - 1];
+            }
+            let file_size = file_input[file_id][side].len();
+            if current_offset != file_size {
+                errors.push(format!("The last section of the {side_name} side of file {file_id} ends at offset {current_offset}, but the file is {file_size} bytes long"));
             }
         }
     }
