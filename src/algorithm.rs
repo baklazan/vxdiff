@@ -6,8 +6,9 @@ mod scoring;
 mod seed_selection;
 
 use self::{fragment_selection::greedy_fragments, preprocess::partition_into_words};
+use std::convert::identity;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Diff {
     pub sections: Vec<Section>,
     pub files: Vec<FileDiff>,
@@ -61,6 +62,16 @@ impl DiffOp {
             DiffOp::Insert => [0, 1],
             DiffOp::Match => [1, 1],
         }
+    }
+}
+
+pub fn merge_diffs(one: &mut Diff, two: Diff) {
+    let old_section_count = one.sections.len();
+    one.sections.append(&mut identity(two.sections));
+    for FileDiff { ops } in two.files {
+        let map_op = |(op, section_id)| (op, section_id + old_section_count);
+        let mapped_ops = ops.into_iter().map(map_op).collect();
+        one.files.push(FileDiff { ops: mapped_ops });
     }
 }
 

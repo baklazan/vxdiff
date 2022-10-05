@@ -8,16 +8,30 @@ mod validate;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().collect();
-    if args.len() != 4 {
-        eprintln!("usage: {:?} {{debug|unified|side|tui}} {{OLD}} {{NEW}}", args[0]);
+    if args.len() < 4 || args.len() % 2 != 0 {
+        eprintln!(
+            "usage: {:?} {}",
+            args[0], "{debug|unified|side|tui} {OLD} {NEW} [{OLD2} {NEW2} ...]"
+        );
         exit(1);
     }
 
-    let old = &read_to_string(&args[2])?;
-    let new = &read_to_string(&args[3])?;
+    let mut file_input_storage = vec![];
+    let mut diff = Default::default();
 
-    let diff = algorithm::diff_file(old, new);
-    let file_input: [[&str; 2]; 1] = [[old, new]];
+    for i in (2..args.len()).step_by(2) {
+        let old = read_to_string(&args[i])?;
+        let new = read_to_string(&args[i + 1])?;
+        let file_diff = algorithm::diff_file(&old, &new);
+        algorithm::merge_diffs(&mut diff, file_diff);
+        file_input_storage.push([old, new]);
+    }
+
+    // TODO: array.each_ref() might help, but it's not in stable Rust yet.
+    let file_input: Vec<[&str; 2]> = file_input_storage
+        .iter()
+        .map(|&[ref old, ref new]| -> [&str; 2] { [old, new] })
+        .collect();
 
     validate::print_errors(&validate::validate(&diff, &file_input));
 
