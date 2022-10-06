@@ -17,13 +17,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut file_input_storage = vec![];
-    let mut diff = Default::default();
 
     for i in (2..args.len()).step_by(2) {
         let old = read_to_string(&args[i])?;
         let new = read_to_string(&args[i + 1])?;
-        let file_diff = algorithm::diff_file(&old, &new);
-        algorithm::merge_diffs(&mut diff, file_diff);
         file_input_storage.push([old, new]);
     }
 
@@ -32,6 +29,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|&[ref old, ref new]| -> [&str; 2] { [old, new] })
         .collect();
+
+    let diff = algorithm::compute_diff(&file_input);
 
     validate::print_errors(&validate::validate(&diff, &file_input));
 

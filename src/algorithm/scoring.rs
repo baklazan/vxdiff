@@ -23,14 +23,14 @@ pub trait AlignmentScoringMethod {
     fn starting_state(&self, starting_score: TScore) -> Self::State;
     fn consider_step(
         &self,
-        old_index: usize,
-        new_index: usize,
+        word_indices: [usize; 2],
+        file_ids: [usize; 2],
         state_after_move: Self::State,
         state: &mut Self::State,
         step: DiffOp,
         direction: DpDirection,
     );
-    fn is_match(&self, old_index: usize, new_index: usize) -> bool;
+    fn is_match(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> bool;
 }
 
 #[derive(Clone)]
@@ -59,47 +59,57 @@ impl<const SUBSTATES_COUNT: usize> ScoreState for SimpleScoreState<SUBSTATES_COU
     }
 }
 
-fn information_values(texts: &[PartitionedText; 2]) -> [Vec<TScore>; 2] {
+fn information_values(texts: &[[PartitionedText; 2]]) -> Vec<[Vec<TScore>; 2]> {
     use std::collections::HashMap;
 
     let mut char_frequencies: HashMap<char, usize> = HashMap::new();
     let mut total_chars: usize = 0;
 
-    for side in 0..2 {
-        for c in texts[side].text.chars() {
-            char_frequencies.insert(c, char_frequencies.get(&c).unwrap_or(&0) + 1);
-            total_chars += 1;
-        }
-    }
-    let mut values = [vec![], vec![]];
-    for side in 0..2 {
-        for i in 0..texts[side].word_count() {
-            let word = texts[side].get_word(i);
-            let mut frequency: f64 = 1.0;
-            for c in word.chars() {
-                frequency *= (*char_frequencies.get(&c).unwrap() as f64) / total_chars as f64;
+    for file_texts in texts {
+        for side_text in file_texts {
+            for c in side_text.text.chars() {
+                char_frequencies.insert(c, char_frequencies.get(&c).unwrap_or(&0) + 1);
+                total_chars += 1;
             }
-            values[side].push(-frequency.log2() / 5.0);
         }
     }
-    values
+
+    let mut result = vec![];
+    for file_texts in texts {
+        let mut file_values = [vec![], vec![]];
+        for (side, side_text) in file_texts.iter().enumerate() {
+            for i in 0..side_text.word_count() {
+                let word = side_text.get_word(i);
+                let mut score: f64 = 0.0;
+                for c in word.chars() {
+                    let char_frequency = (*char_frequencies.get(&c).unwrap() as f64) / total_chars as f64;
+                    score += -char_frequency.log2() / 5.0;
+                }
+                file_values[side].push(score);
+            }
+        }
+        result.push(file_values);
+    }
+    result
 }
 
-fn internalize_words(texts: &[PartitionedText; 2]) -> [Vec<string_interner::symbol::SymbolU32>; 2] {
-    let mut symbols = [vec![], vec![]];
+fn internalize_words(texts: &[[PartitionedText; 2]]) -> Vec<[Vec<string_interner::symbol::SymbolU32>; 2]> {
+    let mut symbols = vec![[vec![], vec![]]; texts.len()];
     let mut interner = StringInterner::default();
-    for side in 0..2 {
-        for i in 0..texts[side].word_count() {
-            let word = texts[side].get_word(i);
-            symbols[side].push(interner.get_or_intern(word));
+    for (file_id, file_texts) in texts.iter().enumerate() {
+        for (side, side_text) in file_texts.iter().enumerate() {
+            for i in 0..side_text.word_count() {
+                let word = side_text.get_word(i);
+                symbols[file_id][side].push(interner.get_or_intern(word));
+            }
         }
     }
     symbols
 }
 
 pub struct SimpleScoring {
-    symbols: [Vec<string_interner::symbol::SymbolU32>; 2],
-    information_values: [Vec<TScore>; 2],
+    symbols: Vec<[Vec<string_interner::symbol::SymbolU32>; 2]>,
+    information_values: Vec<[Vec<TScore>; 2]>,
 }
 
 impl SimpleScoring {
@@ -109,15 +119,17 @@ impl SimpleScoring {
         (1.0 - Self::P_MATCH).log2()
     }
 
-    fn match_score(&self, old_index: usize, new_index: usize) -> TScore {
-        if self.symbols[0][old_index] != self.symbols[1][new_index] {
+    fn match_score(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> TScore {
+        let old_symbol = self.symbols[file_ids[0]][0][word_indices[0]];
+        let new_symbol = self.symbols[file_ids[1]][1][word_indices[1]];
+        if old_symbol != new_symbol {
             return TScore::NEG_INFINITY;
         }
-        Self::P_MATCH.log2() + self.information_values[0][old_index]
+        Self::P_MATCH.log2() + self.information_values[file_ids[0]][0][word_indices[0]]
     }
 
     #[allow(dead_code)]
-    pub fn new(texts: &[PartitionedText; 2]) -> SimpleScoring {
+    pub fn new(texts: &[[PartitionedText; 2]]) -> SimpleScoring {
         SimpleScoring {
             symbols: internalize_words(texts),
             information_values: information_values(texts),
@@ -137,8 +149,8 @@ impl AlignmentScoringMethod for SimpleScoring {
 
     fn consider_step(
         &self,
-        old_index: usize,
-        new_index: usize,
+        word_indices: [usize; 2],
+        file_ids: [usize; 2],
         state_after_move: Self::State,
         state: &mut Self::State,
         step: DiffOp,
@@ -146,8 +158,8 @@ impl AlignmentScoringMethod for SimpleScoring {
     ) {
         let step_score = if step == DiffOp::Match {
             match direction {
-                DpDirection::Backward => self.match_score(old_index, new_index),
-                DpDirection::Forward => self.match_score(old_index - 1, new_index - 1),
+                DpDirection::Backward => self.match_score(word_indices, file_ids),
+                DpDirection::Forward => self.match_score([word_indices[0] - 1, word_indices[1] - 1], file_ids),
             }
         } else {
             Self::gap_score()
@@ -159,17 +171,17 @@ impl AlignmentScoringMethod for SimpleScoring {
         }
     }
 
-    fn is_match(&self, old_index: usize, new_index: usize) -> bool {
-        self.symbols[0][old_index] == self.symbols[1][new_index]
+    fn is_match(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> bool {
+        self.symbols[file_ids[0]][0][word_indices[0]] == self.symbols[file_ids[1]][1][word_indices[1]]
     }
 }
 
 pub struct AffineScoring {
-    symbols: [Vec<string_interner::symbol::SymbolU32>; 2],
-    pub information_values: [Vec<TScore>; 2],
-    is_white: [Vec<bool>; 2],
-    line_splits_before: [Vec<bool>; 2],
-    bound_score: [Vec<TScore>; 2],
+    symbols: Vec<[Vec<string_interner::symbol::SymbolU32>; 2]>,
+    pub information_values: Vec<[Vec<TScore>; 2]>,
+    is_white: Vec<[Vec<bool>; 2]>,
+    line_splits_before: Vec<[Vec<bool>; 2]>,
+    bound_score: Vec<[Vec<TScore>; 2]>,
 }
 
 impl AffineScoring {
@@ -186,42 +198,51 @@ impl AffineScoring {
     const GAP: usize = 1;
     const WHITE_GAP: usize = 2;
 
-    pub fn new(texts: &[PartitionedText; 2]) -> AffineScoring {
+    pub fn new(texts: &[[PartitionedText; 2]]) -> AffineScoring {
         let information_values = information_values(texts);
 
-        let mut is_white = [vec![], vec![]];
-        let mut line_splits_before = [vec![true], vec![true]];
-        let mut bound_score = [
-            vec![TScore::NEG_INFINITY; texts[0].word_count() + 1],
-            vec![TScore::NEG_INFINITY; texts[1].word_count() + 1],
-        ];
-        for side in 0..2 {
-            let mut this_line_value = 0.0;
-            let mut last_line_value = 0.0;
-            let mut last_line_end = 0;
-            for i in 0..texts[side].word_count() {
-                let word = texts[side].get_word(i);
-                let mut white = true;
-                for c in word.chars() {
-                    if !c.is_whitespace() {
-                        white = false;
+        let mut is_white = vec![];
+        let mut line_splits_before = vec![];
+        let mut bound_score = vec![];
+        for (file_id, file_texts) in texts.iter().enumerate() {
+            let mut file_is_white = [vec![], vec![]];
+            let mut file_line_splits_before = [vec![true], vec![true]];
+            let mut file_bound_score = [
+                vec![TScore::NEG_INFINITY; file_texts[0].word_count() + 1],
+                vec![TScore::NEG_INFINITY; file_texts[1].word_count() + 1],
+            ];
+            for side in 0..2 {
+                let mut this_line_value = 0.0;
+                let mut last_line_value = 0.0;
+                let mut last_line_end = 0;
+                for i in 0..file_texts[side].word_count() {
+                    let word = file_texts[side].get_word(i);
+                    let mut white = true;
+                    for c in word.chars() {
+                        if !c.is_whitespace() {
+                            white = false;
+                        }
+                    }
+                    file_is_white[side].push(white);
+
+                    this_line_value += information_values[file_id][side][i];
+                    if word == "\n" || i + 1 >= file_texts[side].word_count() {
+                        file_bound_score[side][last_line_end] = Self::BASE_BOUND_SCORE
+                            + TScore::min(this_line_value, last_line_value) * Self::LINE_CONTENT_COEF;
+                        last_line_value = this_line_value;
+                        this_line_value = 0.0;
+                        last_line_end = i + 1;
+                        file_line_splits_before[side].push(true);
+                    } else {
+                        file_line_splits_before[side].push(false);
                     }
                 }
-                is_white[side].push(white);
-
-                this_line_value += information_values[side][i];
-                if word == "\n" || i + 1 >= texts[side].word_count() {
-                    bound_score[side][last_line_end] = Self::BASE_BOUND_SCORE
-                        + TScore::min(this_line_value, last_line_value) * Self::LINE_CONTENT_COEF;
-                    last_line_value = this_line_value;
-                    this_line_value = 0.0;
-                    last_line_end = i + 1;
-                    line_splits_before[side].push(true);
-                } else {
-                    line_splits_before[side].push(false);
-                }
+                file_bound_score[side][last_line_end] =
+                    Self::BASE_BOUND_SCORE + last_line_value * Self::LINE_CONTENT_COEF;
             }
-            bound_score[side][last_line_end] = Self::BASE_BOUND_SCORE + last_line_value * Self::LINE_CONTENT_COEF;
+            is_white.push(file_is_white);
+            line_splits_before.push(file_line_splits_before);
+            bound_score.push(file_bound_score);
         }
 
         AffineScoring {
@@ -246,16 +267,16 @@ impl AlignmentScoringMethod for AffineScoring {
 
     fn consider_step(
         &self,
-        old_index: usize,
-        new_index: usize,
+        word_indices: [usize; 2],
+        file_ids: [usize; 2],
         state_after_move: Self::State,
         state: &mut Self::State,
         step: DiffOp,
         direction: DpDirection,
     ) {
-        let index_correction = match direction {
-            DpDirection::Backward => 0,
-            DpDirection::Forward => 1,
+        let corrected_indices = match direction {
+            DpDirection::Backward => word_indices,
+            DpDirection::Forward => [word_indices[0] - 1, word_indices[1] - 1],
         };
 
         let mut improve = |substate: usize, proposed: TScore, proposed_movement: &Option<(DiffOp, usize)>| {
@@ -265,18 +286,22 @@ impl AlignmentScoringMethod for AffineScoring {
             }
         };
 
-        let change_coef = if self.line_splits_before[0][old_index] && self.line_splits_before[1][new_index] {
+        let change_coef = if self.line_splits_before[file_ids[0]][0][word_indices[0]]
+            && self.line_splits_before[file_ids[1]][1][word_indices[1]]
+        {
             Self::NEWLINE_STATE_CHANGE_COEF
         } else {
             1.0
         };
 
         if step == DiffOp::Match {
-            if self.symbols[0][old_index - index_correction] != self.symbols[1][new_index - index_correction] {
+            let syms = [0, 1].map(|side| self.symbols[file_ids[side]][side][corrected_indices[side]]);
+
+            if syms[0] != syms[1] {
                 return;
             }
             let score_without_transition =
-                state_after_move.scores[Self::MATCH] + self.information_values[0][old_index - index_correction];
+                state_after_move.scores[Self::MATCH] + self.information_values[file_ids[0]][0][corrected_indices[0]];
             let movement = Some((DiffOp::Match, Self::MATCH));
             let p_stay_match = 1.0 - (Self::P_START_GAP + Self::P_START_WHITE_GAP) * change_coef;
             improve(Self::MATCH, score_without_transition + p_stay_match.log2(), &movement);
@@ -303,8 +328,8 @@ impl AlignmentScoringMethod for AffineScoring {
                 score_without_transition + (1.0 - Self::P_END_GAP * change_coef).log2(),
                 &movement,
             );
-            if step == DiffOp::Insert && self.is_white[1][new_index - index_correction]
-                || step == DiffOp::Delete && self.is_white[0][old_index - index_correction]
+            if step == DiffOp::Insert && self.is_white[file_ids[1]][1][corrected_indices[1]]
+                || step == DiffOp::Delete && self.is_white[file_ids[0]][0][corrected_indices[0]]
             {
                 let score_without_transition = state_after_move.scores[Self::WHITE_GAP];
                 let movement = Some((step, Self::WHITE_GAP));
@@ -322,8 +347,8 @@ impl AlignmentScoringMethod for AffineScoring {
         }
     }
 
-    fn is_match(&self, old_index: usize, new_index: usize) -> bool {
-        self.symbols[0][old_index] == self.symbols[1][new_index]
+    fn is_match(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> bool {
+        self.symbols[file_ids[0]][0][word_indices[0]] == self.symbols[file_ids[1]][1][word_indices[1]]
     }
 }
 
@@ -331,19 +356,19 @@ pub trait FragmentBoundsScoringMethod {
     const SUPERSECTION_THRESHOLD: TScore;
     const MOVED_SUPERSECTION_THRESHOLD: TScore;
 
-    fn fragment_bound_penalty(&self, old_index: usize, new_index: usize) -> TScore;
-    fn is_viable_bound(&self, side: usize, index: usize) -> bool;
+    fn fragment_bound_penalty(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> TScore;
+    fn is_viable_bound(&self, side: usize, index: usize, file_id: usize) -> bool;
 }
 
 impl FragmentBoundsScoringMethod for AffineScoring {
     const SUPERSECTION_THRESHOLD: TScore = 5.0;
     const MOVED_SUPERSECTION_THRESHOLD: TScore = 10.0;
 
-    fn fragment_bound_penalty(&self, old_index: usize, new_index: usize) -> TScore {
-        self.bound_score[0][old_index] + self.bound_score[1][new_index]
+    fn fragment_bound_penalty(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> TScore {
+        self.bound_score[file_ids[0]][0][word_indices[0]] + self.bound_score[file_ids[1]][1][word_indices[1]]
     }
 
-    fn is_viable_bound(&self, side: usize, index: usize) -> bool {
-        index < self.bound_score[side].len() && self.bound_score[side][index] != TScore::NEG_INFINITY
+    fn is_viable_bound(&self, side: usize, index: usize, file_id: usize) -> bool {
+        index < self.bound_score[file_id][side].len() && self.bound_score[file_id][side][index] != TScore::NEG_INFINITY
     }
 }

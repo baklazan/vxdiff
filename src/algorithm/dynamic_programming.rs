@@ -12,7 +12,9 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
 ) -> Option<AlignedFragment> {
     let mut seed_contains_viable_start = false;
     for (old_index, new_index) in (seed.start[0]..=seed.end[0]).zip(seed.start[1]..=seed.end[1]) {
-        if bounds_scoring.is_viable_bound(0, old_index) && bounds_scoring.is_viable_bound(1, new_index) {
+        if bounds_scoring.is_viable_bound(0, old_index, seed.file_ids[0])
+            && bounds_scoring.is_viable_bound(1, new_index, seed.file_ids[1])
+        {
             seed_contains_viable_start = true;
             break;
         }
@@ -21,21 +23,21 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
     let mut dp_backward_start = seed.start;
     let mut dp_forward_start = seed.end;
     if seed_contains_viable_start {
-        while !bounds_scoring.is_viable_bound(0, dp_backward_start[0])
-            || !bounds_scoring.is_viable_bound(1, dp_backward_start[1])
+        while !bounds_scoring.is_viable_bound(0, dp_backward_start[0], seed.file_ids[0])
+            || !bounds_scoring.is_viable_bound(1, dp_backward_start[1], seed.file_ids[1])
         {
             dp_backward_start[0] += 1;
             dp_backward_start[1] += 1;
         }
-        while !bounds_scoring.is_viable_bound(0, dp_forward_start[0])
-            || !bounds_scoring.is_viable_bound(1, dp_forward_start[1])
+        while !bounds_scoring.is_viable_bound(0, dp_forward_start[0], seed.file_ids[0])
+            || !bounds_scoring.is_viable_bound(1, dp_forward_start[1], seed.file_ids[1])
         {
             dp_forward_start[0] -= 1;
             dp_forward_start[1] -= 1;
         }
     } else {
         for side in 0..2 {
-            while !bounds_scoring.is_viable_bound(side, dp_forward_start[side]) {
+            while !bounds_scoring.is_viable_bound(side, dp_forward_start[side], seed.file_ids[side]) {
                 dp_forward_start[side] += 1;
             }
         }
@@ -92,24 +94,24 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                 }
             };
 
-            if bounds_scoring.is_viable_bound(0, old_index) && old_index != bound[0] {
+            if bounds_scoring.is_viable_bound(0, old_index, seed.file_ids[0]) && old_index != bound[0] {
                 // compute matrix row starts for the next row of old text
                 let mut used_match_heuristic = false;
-                if bounds_scoring.is_viable_bound(1, central_new) && central_new != bound[1] {
+                if bounds_scoring.is_viable_bound(1, central_new, seed.file_ids[1]) && central_new != bound[1] {
                     // check if the following text lines are matching
                     let mut next_line_end_old = old_index.wrapping_add(dp_step);
-                    while !bounds_scoring.is_viable_bound(0, next_line_end_old) {
+                    while !bounds_scoring.is_viable_bound(0, next_line_end_old, seed.file_ids[0]) {
                         next_line_end_old = next_line_end_old.wrapping_add(dp_step);
                     }
                     let line_start_index_old = std::cmp::min(old_index, next_line_end_old);
                     let line_length = directed_sub(next_line_end_old, old_index);
                     let next_line_end_new = central_new.wrapping_add(line_length.wrapping_mul(dp_step));
-                    let mut lines_matching = bounds_scoring.is_viable_bound(1, next_line_end_new);
+                    let mut lines_matching = bounds_scoring.is_viable_bound(1, next_line_end_new, seed.file_ids[1]);
                     let line_start_index_new = std::cmp::min(central_new, next_line_end_new);
 
                     for i in 0..line_length {
-                        lines_matching &=
-                            alignment_scoring.is_match(line_start_index_old + i, line_start_index_new + i);
+                        lines_matching &= alignment_scoring
+                            .is_match([line_start_index_old + i, line_start_index_new + i], seed.file_ids);
                     }
 
                     if lines_matching {
@@ -128,14 +130,14 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                     let current_row_start = row_starts[row_index];
                     let mut row_end = central_new;
 
-                    let mut seen_eols_beforeq = if bounds_scoring.is_viable_bound(1, row_start) {
+                    let mut seen_eols_beforeq = if bounds_scoring.is_viable_bound(1, row_start, seed.file_ids[1]) {
                         1
                     } else {
                         0
                     };
                     while row_start != current_row_start && seen_eols_beforeq < BAND_EOLS_BEFOREQ_BEST {
                         row_start = row_start.wrapping_sub(dp_step);
-                        if bounds_scoring.is_viable_bound(1, row_start) {
+                        if bounds_scoring.is_viable_bound(1, row_start, seed.file_ids[1]) {
                             seen_eols_beforeq += 1;
                         }
                     }
@@ -143,7 +145,7 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                     let mut seen_eols_after = 0;
                     while row_end != bound[1] && seen_eols_after < BAND_EOLS_AFTER_BEST {
                         row_end = row_end.wrapping_add(dp_step);
-                        if bounds_scoring.is_viable_bound(1, row_end) {
+                        if bounds_scoring.is_viable_bound(1, row_end, seed.file_ids[1]) {
                             seen_eols_after += 1;
                         }
                     }
@@ -161,7 +163,7 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                         dp.push(vec![alignment_scoring.starting_state(TScore::NEG_INFINITY); row_size]);
                         mismatch_score.push(vec![TScore::NEG_INFINITY; row_size]);
                         is_alive.push(vec![vec![false; AlignmentScoring::State::SUBSTATES_COUNT]; row_size]);
-                        if bounds_scoring.is_viable_bound(0, i) {
+                        if bounds_scoring.is_viable_bound(0, i, seed.file_ids[0]) {
                             break;
                         }
                         i = i.wrapping_add(dp_step);
@@ -191,7 +193,7 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                     mismatch_score[row_index][col_index] =
                         TScore::max(mismatch_score[row_index][col_index], mismatch_score[step.0][step.1]);
                 }
-                let change_state_score = bounds_scoring.fragment_bound_penalty(old_index, new_index);
+                let change_state_score = bounds_scoring.fragment_bound_penalty([old_index, new_index], seed.file_ids);
                 dp[row_index][col_index] =
                     alignment_scoring.starting_state(mismatch_score[row_index][col_index] + change_state_score);
                 if old_index == start[0] && new_index == start[1] {
@@ -200,8 +202,8 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
 
                 for step in valid_steps {
                     alignment_scoring.consider_step(
-                        old_index,
-                        new_index,
+                        [old_index, new_index],
+                        seed.file_ids,
                         dp[step.0][step.1].clone(),
                         &mut dp[row_index][col_index],
                         step.2,
@@ -278,6 +280,7 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
     Some(AlignedFragment {
         starts: extension_ends[0],
         ends: extension_ends[1],
+        file_ids: seed.file_ids,
         alignment,
     })
 }

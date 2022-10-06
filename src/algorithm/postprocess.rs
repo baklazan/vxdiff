@@ -88,34 +88,35 @@ fn get_partitioned_subtext<'a>(text: &PartitionedText<'a>, word_range: Range<usi
     }
 }
 
-pub fn build_diff<'a>(texts: &[PartitionedText<'a>; 2], fragments: Vec<(AlignedFragment, bool)>) -> Diff {
+pub fn build_diff<'a>(texts: &[[PartitionedText<'a>; 2]], fragments: Vec<(AlignedFragment, bool)>) -> Diff {
     let mut sections = vec![];
     let mut sections_ranges_from_fragment: Vec<Range<usize>> = vec![];
 
     for (fragment, _is_main) in fragments.iter() {
         let parts = [
-            get_partitioned_subtext(&texts[0], fragment.starts[0]..fragment.ends[0]),
-            get_partitioned_subtext(&texts[1], fragment.starts[1]..fragment.ends[1]),
+            get_partitioned_subtext(&texts[fragment.file_ids[0]][0], fragment.starts[0]..fragment.ends[0]),
+            get_partitioned_subtext(&texts[fragment.file_ids[1]][1], fragment.starts[1]..fragment.ends[1]),
         ];
         let old_len = sections.len();
         sections.append(&mut make_sections(&parts, &fragment.alignment));
         sections_ranges_from_fragment.push(old_len..sections.len());
     }
 
-    let mut file_ops = vec![];
-
-    let make_unaligned_sections =
-        |side: usize, word_range: Range<usize>, sections: &mut Vec<Section>, file_ops: &mut Vec<(DiffOp, usize)>| {
-            let mut parts: [PartitionedText; 2] = Default::default();
-            parts[side] = get_partitioned_subtext(&texts[side], word_range.clone());
-            let indel_op = [DiffOp::Delete, DiffOp::Insert][side];
-            let indel_alignment = vec![indel_op; word_range.len()];
-            let mut indel_sections = make_sections(&parts, &indel_alignment);
-            for section_id in sections.len()..sections.len() + indel_sections.len() {
-                file_ops.push((indel_op, section_id));
-            }
-            sections.append(&mut indel_sections);
-        };
+    let make_unaligned_sections = |side: usize,
+                                   file_id: usize,
+                                   word_range: Range<usize>,
+                                   sections: &mut Vec<Section>,
+                                   file_ops: &mut Vec<(DiffOp, usize)>| {
+        let mut parts: [PartitionedText; 2] = Default::default();
+        parts[side] = get_partitioned_subtext(&texts[file_id][side], word_range.clone());
+        let indel_op = [DiffOp::Delete, DiffOp::Insert][side];
+        let indel_alignment = vec![indel_op; word_range.len()];
+        let mut indel_sections = make_sections(&parts, &indel_alignment);
+        for section_id in sections.len()..sections.len() + indel_sections.len() {
+            file_ops.push((indel_op, section_id));
+        }
+        sections.append(&mut indel_sections);
+    };
 
     let add_fragment_sections =
         |fragment_id: usize, fragment_op: DiffOp, sections: &Vec<Section>, file_ops: &mut Vec<(DiffOp, usize)>| {
@@ -140,69 +141,90 @@ pub fn build_diff<'a>(texts: &[PartitionedText<'a>; 2], fragments: Vec<(AlignedF
             }
         };
 
-    let mut ids_by_start = [vec![], vec![]];
+    let mut fragment_orders = vec![[vec![], vec![]]; texts.len()];
     for side in 0..2 {
         for (id, (fragment, _is_main)) in fragments.iter().enumerate() {
-            ids_by_start[side].push((fragment.starts[side], id));
+            let file_id = fragment.file_ids[side];
+            fragment_orders[file_id][side].push((fragment.starts[side], id));
         }
-        ids_by_start[side].sort();
+    }
+    for fragment_order in fragment_orders.iter_mut() {
+        for fragment_order_side in fragment_order {
+            fragment_order_side.sort()
+        }
     }
 
-    let mut word_indices = [0, 0];
-    let mut fragment_indices = [0, 0];
-    loop {
-        for side in 0..2 {
-            while fragment_indices[side] < ids_by_start[side].len()
-                && !fragments[ids_by_start[side][fragment_indices[side]].1].1
-            {
-                let fragment_id = ids_by_start[side][fragment_indices[side]].1;
-                let fragment = &fragments[fragment_id].0;
-                if word_indices[side] < fragment.starts[side] {
+    let mut file_diffs = vec![];
+
+    for file_id in 0..texts.len() {
+        let mut file_ops = vec![];
+        let mut word_indices = [0, 0];
+        let mut fragment_order_indices = [0, 0];
+        let fragment_order = &fragment_orders[file_id];
+        loop {
+            for side in 0..2 {
+                let fragment_order_side = &fragment_order[side];
+                while fragment_order_indices[side] < fragment_order_side.len()
+                    && !fragments[fragment_order_side[fragment_order_indices[side]].1].1
+                {
+                    let fragment_id = fragment_order_side[fragment_order_indices[side]].1;
+                    let fragment = &fragments[fragment_id].0;
+                    assert!(fragment.file_ids[side] == file_id);
+                    if word_indices[side] < fragment.starts[side] {
+                        make_unaligned_sections(
+                            side,
+                            file_id,
+                            word_indices[side]..fragment.starts[side],
+                            &mut sections,
+                            &mut file_ops,
+                        );
+                    }
+                    let indel_op = [DiffOp::Delete, DiffOp::Insert][side];
+                    add_fragment_sections(fragment_id, indel_op, &sections, &mut file_ops);
+                    word_indices[side] = fragment.ends[side];
+                    fragment_order_indices[side] += 1;
+                }
+            }
+            for side in 0..2 {
+                let fragment_order_side = &fragment_order[side];
+                let next_fragment_start = if fragment_order_indices[side] < fragment_order[side].len() {
+                    fragments[fragment_order_side[fragment_order_indices[side]].1].0.starts[side]
+                } else {
+                    texts[file_id][side].word_count()
+                };
+                if word_indices[side] < next_fragment_start {
                     make_unaligned_sections(
                         side,
-                        word_indices[side]..fragment.starts[side],
+                        file_id,
+                        word_indices[side]..next_fragment_start,
                         &mut sections,
                         &mut file_ops,
                     );
                 }
-                let indel_op = [DiffOp::Delete, DiffOp::Insert][side];
-                add_fragment_sections(fragment_id, indel_op, &sections, &mut file_ops);
-                word_indices[side] = fragment.ends[side];
-                fragment_indices[side] += 1;
             }
-        }
-        for side in 0..2 {
-            let next_fragment_start = if fragment_indices[side] < ids_by_start[side].len() {
-                fragments[ids_by_start[side][fragment_indices[side]].1].0.starts[side]
-            } else {
-                texts[side].word_count()
-            };
-            if word_indices[side] < next_fragment_start {
-                make_unaligned_sections(
-                    side,
-                    word_indices[side]..next_fragment_start,
-                    &mut sections,
-                    &mut file_ops,
+            if fragment_order_indices[0] >= fragment_order[0].len() {
+                assert!(fragment_order_indices[1] >= fragment_order[1].len());
+                break;
+            }
+            let fragment_id = fragment_order[0][fragment_order_indices[0]].1;
+            if fragment_order[1][fragment_order_indices[1]].1 != fragment_id {
+                println!(
+                    "old side fragment id: {}, new side: {}",
+                    fragment_id, fragment_order[1][fragment_order_indices[1]].1
                 );
             }
+            assert!(fragment_order[1][fragment_order_indices[1]].1 == fragment_id);
+            add_fragment_sections(fragment_id, DiffOp::Match, &sections, &mut file_ops);
+            word_indices[0] = fragments[fragment_id].0.ends[0];
+            word_indices[1] = fragments[fragment_id].0.ends[1];
+            fragment_order_indices[0] += 1;
+            fragment_order_indices[1] += 1;
         }
-        if fragment_indices[0] >= ids_by_start[0].len() {
-            assert!(fragment_indices[1] >= ids_by_start[1].len());
-            break;
-        }
-        let fragment_id = ids_by_start[0][fragment_indices[0]].1;
-        assert!(ids_by_start[1][fragment_indices[1]].1 == fragment_id);
-        add_fragment_sections(fragment_id, DiffOp::Match, &sections, &mut file_ops);
-        word_indices[0] = fragments[fragment_id].0.ends[0];
-        word_indices[1] = fragments[fragment_id].0.ends[1];
-        fragment_indices[0] += 1;
-        fragment_indices[1] += 1;
+        file_diffs.push(FileDiff { ops: file_ops });
     }
-
-    let file_diff = FileDiff { ops: file_ops };
 
     Diff {
         sections,
-        files: vec![file_diff],
+        files: file_diffs,
     }
 }
