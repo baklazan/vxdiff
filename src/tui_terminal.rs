@@ -738,7 +738,7 @@ fn layout_one_line(
 fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_width: usize) -> Vec<WrappedHalfLine> {
     let mut out: Vec<WrappedHalfLine> = vec![];
     for raw_element in &node.raw_elements[side] {
-        let mut fabricated_highlight_bounds = vec![];
+        let fabricated_highlight_bounds;
         let (content, byte_range, highlight_bounds, highlight_first): (&str, _, &[_], _) = match raw_element.content {
             PaddedGroupRawElementContent::Section(section_id) => {
                 let section_side = diff.section_sides[section_id][side].as_ref().unwrap();
@@ -1533,7 +1533,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                                 2 => 1,
                                 _ => panic!("logic error: bad file_branch_node.visible.end"),
                             };
-                            state.fix_scroll_invariants(false); // TODO: test this once we have multiple files
+                            state.fix_scroll_invariants(false);
                         }
                     }
                     // TODO: configurable number of lines
