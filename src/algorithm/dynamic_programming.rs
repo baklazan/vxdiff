@@ -15,7 +15,7 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
     let mut dp: Vec<Vec<AlignmentScoring::State>> = vec![vec![alignment_scoring.starting_state(TScore::NEG_INFINITY)]];
     let mut row_starts = vec![0];
 
-    let mut best_start = (0, 0, 0);
+    let mut best_start = ([0, 0], 0);
     let mut best_score = TScore::NEG_INFINITY;
 
     let mut best_new_in_previous_row = 0;
@@ -133,6 +133,9 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                 );
             }
 
+            let nearest_bound_point = bounds_scoring.nearest_bound_point([old_index, new_index]);
+            let change_state_penalty = bounds_scoring.fragment_bound_penalty(nearest_bound_point);
+
             let change_state_score = bounds_scoring.fragment_bound_penalty([old_index, new_index]);
 
             for (substate, &score) in dp[old_index][col_index].substate_scores().iter().enumerate() {
@@ -141,10 +144,13 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                     best_new_in_previous_row = new_index;
                 }
 
-                let proposed_score = score + change_state_score;
+                let proposed_score = score
+                    + change_state_penalty
+                    + alignment_scoring.append_gaps([old_index, new_index], nearest_bound_point, substate)
+                    + change_state_score;
                 if proposed_score > best_score {
                     best_score = proposed_score;
-                    best_start = (old_index, new_index, substate);
+                    best_start = ([old_index, new_index], substate);
                 }
             }
         }
@@ -154,9 +160,16 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
         }
     }
     let mut alignment = vec![];
-    let mut old_index = best_start.0;
-    let mut new_index = best_start.1;
-    let mut substate = best_start.2;
+    let actual_start = bounds_scoring.nearest_bound_point(best_start.0);
+    for _ in 0..(actual_start[0] - best_start.0[0]) {
+        alignment.push(DiffOp::Delete);
+    }
+    for _ in 0..(actual_start[1] - best_start.0[1]) {
+        alignment.push(DiffOp::Insert);
+    }
+    let mut old_index = best_start.0[0];
+    let mut new_index = best_start.0[1];
+    let mut substate = best_start.1;
     while old_index != 0 || new_index != 0 {
         let row_index = old_index;
         let col_index = new_index - row_starts[row_index];
@@ -168,7 +181,8 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
         old_index = old_index - op.movement()[0];
         new_index = new_index - op.movement()[1];
     }
-    (alignment, [best_start.0, best_start.1])
+    alignment.reverse();
+    (alignment, best_start.0)
 }
 
 pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: FragmentBoundsScoringMethod>(
@@ -226,11 +240,8 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
         slice: backward_slice,
         scoring: bounds_scoring,
     };
-    let (pre_seed_alignment, pre_seed_aligned_size) = adaptive_dp(
-        &alignment_scoring_backward,
-        &bounds_scoring_backward,
-        backward_max,
-    );
+    let (pre_seed_alignment, pre_seed_aligned_size) =
+        adaptive_dp(&alignment_scoring_backward, &bounds_scoring_backward, backward_max);
     let fragment_start = [0, 1].map(|side| dp_backward_start[side] - pre_seed_aligned_size[side]);
 
     let forward_slice = InputSliceBounds {
@@ -256,8 +267,8 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
     }
 
     let mut alignment = pre_seed_alignment;
+    alignment.reverse();
     alignment.append(&mut vec![DiffOp::Match; dp_forward_start[0] - dp_backward_start[0]]);
-    post_seed_alignment.reverse();
     alignment.append(&mut post_seed_alignment);
 
     Some(AlignedFragment {

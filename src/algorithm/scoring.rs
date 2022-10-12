@@ -31,6 +31,13 @@ pub trait AlignmentScoringMethod {
         direction: DpDirection,
     );
     fn is_match(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> bool;
+    fn append_gaps(
+        &self,
+        file_ids: [usize; 2],
+        start_indices: [usize; 2],
+        end_indices: [usize; 2],
+        starting_substate: usize,
+    ) -> TScore;
 }
 
 #[derive(Clone, Copy)]
@@ -41,15 +48,26 @@ pub struct InputSliceBounds {
 }
 
 impl InputSliceBounds {
-    fn global_index(&self, side: usize, index: usize) -> usize {
+    fn global_index(&self, side: usize, local_index: usize) -> usize {
         match self.direction {
-            DpDirection::Forward => self.start[side] + index,
-            DpDirection::Backward => self.start[side] - index,
+            DpDirection::Forward => self.start[side] + local_index,
+            DpDirection::Backward => self.start[side] - local_index,
         }
     }
 
-    fn global_indices(&self, word_indices: [usize; 2]) -> [usize; 2] {
-        [0, 1].map(|side| self.global_index(side, word_indices[side]))
+    fn global_indices(&self, local_indices: [usize; 2]) -> [usize; 2] {
+        [0, 1].map(|side| self.global_index(side, local_indices[side]))
+    }
+
+    fn local_index(&self, side: usize, global_index: usize) -> usize {
+        match self.direction {
+            DpDirection::Forward => global_index - self.start[side],
+            DpDirection::Backward => self.start[side] - global_index,
+        }
+    }
+
+    fn local_indices(&self, global_indices: [usize; 2]) -> [usize; 2] {
+        [0, 1].map(|side| self.local_index(side, global_indices[side]))
     }
 }
 
@@ -83,6 +101,18 @@ impl<'a, Scoring: AlignmentScoringMethod> AlignmentSliceScoring<'a, Scoring> {
     pub fn is_match(&self, word_indices: [usize; 2]) -> bool {
         self.scoring
             .is_match(self.slice.global_indices(word_indices), self.slice.file_ids)
+    }
+
+    pub fn append_gaps(&self, mut start_indices: [usize; 2], mut end_indices: [usize; 2], substate: usize) -> TScore {
+        if self.slice.direction == DpDirection::Backward {
+            (start_indices, end_indices) = (end_indices, start_indices);
+        }
+        self.scoring.append_gaps(
+            self.slice.file_ids,
+            self.slice.global_indices(start_indices),
+            self.slice.global_indices(end_indices),
+            substate,
+        )
     }
 }
 
@@ -227,13 +257,25 @@ impl AlignmentScoringMethod for SimpleScoring {
     fn is_match(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> bool {
         self.symbols[file_ids[0]][0][word_indices[0]] == self.symbols[file_ids[1]][1][word_indices[1]]
     }
+
+    fn append_gaps(
+        &self,
+        _file_ids: [usize; 2],
+        start_indices: [usize; 2],
+        end_indices: [usize; 2],
+        _starting_substate: usize,
+    ) -> TScore {
+        Self::gap_score() * (end_indices[0] - start_indices[0] + end_indices[1] - start_indices[1]) as f64
+    }
 }
 
 pub struct AffineScoring {
     symbols: Vec<[Vec<string_interner::symbol::SymbolU32>; 2]>,
     pub information_values: Vec<[Vec<TScore>; 2]>,
     is_white: Vec<[Vec<bool>; 2]>,
-    line_splits_before: Vec<[Vec<bool>; 2]>,
+    line_splits_at: Vec<[Vec<bool>; 2]>,
+    nearest_line_split_forward: Vec<[Vec<usize>; 2]>,
+    nearest_line_split_backward: Vec<[Vec<usize>; 2]>,
     bound_score: Vec<[Vec<TScore>; 2]>,
 }
 
@@ -255,15 +297,19 @@ impl AffineScoring {
         let information_values = information_values(texts);
 
         let mut is_white = vec![];
-        let mut line_splits_before = vec![];
+        let mut line_splits_at = vec![];
         let mut bound_score = vec![];
+        let mut nearest_line_split_forward = vec![];
+        let mut nearest_line_split_backward = vec![];
         for (file_id, file_texts) in texts.iter().enumerate() {
             let mut file_is_white = [vec![], vec![]];
-            let mut file_line_splits_before = [vec![true], vec![true]];
+            let mut file_line_splits_at = [vec![true], vec![true]];
             let mut file_bound_score = [
                 vec![TScore::NEG_INFINITY; file_texts[0].word_count() + 1],
                 vec![TScore::NEG_INFINITY; file_texts[1].word_count() + 1],
             ];
+            let mut file_nearest_split_forward = [vec![], vec![]];
+            let mut file_nearest_split_backward = [vec![], vec![]];
             for side in 0..2 {
                 let mut this_line_value = 0.0;
                 let mut last_line_value = 0.0;
@@ -285,24 +331,44 @@ impl AffineScoring {
                         last_line_value = this_line_value;
                         this_line_value = 0.0;
                         last_line_end = i + 1;
-                        file_line_splits_before[side].push(true);
+                        file_line_splits_at[side].push(true);
                     } else {
-                        file_line_splits_before[side].push(false);
+                        file_line_splits_at[side].push(false);
                     }
                 }
                 file_bound_score[side][last_line_end] =
                     Self::BASE_BOUND_SCORE + last_line_value * Self::LINE_CONTENT_COEF;
+
+                let mut last_line_split = 0;
+                for (i, &is_split) in file_line_splits_at[side].iter().enumerate() {
+                    if is_split {
+                        last_line_split = i;
+                    }
+                    file_nearest_split_backward[side].push(last_line_split);
+                }
+                let mut next_line_split = file_line_splits_at[side].len() - 1;
+                for (i, &is_split) in file_line_splits_at[side].iter().enumerate().rev() {
+                    if is_split {
+                        next_line_split = i;
+                    }
+                    file_nearest_split_forward[side].push(next_line_split);
+                }
+                file_nearest_split_forward[side].reverse();
             }
             is_white.push(file_is_white);
-            line_splits_before.push(file_line_splits_before);
+            line_splits_at.push(file_line_splits_at);
             bound_score.push(file_bound_score);
+            nearest_line_split_backward.push(file_nearest_split_backward);
+            nearest_line_split_forward.push(file_nearest_split_forward);
         }
 
         AffineScoring {
             symbols: internalize_words(texts),
             information_values,
             is_white,
-            line_splits_before,
+            line_splits_at,
+            nearest_line_split_backward,
+            nearest_line_split_forward,
             bound_score,
         }
     }
@@ -339,8 +405,8 @@ impl AlignmentScoringMethod for AffineScoring {
             }
         };
 
-        let change_coef = if self.line_splits_before[file_ids[0]][0][word_indices[0]]
-            && self.line_splits_before[file_ids[1]][1][word_indices[1]]
+        let change_coef = if self.line_splits_at[file_ids[0]][0][word_indices[0]]
+            && self.line_splits_at[file_ids[1]][1][word_indices[1]]
         {
             Self::NEWLINE_STATE_CHANGE_COEF
         } else {
@@ -403,6 +469,24 @@ impl AlignmentScoringMethod for AffineScoring {
     fn is_match(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> bool {
         self.symbols[file_ids[0]][0][word_indices[0]] == self.symbols[file_ids[1]][1][word_indices[1]]
     }
+
+    fn append_gaps(
+        &self,
+        _file_ids: [usize; 2],
+        start_indices: [usize; 2],
+        end_indices: [usize; 2],
+        starting_substate: usize,
+    ) -> TScore {
+        let gap_length = (end_indices[0] - start_indices[0]) + (end_indices[1] - start_indices[1]);
+        let start_score = if starting_substate == Self::MATCH {
+            return Self::P_START_GAP.log2();
+        } else if starting_substate == Self::GAP {
+            return (1.0 - Self::P_END_GAP).log2();
+        } else {
+            TScore::NEG_INFINITY
+        };
+        start_score + (1.0 - Self::P_END_GAP).log2() * gap_length as f64
+    }
 }
 
 pub trait FragmentBoundsScoringMethod {
@@ -411,6 +495,7 @@ pub trait FragmentBoundsScoringMethod {
 
     fn fragment_bound_penalty(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> TScore;
     fn is_viable_bound(&self, side: usize, index: usize, file_id: usize) -> bool;
+    fn nearest_bound(&self, side: usize, index: usize, file_id: usize, direction: DpDirection) -> usize;
 }
 
 impl FragmentBoundsScoringMethod for AffineScoring {
@@ -423,6 +508,13 @@ impl FragmentBoundsScoringMethod for AffineScoring {
 
     fn is_viable_bound(&self, side: usize, index: usize, file_id: usize) -> bool {
         index < self.bound_score[file_id][side].len() && self.bound_score[file_id][side][index] != TScore::NEG_INFINITY
+    }
+
+    fn nearest_bound(&self, side: usize, index: usize, file_id: usize, direction: DpDirection) -> usize {
+        (match direction {
+            DpDirection::Backward => &self.nearest_line_split_backward,
+            DpDirection::Forward => &self.nearest_line_split_forward,
+        })[file_id][side][index]
     }
 }
 
@@ -440,5 +532,17 @@ impl<'a, Scoring: FragmentBoundsScoringMethod> BoundsSliceScoring<'a, Scoring> {
     pub fn is_viable_bound(&self, side: usize, index: usize) -> bool {
         self.scoring
             .is_viable_bound(side, self.slice.global_index(side, index), self.slice.file_ids[side])
+    }
+
+    pub fn nearest_bound_point(&self, word_indices: [usize; 2]) -> [usize; 2] {
+        let global_point_indices = [0, 1].map(|side| {
+            self.scoring.nearest_bound(
+                side,
+                self.slice.global_index(side, word_indices[side]),
+                self.slice.file_ids[side],
+                self.slice.direction,
+            )
+        });
+        self.slice.local_indices(global_point_indices)
     }
 }
