@@ -68,8 +68,6 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
         let mut dp: Vec<Vec<AlignmentScoring::State>> =
             vec![vec![alignment_scoring.starting_state(TScore::NEG_INFINITY)]];
         let mut row_starts = vec![start[1]];
-        let mut mismatch_score: Vec<Vec<TScore>> = vec![vec![TScore::NEG_INFINITY]];
-        let mut is_alive: Vec<Vec<Vec<bool>>> = vec![vec![vec![true; AlignmentScoring::State::SUBSTATES_COUNT]]];
 
         let mut best_start = (0, 0, 0);
         let mut best_score = TScore::NEG_INFINITY;
@@ -118,8 +116,6 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                         for i in 1..=line_length {
                             row_starts.push(central_new.wrapping_add(i.wrapping_mul(dp_step)));
                             dp.push(vec![alignment_scoring.starting_state(TScore::NEG_INFINITY); 1]);
-                            mismatch_score.push(vec![TScore::NEG_INFINITY; 1]);
-                            is_alive.push(vec![vec![false; AlignmentScoring::State::SUBSTATES_COUNT]; 1]);
                         }
                         used_match_heuristic = true;
                     }
@@ -153,16 +149,12 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                     let current_row_size = directed_sub(row_end, current_row_start) + 1;
                     while dp[row_index].len() < current_row_size {
                         dp[row_index].push(alignment_scoring.starting_state(TScore::NEG_INFINITY));
-                        mismatch_score[row_index].push(TScore::NEG_INFINITY);
-                        is_alive[row_index].push(vec![false; AlignmentScoring::State::SUBSTATES_COUNT]);
                     }
                     let row_size = directed_sub(row_end, row_start) + 1;
                     let mut i = old_index.wrapping_add(dp_step);
                     loop {
                         row_starts.push(row_start);
                         dp.push(vec![alignment_scoring.starting_state(TScore::NEG_INFINITY); row_size]);
-                        mismatch_score.push(vec![TScore::NEG_INFINITY; row_size]);
-                        is_alive.push(vec![vec![false; AlignmentScoring::State::SUBSTATES_COUNT]; row_size]);
                         if bounds_scoring.is_viable_bound(0, i, seed.file_ids[0]) {
                             break;
                         }
@@ -170,7 +162,7 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                     }
                 }
             }
-            let mut best_alive_score_in_previous_row = TScore::NEG_INFINITY;
+            let mut best_score_in_previous_row = TScore::NEG_INFINITY;
             for col_index in 0..dp[row_index].len() {
                 let new_index = row_starts[row_index].wrapping_add(col_index.wrapping_mul(dp_step));
 
@@ -189,13 +181,7 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                     }
                 }
 
-                for step in valid_steps.iter() {
-                    mismatch_score[row_index][col_index] =
-                        TScore::max(mismatch_score[row_index][col_index], mismatch_score[step.0][step.1]);
-                }
-                let change_state_score = bounds_scoring.fragment_bound_penalty([old_index, new_index], seed.file_ids);
-                dp[row_index][col_index] =
-                    alignment_scoring.starting_state(mismatch_score[row_index][col_index] + change_state_score);
+                dp[row_index][col_index] = alignment_scoring.starting_state(TScore::NEG_INFINITY);
                 if old_index == start[0] && new_index == start[1] {
                     dp[row_index][col_index] = alignment_scoring.starting_state(0.0);
                 }
@@ -210,28 +196,12 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                         direction.clone(),
                     );
                 }
-
-                for (substate, movement) in dp[row_index][col_index].substate_movements().iter().enumerate() {
-                    if movement.is_none() {
-                        is_alive[row_index][col_index][substate] = old_index == start[0] && new_index == start[1];
-                    } else {
-                        let (op, next_substate) = movement.unwrap();
-                        let old_after = old_index.wrapping_sub(op.movement()[0].wrapping_mul(dp_step));
-                        let row_index_after = directed_sub(old_after, start[0]);
-                        let new_after = new_index.wrapping_sub(op.movement()[1].wrapping_mul(dp_step));
-                        let col_index_after = directed_sub(new_after, row_starts[row_index_after]);
-                        is_alive[row_index][col_index][substate] =
-                            is_alive[row_index_after][col_index_after][next_substate];
-                    }
-                }
-
+                
+                let change_state_score = bounds_scoring.fragment_bound_penalty([old_index, new_index], seed.file_ids);
+                
                 for (substate, &score) in dp[row_index][col_index].substate_scores().iter().enumerate() {
-                    if !is_alive[row_index][col_index][substate] {
-                        continue;
-                    }
-
-                    if score > best_alive_score_in_previous_row {
-                        best_alive_score_in_previous_row = score;
+                    if score > best_score_in_previous_row {
+                        best_score_in_previous_row = score;
                         best_new_in_previous_row = new_index;
                     }
 
@@ -240,12 +210,10 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                         best_score = proposed_score;
                         best_start = (old_index, new_index, substate);
                     }
-
-                    mismatch_score[row_index][col_index] =
-                        TScore::max(mismatch_score[row_index][col_index], proposed_score);
                 }
             }
-            if best_alive_score_in_previous_row == TScore::NEG_INFINITY {
+            const SCORE_SLACK: TScore = 20.0;
+            if best_score_in_previous_row < best_score - SCORE_SLACK {
                 break;
             }
         }
