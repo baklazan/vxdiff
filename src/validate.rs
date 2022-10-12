@@ -1,6 +1,6 @@
 use super::algorithm::{Diff, FileDiff};
 
-pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
+pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]]) -> Vec<String> {
     let mut errors = vec![];
 
     fn side_str(section_id: usize, side: usize) -> String {
@@ -16,7 +16,10 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
         for (op_index, &(op, section_id)) in ops.iter().enumerate() {
             for side in 0..2 {
                 if op.movement()[side] != 0 {
-                    used[section_id][side].push(format!("{op:?} in file #{file_id} at op index #{op_index}"));
+                    let filename = file_names[file_id][side];
+                    used[section_id][side].push(format!(
+                        "{op:?} in file #{file_id} ({filename:?}) at op index #{op_index}"
+                    ));
                     last[side] = Some(section_id);
                     let highlight_bounds = &diff.sections[section_id].sides[side].highlight_bounds;
                     if !highlight_bounds.is_empty() {
@@ -197,6 +200,7 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
     for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
         for side in 0..2 {
             let side_name = ["left", "right"][side];
+            let filename = file_names[file_id][side];
             let mut current_offset = 0;
             for &(op, section_id) in ops {
                 if op.movement()[side] == 0 {
@@ -208,13 +212,13 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]]) -> Vec<String> {
                 }
                 let start_offset = highlight_bounds[0];
                 if current_offset != start_offset {
-                    errors.push(format!("The {side_name} side of file {file_id} has section {section_id} which starts at offset {start_offset}, but it should start at offset {current_offset}"));
+                    errors.push(format!("The {side_name} side of file {file_id} ({filename:?}) has section {section_id} which starts at offset {start_offset}, but it should start at offset {current_offset}"));
                 }
                 current_offset = highlight_bounds[highlight_bounds.len() - 1];
             }
             let file_size = file_input[file_id][side].len();
             if current_offset != file_size {
-                errors.push(format!("The last section of the {side_name} side of file {file_id} ends at offset {current_offset}, but the file is {file_size} bytes long"));
+                errors.push(format!("The last section of the {side_name} side of file {file_id} ({filename:?}) ends at offset {current_offset}, but the file is {file_size} bytes long"));
             }
         }
     }

@@ -136,7 +136,7 @@ struct ExtendedDiffSectionSide<'a> {
 }
 
 struct ExtendedDiffFileSide<'a> {
-    filename: String,
+    filename: &'a str,
     content: &'a str,
     line_offsets: Vec<usize>,
 }
@@ -159,13 +159,17 @@ struct ExtendedDiff<'a> {
     files: &'a [FileDiff],
 }
 
-fn make_extended_diff<'a>(diff: &'a Diff, file_input: &'a [[&'a str; 2]]) -> ExtendedDiff<'a> {
+fn make_extended_diff<'a>(
+    diff: &'a Diff,
+    file_input: &'a [[&'a str; 2]],
+    file_names: &'a [[&'a str; 2]],
+) -> ExtendedDiff<'a> {
     let mut extended_diff = ExtendedDiff {
         section_sides: (0..diff.sections.len()).map(|_| [None, None]).collect(),
         file_sides: (0..diff.files.len())
             .map(|file_id| {
                 [0, 1].map(|side| ExtendedDiffFileSide {
-                    filename: String::from("input.txt"),
+                    filename: file_names[file_id][side],
                     content: file_input[file_id][side],
                     line_offsets: vec![0, 0],
                 })
@@ -1090,9 +1094,10 @@ fn print_plainly(tree_view: &TreeView, nid: Nid, output: &mut impl io::Write) ->
 pub fn print_side_by_side_diff_plainly(
     diff: &Diff,
     file_input: &[[&str; 2]],
+    file_names: &[[&str; 2]],
     output: &mut impl io::Write,
 ) -> TheResult {
-    let diff = make_extended_diff(diff, file_input);
+    let diff = make_extended_diff(diff, file_input, file_names);
     let config = default_config();
     let mut tree = build_initial_tree(&config, &diff).0;
 
@@ -1341,8 +1346,13 @@ fn u16tos(number: u16) -> usize {
     usize::try_from(number).unwrap()
 }
 
-pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal) -> TheResult {
-    let diff = make_extended_diff(diff, file_input);
+pub fn run_tui(
+    diff: &Diff,
+    file_input: &[[&str; 2]],
+    file_names: &[[&str; 2]],
+    terminal: &mut TheTerminal,
+) -> TheResult {
+    let diff = make_extended_diff(diff, file_input, file_names);
     let config = default_config();
 
     // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
@@ -1587,7 +1597,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                             Default::default(),
                         );
                     }
-                    UILine::FileHeaderLine(file_id) => {
+                    &UILine::FileHeaderLine(file_id) => {
                         let file_header_nid = pos.parent;
                         let file_nid = state.tree.parent(file_header_nid).unwrap();
                         let is_open = match state.tree.node(file_nid).as_branch().visible.end {
@@ -1599,8 +1609,9 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                             1,
                             usto16(y),
                             format!(
-                                "file #{} (press z to {})",
-                                file_id,
+                                "{} vs {} (press z to {})",
+                                file_names[file_id][0],
+                                file_names[file_id][1],
                                 if is_open { "close" } else { "open" }
                             ),
                             Style::default()

@@ -1,5 +1,8 @@
+use basic_terminal::{print, print_side_by_side};
 use std::fs::read_to_string;
+use std::io::stdout;
 use std::process::exit;
+use tui_terminal::{print_side_by_side_diff_plainly, run_in_terminal, run_tui};
 
 mod algorithm;
 mod basic_terminal;
@@ -17,11 +20,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut file_input_storage = vec![];
+    let mut file_names_storage = vec![];
 
     for i in (2..args.len()).step_by(2) {
-        let old = read_to_string(&args[i])?;
-        let new = read_to_string(&args[i + 1])?;
+        let old_name = &args[i];
+        let new_name = &args[i + 1];
+        let old = read_to_string(old_name)?;
+        let new = read_to_string(new_name)?;
         file_input_storage.push([old, new]);
+        file_names_storage.push([old_name.to_string_lossy(), new_name.to_string_lossy()]);
     }
 
     // TODO: array.each_ref() might help, but it's not in stable Rust yet.
@@ -29,18 +36,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|&[ref old, ref new]| -> [&str; 2] { [old, new] })
         .collect();
+    let file_names: Vec<[&str; 2]> = file_names_storage
+        .iter()
+        .map(|&[ref old, ref new]| -> [&str; 2] { [old, new] })
+        .collect();
 
     let diff = algorithm::compute_diff(&file_input);
 
-    validate::print_errors(&validate::validate(&diff, &file_input));
+    validate::print_errors(&validate::validate(&diff, &file_input, &file_names));
 
     let mode = args[1].to_str().unwrap_or("???");
     match mode {
         "debug" => println!("{diff:#?}"),
-        "unified" => basic_terminal::print(&diff, &file_input, &mut std::io::stdout())?,
-        "side" => basic_terminal::print_side_by_side(&diff, &file_input, &mut std::io::stdout())?,
-        "tuiplain" => tui_terminal::print_side_by_side_diff_plainly(&diff, &file_input, &mut std::io::stdout())?,
-        "tui" => tui_terminal::run_in_terminal(|terminal| tui_terminal::run_tui(&diff, &file_input, terminal))?,
+        "unified" => print(&diff, &file_input, &mut stdout())?,
+        "side" => print_side_by_side(&diff, &file_input, &mut stdout())?,
+        "tuiplain" => print_side_by_side_diff_plainly(&diff, &file_input, &file_names, &mut stdout())?,
+        "tui" => run_in_terminal(|terminal| run_tui(&diff, &file_input, &file_names, terminal))?,
         _ => eprintln!("invalid mode: {mode}"),
     }
 
