@@ -1,5 +1,8 @@
+mod range_map;
+
 use super::algorithm::{Diff, DiffOp, FileDiff, Section};
 use crossterm::event::{KeyCode, KeyModifiers};
+use range_map::RangeMap;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::error::Error;
@@ -191,6 +194,9 @@ fn make_extended_diff<'a>(diff: &'a Diff, file_input: &'a [[&'a str; 2]]) -> Ext
                     extended_diff.file_sides[file_id][side].line_offsets.push(i + 1);
                 }
             }
+            if file_input[file_id][side].ends_with('\n') {
+                extended_diff.file_sides[file_id][side].line_offsets.pop();
+            }
         }
     }
 
@@ -266,6 +272,7 @@ enum PaddedGroupRawElementContent {
 #[derive(Clone)]
 struct PaddedGroupRawElement {
     style: HalfLineStyle,
+    // TODO: Rename. It's also used for search and jumps (Some vs None).
     offset_override_for_selection: Option<usize>,
     content: PaddedGroupRawElementContent,
 }
@@ -430,7 +437,33 @@ impl Tree {
     // - fix `index_in_parent` in all next siblings
 }
 
-fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> Tree {
+fn add_padded_group_to_range_maps(
+    diff: &ExtendedDiff,
+    node: &Node,
+    visible: bool,
+    nid: Nid,
+    visible_byte_sets: &mut [[RangeMap<()>; 2]],
+    byte_to_nid_maps: &mut [[RangeMap<Nid>; 2]],
+) {
+    if let Node::PaddedGroup(node) = node {
+        for side in 0..2 {
+            for raw_element in &node.raw_elements[side] {
+                if raw_element.offset_override_for_selection.is_none() {
+                    if let PaddedGroupRawElementContent::Section(section_id) = raw_element.content {
+                        let section_side = diff.section_sides[section_id][side].as_ref().unwrap();
+                        let visibility = if visible { Some(()) } else { None };
+                        visible_byte_sets[section_side.file_id][side].set(section_side.byte_range.clone(), visibility);
+                        byte_to_nid_maps[section_side.file_id][side].set(section_side.byte_range.clone(), Some(nid));
+                    }
+                }
+            }
+        }
+    } else {
+        panic!("add_padded_group_to_range_maps needs a Node::PaddedGroup");
+    }
+}
+
+fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[RangeMap<()>; 2]>, Vec<[RangeMap<Nid>; 2]>) {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum SectionType {
         MatchEqual,
@@ -470,50 +503,67 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> Tree {
         }
     };
 
-    let new_padded_group = |offsets: &[usize; 2]| PaddedGroupNode {
-        raw_elements: [vec![], vec![]],
-        end_offsets_for_selection: offsets.clone(),
-        cached_wrap: RefCell::new(None),
-    };
+    struct PaddedGroupBuilder<'a> {
+        diff: &'a ExtendedDiff<'a>,
+        offsets: &'a mut [usize; 2],
+        raw_elements: [Vec<PaddedGroupRawElement>; 2],
+    }
 
-    let add_fabricated_to_padded_group =
-        |padded_group: &mut PaddedGroupNode, style: HalfLineStyle, side: usize, content: String| {
-            padded_group.raw_elements[side].push(PaddedGroupRawElement {
-                style,
-                offset_override_for_selection: Some(padded_group.end_offsets_for_selection[side]),
-                content: PaddedGroupRawElementContent::Fabricated(content),
-            });
-        };
-
-    let add_section_to_padded_group = |padded_group: &mut PaddedGroupNode,
-                                       offsets: &mut [usize; 2],
-                                       styles: [HalfLineStyle; 2],
-                                       (op, section_id): (DiffOp, usize),
-                                       both_sides: bool| {
-        for side in 0..2 {
-            if both_sides || op.movement()[side] != 0 {
-                let style = styles[side];
-                let section_side = diff.section_sides[section_id][side].as_ref().unwrap();
-                let offset_override_for_selection = if op.movement()[side] != 0 {
-                    (*offsets)[side] = section_side.byte_range.end;
-                    padded_group.end_offsets_for_selection[side] = section_side.byte_range.end;
-                    None
-                } else {
-                    Some((*offsets)[side])
-                };
-                padded_group.raw_elements[side].push(PaddedGroupRawElement {
-                    style,
-                    offset_override_for_selection,
-                    content: PaddedGroupRawElementContent::Section(section_id),
-                });
-                if diff.file_sides[section_side.file_id][side].content.as_bytes()[section_side.byte_range.end - 1]
-                    != b'\n'
-                {
-                    add_fabricated_to_padded_group(padded_group, style, side, "No newline at end of file".to_string());
-                }
+    impl<'a> PaddedGroupBuilder<'a> {
+        fn new<'b>(diff: &'b ExtendedDiff, offsets: &'b mut [usize; 2]) -> PaddedGroupBuilder<'b> {
+            PaddedGroupBuilder {
+                diff,
+                offsets,
+                raw_elements: [vec![], vec![]],
             }
         }
-    };
+
+        fn add_fabricated(mut self, style: HalfLineStyle, side: usize, content: String) -> Self {
+            self.raw_elements[side].push(PaddedGroupRawElement {
+                style,
+                offset_override_for_selection: Some(self.offsets[side]),
+                content: PaddedGroupRawElementContent::Fabricated(content),
+            });
+            self
+        }
+
+        fn add_section(
+            mut self,
+            styles: [HalfLineStyle; 2],
+            (op, section_id): (DiffOp, usize),
+            both_sides: bool,
+        ) -> Self {
+            for side in 0..2 {
+                if both_sides || op.movement()[side] != 0 {
+                    let style = styles[side];
+                    let section_side = self.diff.section_sides[section_id][side].as_ref().unwrap();
+                    let offset_override_for_selection = if op.movement()[side] != 0 {
+                        self.offsets[side] = section_side.byte_range.end;
+                        None
+                    } else {
+                        Some(self.offsets[side])
+                    };
+                    self.raw_elements[side].push(PaddedGroupRawElement {
+                        style,
+                        offset_override_for_selection,
+                        content: PaddedGroupRawElementContent::Section(section_id),
+                    });
+                    if !self.diff.file_sides[section_side.file_id][side].content.ends_with('\n') {
+                        self = self.add_fabricated(style, side, "No newline at end of file".to_string());
+                    }
+                }
+            }
+            self
+        }
+
+        fn build(self) -> Node {
+            Node::PaddedGroup(PaddedGroupNode {
+                raw_elements: self.raw_elements,
+                end_offsets_for_selection: *self.offsets,
+                cached_wrap: RefCell::new(None),
+            })
+        }
+    }
 
     let get_description_of_move = |(op, section_id): (DiffOp, usize), render_side: usize| -> String {
         let other_side = if op == DiffOp::Delete { 1 } else { 0 };
@@ -530,7 +580,128 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> Tree {
         format!("{direction} {filename}:{line_number}")
     };
 
+    struct FileBuilder<'a> {
+        diff: &'a ExtendedDiff<'a>,
+        tree: &'a mut Tree,
+        visible_byte_sets: &'a mut [[RangeMap<()>; 2]],
+        byte_to_nid_maps: &'a mut [[RangeMap<Nid>; 2]],
+        offsets: [usize; 2],
+        file_content_nid: Nid,
+    }
+
+    fn add_node_to_range_maps(b: &mut FileBuilder, nid: Nid) {
+        match b.tree.node(nid) {
+            Node::Branch(node) => {
+                // Making a copy to avoid borrow issues with b.tree.
+                let children = node.children[node.visible.clone()].to_vec();
+                for child in children {
+                    add_node_to_range_maps(b, child);
+                }
+            }
+            node @ Node::PaddedGroup(_) => {
+                add_padded_group_to_range_maps(b.diff, node, true, nid, b.visible_byte_sets, b.byte_to_nid_maps);
+            }
+            Node::FileHeaderLine(_) | Node::ExpanderLine(_) => unreachable!(),
+        }
+    }
+
+    let build_match_equal = |b: &mut FileBuilder, ops: &[(DiffOp, usize)], is_first: bool, is_last: bool| {
+        let length = ops.len();
+        let mut padded_groups = vec![];
+        for &op in ops {
+            padded_groups.push(
+                PaddedGroupBuilder::new(diff, &mut b.offsets)
+                    .add_section([HalfLineStyle::Equal; 2], op, true)
+                    .build(),
+            );
+        }
+
+        let context_before = if is_first { 0 } else { config.context_lines };
+        let context_after = if is_last { 0 } else { config.context_lines };
+        if length > context_before + context_after + 1 {
+            let upper_nid = b.tree.add_child(b.file_content_nid, Node::new_branch());
+            b.tree.add_children(upper_nid, padded_groups.clone());
+            b.tree.node_mut(upper_nid).as_branch_mut().visible = 0..context_before;
+            add_node_to_range_maps(b, upper_nid);
+
+            let hidden_count = length - context_before - context_after;
+            let expander_nid = b.tree.add_child(b.file_content_nid, Node::ExpanderLine(hidden_count));
+            for padded_group in &padded_groups[context_before..(length - context_after)] {
+                add_padded_group_to_range_maps(
+                    b.diff,
+                    padded_group,
+                    false,
+                    expander_nid,
+                    b.visible_byte_sets,
+                    b.byte_to_nid_maps,
+                );
+            }
+
+            let lower_nid = b.tree.add_child(b.file_content_nid, Node::new_branch());
+            b.tree.add_children(lower_nid, padded_groups);
+            b.tree.node_mut(lower_nid).as_branch_mut().visible = (length - context_after)..length;
+            add_node_to_range_maps(b, lower_nid);
+        } else {
+            for padded_group in padded_groups {
+                let nid = b.tree.add_child(b.file_content_nid, padded_group);
+                add_node_to_range_maps(b, nid);
+            }
+        }
+    };
+
+    let build_match_unequal = |b: &mut FileBuilder, op: (DiffOp, usize)| {
+        let nid = b.tree.add_child(
+            b.file_content_nid,
+            PaddedGroupBuilder::new(diff, &mut b.offsets)
+                .add_section([HalfLineStyle::Change; 2], op, true)
+                .build(),
+        );
+        add_node_to_range_maps(b, nid);
+    };
+
+    let build_insert_delete = |b: &mut FileBuilder, ops: &[(DiffOp, usize)]| {
+        let mut pgb = PaddedGroupBuilder::new(diff, &mut b.offsets);
+        for i in 0..ops.len() {
+            let style = if is_move(ops[i]) {
+                HalfLineStyle::Move
+            } else {
+                HalfLineStyle::Change
+            };
+            if is_move(ops[i]) && (i == 0 || !is_continuing_move(ops[i - 1], ops[i])) {
+                let side = if ops[i].0 == DiffOp::Delete { 0 } else { 1 };
+                pgb = pgb.add_fabricated(style, side, get_description_of_move(ops[i], side));
+            }
+            pgb = pgb.add_section([style; 2], ops[i], false);
+        }
+        let nid = b.tree.add_child(b.file_content_nid, pgb.build());
+        add_node_to_range_maps(b, nid);
+    };
+
+    let build_phantom = |b: &mut FileBuilder, op: (DiffOp, usize), prev_op: Option<(DiffOp, usize)>| {
+        let styles = if op.0 == DiffOp::Delete {
+            [HalfLineStyle::Move, HalfLineStyle::Phantom]
+        } else {
+            [HalfLineStyle::Phantom, HalfLineStyle::Move]
+        };
+        if prev_op.is_none() || !is_continuing_move(prev_op.unwrap(), op) {
+            let mut pgb = PaddedGroupBuilder::new(diff, &mut b.offsets);
+            for side in 0..2 {
+                pgb = pgb.add_fabricated(styles[side], side, get_description_of_move(op, side));
+            }
+            b.tree.add_child(b.file_content_nid, pgb.build());
+        }
+        let nid = b.tree.add_child(
+            b.file_content_nid,
+            PaddedGroupBuilder::new(diff, &mut b.offsets)
+                .add_section(styles, op, true)
+                .build(),
+        );
+        add_node_to_range_maps(b, nid);
+    };
+
     let mut tree = Tree::new(Node::new_branch());
+    let mut visible_byte_sets: Vec<_> = diff.files.iter().map(|_| [0, 1].map(|_| RangeMap::new())).collect();
+    let mut byte_to_nid_maps: Vec<_> = diff.files.iter().map(|_| [0, 1].map(|_| RangeMap::new())).collect();
 
     for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
         let file_nid = tree.add_child(tree.root, Node::new_branch());
@@ -538,7 +709,14 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> Tree {
         let file_content_nid = tree.add_child(file_nid, Node::new_branch());
         tree.node_mut(file_nid).as_branch_mut().visible = 0..1;
 
-        let mut offsets = [0; 2];
+        let mut b = FileBuilder {
+            diff,
+            tree: &mut tree,
+            visible_byte_sets: &mut visible_byte_sets,
+            byte_to_nid_maps: &mut byte_to_nid_maps,
+            offsets: [0; 2],
+            file_content_nid,
+        };
         let mut op_index = 0;
         while op_index < ops.len() {
             let begin = op_index;
@@ -552,97 +730,15 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> Tree {
             op_index = end;
 
             match section_type {
-                SectionType::MatchEqual => {
-                    let length = end - begin;
-                    let mut padded_groups = vec![];
-                    for i in begin..end {
-                        let mut padded_group = new_padded_group(&offsets);
-                        add_section_to_padded_group(
-                            &mut padded_group,
-                            &mut offsets,
-                            [HalfLineStyle::Equal; 2],
-                            ops[i],
-                            true,
-                        );
-                        padded_groups.push(Node::PaddedGroup(padded_group));
-                    }
-
-                    let context_before = if begin == 0 { 0 } else { config.context_lines };
-                    let context_after = if end == ops.len() { 0 } else { config.context_lines };
-                    if length > context_before + context_after + 1 {
-                        let upper_nid = tree.add_child(file_content_nid, Node::new_branch());
-                        tree.add_children(upper_nid, padded_groups.clone());
-                        tree.node_mut(upper_nid).as_branch_mut().visible = 0..context_before;
-
-                        let hidden_count = length - context_before - context_after;
-                        tree.add_child(file_content_nid, Node::ExpanderLine(hidden_count));
-
-                        let lower_nid = tree.add_child(file_content_nid, Node::new_branch());
-                        tree.add_children(lower_nid, padded_groups);
-                        tree.node_mut(lower_nid).as_branch_mut().visible = (length - context_after)..length;
-                    } else {
-                        tree.add_children(file_content_nid, padded_groups);
-                    }
-                }
-                SectionType::MatchUnequal => {
-                    let mut padded_group = new_padded_group(&offsets);
-                    add_section_to_padded_group(
-                        &mut padded_group,
-                        &mut offsets,
-                        [HalfLineStyle::Change; 2],
-                        ops[begin],
-                        true,
-                    );
-                    tree.add_child(file_content_nid, Node::PaddedGroup(padded_group));
-                }
-                SectionType::InsertDelete => {
-                    let mut padded_group = new_padded_group(&offsets);
-                    for i in begin..end {
-                        let style = if is_move(ops[i]) {
-                            HalfLineStyle::Move
-                        } else {
-                            HalfLineStyle::Change
-                        };
-                        if is_move(ops[i]) && (i == 0 || !is_continuing_move(ops[i - 1], ops[i])) {
-                            let side = if ops[i].0 == DiffOp::Delete { 0 } else { 1 };
-                            add_fabricated_to_padded_group(
-                                &mut padded_group,
-                                style,
-                                side,
-                                get_description_of_move(ops[i], side),
-                            );
-                        }
-                        add_section_to_padded_group(&mut padded_group, &mut offsets, [style; 2], ops[i], false);
-                    }
-                    tree.add_child(file_content_nid, Node::PaddedGroup(padded_group));
-                }
-                SectionType::Phantom => {
-                    let styles = if ops[begin].0 == DiffOp::Delete {
-                        [HalfLineStyle::Move, HalfLineStyle::Phantom]
-                    } else {
-                        [HalfLineStyle::Phantom, HalfLineStyle::Move]
-                    };
-                    if begin == 0 || !is_continuing_move(ops[begin - 1], ops[begin]) {
-                        let mut padded_group = new_padded_group(&offsets);
-                        for side in 0..2 {
-                            add_fabricated_to_padded_group(
-                                &mut padded_group,
-                                styles[side],
-                                side,
-                                get_description_of_move(ops[begin], side),
-                            );
-                        }
-                        tree.add_child(file_content_nid, Node::PaddedGroup(padded_group));
-                    }
-                    let mut padded_group = new_padded_group(&offsets);
-                    add_section_to_padded_group(&mut padded_group, &mut offsets, styles, ops[begin], true);
-                    tree.add_child(file_content_nid, Node::PaddedGroup(padded_group));
-                }
+                SectionType::MatchEqual => build_match_equal(&mut b, &ops[begin..end], begin == 0, end == ops.len()),
+                SectionType::MatchUnequal => build_match_unequal(&mut b, ops[begin]),
+                SectionType::InsertDelete => build_insert_delete(&mut b, &ops[begin..end]),
+                SectionType::Phantom => build_phantom(&mut b, ops[begin], begin.checked_sub(1).map(|prev| ops[prev])),
             }
         }
     }
 
-    tree
+    (tree, visible_byte_sets, byte_to_nid_maps)
 }
 
 struct LineCell {
@@ -998,7 +1094,7 @@ pub fn print_side_by_side_diff_plainly(
 ) -> TheResult {
     let diff = make_extended_diff(diff, file_input);
     let config = default_config();
-    let mut tree = build_initial_tree(&config, &diff);
+    let mut tree = build_initial_tree(&config, &diff).0;
 
     // Gotta expand the file headers in order to see any content.
     let mut child_option_nid = tree.bordering_child(tree.root, First);
@@ -1029,6 +1125,8 @@ struct SelectionState {
 
 struct State<'a> {
     tree: Tree,
+    visible_byte_sets: Vec<[RangeMap<()>; 2]>,
+    byte_to_nid_maps: Vec<[RangeMap<Nid>; 2]>,
     diff: &'a ExtendedDiff<'a>,
     scroll_pos: LeafPosition,
     cursor_pos: LeafPosition,
@@ -1061,6 +1159,33 @@ impl<'a> State<'a> {
         self.fix_scroll_invariants(true);
     }
 
+    fn expand_sibling(&mut self, expander: Nid, count: usize, dir: Direction) {
+        let branch_nid = self.tree.sibling(expander, dir).unwrap();
+        let branch_node = self.tree.node_mut(branch_nid).as_branch_mut();
+        let old_visible = branch_node.visible.clone();
+        let newly_visible = match dir {
+            Prev => {
+                branch_node.visible.end += count;
+                old_visible.end..branch_node.visible.end
+            }
+            Next => {
+                branch_node.visible.start -= count;
+                branch_node.visible.start..old_visible.start
+            }
+        };
+        let branch_node = self.tree.node(branch_nid).as_branch();
+        for &child in &branch_node.children[newly_visible] {
+            add_padded_group_to_range_maps(
+                self.diff,
+                self.tree.node(child),
+                true,
+                child,
+                &mut self.visible_byte_sets,
+                &mut self.byte_to_nid_maps,
+            );
+        }
+    }
+
     fn expand_expander(&mut self, expander: Nid, count: usize, dir: Direction) {
         let hidden_count = match self.tree.node(expander) {
             Node::ExpanderLine(hidden_count) => *hidden_count,
@@ -1069,16 +1194,9 @@ impl<'a> State<'a> {
         let cursor_distance = self.tree_view().leaf_distance(self.scroll_pos, self.cursor_pos);
         if hidden_count >= count + 2 {
             *self.tree.node_mut(expander) = Node::ExpanderLine(hidden_count - count);
-            let sibling_nid = self.tree.sibling(expander, dir).unwrap();
-            let sibling_node = self.tree.node_mut(sibling_nid).as_branch_mut();
-            match dir {
-                Prev => sibling_node.visible.end += count,
-                Next => sibling_node.visible.start -= count,
-            };
+            self.expand_sibling(expander, count, dir);
         } else {
-            let sibling_nid = self.tree.sibling(expander, Next).unwrap();
-            let sibling_node = self.tree.node_mut(sibling_nid).as_branch_mut();
-            sibling_node.visible.start -= hidden_count;
+            self.expand_sibling(expander, hidden_count, Next);
             let this_leaf = LeafPosition {
                 parent: expander,
                 line_index: 0,
@@ -1244,7 +1362,7 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
     let mut size = terminal.size()?;
 
     let mut state = {
-        let initial_tree = build_initial_tree(&config, &diff);
+        let (initial_tree, visible_byte_sets, byte_to_nid_maps) = build_initial_tree(&config, &diff);
         let initial_wrap_width = compute_wrap_width(u16tos(size.width));
         let initial_scroll = TreeView {
             tree: &initial_tree,
@@ -1255,6 +1373,8 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
         .unwrap();
         State {
             tree: initial_tree,
+            visible_byte_sets,
+            byte_to_nid_maps,
             diff: &diff,
             scroll_pos: initial_scroll,
             cursor_pos: initial_scroll,
@@ -1263,6 +1383,23 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
             selection: None,
         }
     };
+
+    // TODO
+    if false {
+        for file_id in 0..diff.files.len() {
+            for side in 0..2 {
+                for (range, ()) in state.visible_byte_sets[file_id][side].ranges() {
+                    eprintln!(
+                        "{file_id} {side} visible range: {range:?} {:?}",
+                        &file_input[file_id][side][range.clone()]
+                    );
+                }
+                for (range, nid) in state.byte_to_nid_maps[file_id][side].ranges() {
+                    eprintln!("{file_id} {side} range {range:?} belongs to nid {}", nid.0);
+                }
+            }
+        }
+    }
 
     #[derive(Clone)]
     enum MouseCell {
@@ -1541,6 +1678,44 @@ pub fn run_tui(diff: &Diff, file_input: &[[&str; 2]], terminal: &mut TheTerminal
                     KeyCode::Char('x') => state.expand_expander(state.cursor_pos.parent, 3, Prev),
                     KeyCode::Char('c') => state.expand_expander(state.cursor_pos.parent, 3, Next),
                     KeyCode::Char('p') if e.modifiers.contains(KeyModifiers::CONTROL) => panic!("intentional panic"),
+                    // TODO: Do it properly.
+                    KeyCode::Char('g') => {
+                        let mut buffer = String::new();
+                        loop {
+                            if let crossterm::event::Event::Key(e) = crossterm::event::read()? {
+                                match e.code {
+                                    KeyCode::Esc | KeyCode::Char('q') => break,
+                                    KeyCode::Char('c') if e.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
+                                    KeyCode::Char(c) => buffer.push(c),
+                                    KeyCode::Backspace if !buffer.is_empty() => {
+                                        buffer.pop();
+                                    }
+                                    KeyCode::Enter => {
+                                        if let Ok(line_number) = buffer.parse::<usize>() {
+                                            let line_offsets = &diff.file_sides[0][1].line_offsets;
+                                            let line_number = std::cmp::min(line_number, line_offsets.len() - 1);
+                                            let byte_offset = line_offsets[line_number];
+                                            let nid = state.byte_to_nid_maps[0][1].get(byte_offset).unwrap();
+                                            // TODO: Find correct line_index.
+                                            state.scroll_pos = LeafPosition {
+                                                parent: nid,
+                                                line_index: 0,
+                                            };
+                                            state.cursor_pos = LeafPosition {
+                                                parent: nid,
+                                                line_index: 0,
+                                            };
+                                            state.fix_scroll_invariants(true);
+                                        } else {
+                                            write!(terminal.backend_mut(), "\x07")?;
+                                        }
+                                        break;
+                                    }
+                                    _ => write!(terminal.backend_mut(), "\x07")?,
+                                }
+                            }
+                        }
+                    }
                     _ => write!(terminal.backend_mut(), "\x07")?,
                 },
                 crossterm::event::Event::Mouse(e) => {

@@ -196,9 +196,9 @@ pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                         direction.clone(),
                     );
                 }
-                
+
                 let change_state_score = bounds_scoring.fragment_bound_penalty([old_index, new_index], seed.file_ids);
-                
+
                 for (substate, &score) in dp[row_index][col_index].substate_scores().iter().enumerate() {
                     if score > best_score_in_previous_row {
                         best_score_in_previous_row = score;
