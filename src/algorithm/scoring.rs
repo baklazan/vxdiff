@@ -11,7 +11,7 @@ pub trait ScoreState: Clone {
     fn substate_movements(&self) -> &[Option<(DiffOp, usize)>];
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DpDirection {
     Backward,
     Forward,
@@ -31,6 +31,59 @@ pub trait AlignmentScoringMethod {
         direction: DpDirection,
     );
     fn is_match(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> bool;
+}
+
+#[derive(Clone, Copy)]
+pub struct InputSliceBounds {
+    pub file_ids: [usize; 2],
+    pub start: [usize; 2],
+    pub direction: DpDirection,
+}
+
+impl InputSliceBounds {
+    fn global_index(&self, side: usize, index: usize) -> usize {
+        match self.direction {
+            DpDirection::Forward => self.start[side] + index,
+            DpDirection::Backward => self.start[side] - index,
+        }
+    }
+
+    fn global_indices(&self, word_indices: [usize; 2]) -> [usize; 2] {
+        [0, 1].map(|side| self.global_index(side, word_indices[side]))
+    }
+}
+
+pub struct AlignmentSliceScoring<'a, Scoring: AlignmentScoringMethod> {
+    pub slice: InputSliceBounds,
+    pub scoring: &'a Scoring,
+}
+
+impl<'a, Scoring: AlignmentScoringMethod> AlignmentSliceScoring<'a, Scoring> {
+    pub fn starting_state(&self, starting_score: TScore) -> Scoring::State {
+        self.scoring.starting_state(starting_score)
+    }
+
+    pub fn consider_step(
+        &self,
+        word_indices: [usize; 2],
+        state_after_move: Scoring::State,
+        state: &mut Scoring::State,
+        step: DiffOp,
+    ) {
+        self.scoring.consider_step(
+            self.slice.global_indices(word_indices),
+            self.slice.file_ids,
+            state_after_move,
+            state,
+            step,
+            self.slice.direction,
+        )
+    }
+
+    pub fn is_match(&self, word_indices: [usize; 2]) -> bool {
+        self.scoring
+            .is_match(self.slice.global_indices(word_indices), self.slice.file_ids)
+    }
 }
 
 #[derive(Clone)]
@@ -370,5 +423,22 @@ impl FragmentBoundsScoringMethod for AffineScoring {
 
     fn is_viable_bound(&self, side: usize, index: usize, file_id: usize) -> bool {
         index < self.bound_score[file_id][side].len() && self.bound_score[file_id][side][index] != TScore::NEG_INFINITY
+    }
+}
+
+pub struct BoundsSliceScoring<'a, Scoring: FragmentBoundsScoringMethod> {
+    pub slice: InputSliceBounds,
+    pub scoring: &'a Scoring,
+}
+
+impl<'a, Scoring: FragmentBoundsScoringMethod> BoundsSliceScoring<'a, Scoring> {
+    pub fn fragment_bound_penalty(&self, word_indices: [usize; 2]) -> TScore {
+        self.scoring
+            .fragment_bound_penalty(self.slice.global_indices(word_indices), self.slice.file_ids)
+    }
+
+    pub fn is_viable_bound(&self, side: usize, index: usize) -> bool {
+        self.scoring
+            .is_viable_bound(side, self.slice.global_index(side, index), self.slice.file_ids[side])
     }
 }
