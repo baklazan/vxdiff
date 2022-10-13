@@ -88,7 +88,11 @@ pub struct PartitionedText<'a> {
 
 impl<'a> PartitionedText<'a> {
     fn word_count(&self) -> usize {
-        self.word_bounds.len() - 1
+        if self.word_bounds.is_empty() {
+            0
+        } else {
+            self.word_bounds.len() - 1
+        }
     }
     fn get_word(&self, index: usize) -> &'a str {
         &self.text[self.word_bounds[index]..self.word_bounds[index + 1]]

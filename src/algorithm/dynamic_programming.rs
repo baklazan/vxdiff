@@ -38,9 +38,11 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
 
     let mut compute_diagonal_bounds = |index_sum: usize, previous_best_new: usize| -> (usize, usize) {
         let previous_best = [index_sum - 1 - previous_best_new, previous_best_new];
-        if index_sum >= in_heuristic_until && bounds_scoring.nearest_bound_point(previous_best) == previous_best {
+        if index_sum > in_heuristic_until && bounds_scoring.nearest_bound_point(previous_best) == previous_best {
             let after_match = skip_matching_lines(previous_best);
-            in_heuristic_until = after_match[0] + after_match[1];
+            if after_match != previous_best {
+                in_heuristic_until = after_match[0] + after_match[1];
+            }
         }
 
         if index_sum < in_heuristic_until {
@@ -70,6 +72,9 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
             alignment_scoring.starting_state(TScore::NEG_INFINITY);
             diag_length
         ]);
+        if diag_length == 0 {
+            continue;
+        }
 
         let mut best_score_in_diag = TScore::NEG_INFINITY;
         for new_index in starting_new..ending_new {
