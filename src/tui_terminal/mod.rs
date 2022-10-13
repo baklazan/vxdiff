@@ -1409,6 +1409,7 @@ pub fn run_tui(
 
     loop {
         let mut mouse_cells: Vec<Vec<MouseCell>> = vec![];
+        let mut mouse_pseudocell_after: Vec<[MouseCell; 2]> = vec![];
 
         let render = |new_size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
             if new_size != size {
@@ -1417,6 +1418,7 @@ pub fn run_tui(
             }
 
             mouse_cells = vec![vec![MouseCell::Inert; u16tos(size.width)]; u16tos(size.height)];
+            mouse_pseudocell_after = vec![[MouseCell::Inert, MouseCell::Inert]; u16tos(size.height)];
 
             let mut pos = state.scroll_pos;
             for y in 0..state.scroll_height {
@@ -1478,6 +1480,14 @@ pub fn run_tui(
                                 highlight: config.highlight_newlines && layout.newline_highlight,
                                 fabricated_symbol: false,
                                 offset: layout.offset_after_except_newline,
+                            };
+
+                            mouse_pseudocell_after[y][side] = MouseCell::Text {
+                                file_id: file_id_for_selection,
+                                side,
+                                offset: whl
+                                    .offset_override_for_selection
+                                    .unwrap_or(layout.offset_after_with_newline),
                             };
 
                             for x in 0..state.wrap_width {
@@ -1609,21 +1619,36 @@ pub fn run_tui(
             // TODO: eventually might want to call frame.set_cursor() for /search etc
         })?;
 
-        let update_selection_position = |selection: &mut SelectionState, mut x: usize, mut y: usize| {
-            while y < u16tos(size.height) {
-                match mouse_cells[y][x] {
-                    MouseCell::Text { file_id, side, offset } => {
+        let update_selection_position = |selection: &mut SelectionState, x: usize, y: usize| {
+            let mut mx = x;
+            let mut my = y;
+            while my < u16tos(size.height) {
+                if let MouseCell::Text { file_id, side, offset } = mouse_cells[my][mx] {
+                    if file_id == selection.file_id && side == selection.side {
+                        selection.current_offset = offset;
+                        return;
+                    }
+                }
+                mx += 1;
+                if mx == u16tos(size.width) {
+                    if let MouseCell::Text { file_id, side, offset } = mouse_pseudocell_after[my][selection.side] {
                         if file_id == selection.file_id && side == selection.side {
                             selection.current_offset = offset;
                             return;
                         }
                     }
-                    _ => {}
+                    mx = 0;
+                    my += 1;
                 }
-                x += 1;
-                if x == u16tos(size.width) {
-                    x = 0;
-                    y += 1;
+            }
+            let mut my = y;
+            while my > 0 {
+                my -= 1;
+                if let MouseCell::Text { file_id, side, offset } = mouse_pseudocell_after[my][selection.side] {
+                    if file_id == selection.file_id && side == selection.side {
+                        selection.current_offset = offset;
+                        return;
+                    }
                 }
             }
         };
