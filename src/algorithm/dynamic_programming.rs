@@ -17,27 +17,62 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
     let mut best_score = bounds_scoring.fragment_bound_penalty([0, 0]);
 
     let mut best_new_in_previous_diag = 0;
+    let mut in_heuristic_until: usize = 0;
 
-    for index_sum in 1..=(bound[0] + bound[1]) {
+    let skip_matching_lines = |position: [usize; 2]| -> [usize; 2] {
+        let mut result = position;
+        while result[0] < bound[0] && result[1] < bound[1] {
+            let next_bound = bounds_scoring.nearest_bound_point([result[0] + 1, result[1] + 1]);
+            if next_bound[0] - result[0] != next_bound[1] - result[1] {
+                return result;
+            }
+            for i in 0..(next_bound[0] - result[0]) {
+                if !alignment_scoring.is_match([result[0] + i, result[1] + i]) {
+                    return result;
+                }
+            }
+            result = next_bound;
+        }
+        result
+    };
+
+    let mut compute_diagonal_bounds = |index_sum: usize, previous_best_new: usize| -> (usize, usize) {
+        let previous_best = [index_sum - 1 - previous_best_new, previous_best_new];
+        if index_sum >= in_heuristic_until && bounds_scoring.nearest_bound_point(previous_best) == previous_best {
+            let after_match = skip_matching_lines(previous_best);
+            in_heuristic_until = after_match[0] + after_match[1];
+        }
+
+        if index_sum < in_heuristic_until {
+            if index_sum % 2 == in_heuristic_until % 2 {
+                return (previous_best_new + 1, previous_best_new + 2);
+            }
+            return (previous_best_new + 1, previous_best_new + 1);
+        }
+
         let mut starting_new = 0;
         if index_sum > bound[0] {
             starting_new = index_sum - bound[0];
         }
-        if best_new_in_previous_diag + 1 > starting_new + BAND_SIZE_WORDS / 2 {
-            starting_new = best_new_in_previous_diag + 1 - BAND_SIZE_WORDS / 2;
+        if previous_best_new + 1 > starting_new + BAND_SIZE_WORDS / 2 {
+            starting_new = previous_best_new + 1 - BAND_SIZE_WORDS / 2;
         }
-        diag_start_new.push(starting_new);
         let mut ending_new_inclusive = std::cmp::min(index_sum, bound[1]);
-        ending_new_inclusive = std::cmp::min(ending_new_inclusive, best_new_in_previous_diag + BAND_SIZE_WORDS / 2);
+        ending_new_inclusive = std::cmp::min(ending_new_inclusive, previous_best_new + BAND_SIZE_WORDS / 2);
+        (starting_new, ending_new_inclusive + 1)
+    };
 
-        let diag_length = ending_new_inclusive - starting_new + 1;
+    for index_sum in 1..=(bound[0] + bound[1]) {
+        let (starting_new, ending_new) = compute_diagonal_bounds(index_sum, best_new_in_previous_diag);
+        diag_start_new.push(starting_new);
+        let diag_length = ending_new - starting_new;
         dp.push(vec![
             alignment_scoring.starting_state(TScore::NEG_INFINITY);
             diag_length
         ]);
 
         let mut best_score_in_diag = TScore::NEG_INFINITY;
-        for new_index in starting_new..=ending_new_inclusive {
+        for new_index in starting_new..ending_new {
             let old_index = index_sum - new_index;
             let index_in_diag = new_index - starting_new;
 

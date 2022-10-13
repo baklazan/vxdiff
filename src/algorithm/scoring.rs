@@ -532,11 +532,6 @@ impl<'a, Scoring: FragmentBoundsScoringMethod> BoundsSliceScoring<'a, Scoring> {
             .fragment_bound_penalty(self.slice.global_indices(word_indices), self.slice.file_ids)
     }
 
-    pub fn is_viable_bound(&self, side: usize, index: usize) -> bool {
-        self.scoring
-            .is_viable_bound(side, self.slice.global_index(side, index), self.slice.file_ids[side])
-    }
-
     pub fn nearest_bound_point(&self, word_indices: [usize; 2]) -> [usize; 2] {
         let global_point_indices = [0, 1].map(|side| {
             self.scoring.nearest_bound(
