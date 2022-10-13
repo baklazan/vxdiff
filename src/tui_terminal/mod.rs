@@ -1696,19 +1696,28 @@ pub fn run_tui(
                                     }
                                     KeyCode::Enter => {
                                         if let Ok(line_number) = buffer.parse::<usize>() {
-                                            let line_offsets = &diff.file_sides[0][1].line_offsets;
+                                            let file_id = 0;
+                                            let side = 1;
+                                            let line_offsets = &diff.file_sides[file_id][side].line_offsets;
                                             let line_number = std::cmp::min(line_number, line_offsets.len() - 1);
                                             let byte_offset = line_offsets[line_number];
-                                            let nid = state.byte_to_nid_maps[0][1].get(byte_offset).unwrap();
-                                            // TODO: Find correct line_index.
-                                            state.scroll_pos = LeafPosition {
-                                                parent: nid,
-                                                line_index: 0,
-                                            };
-                                            state.cursor_pos = LeafPosition {
-                                                parent: nid,
-                                                line_index: 0,
-                                            };
+                                            let parent =
+                                                state.byte_to_nid_maps[file_id][side].get(byte_offset).unwrap();
+                                            let line_index =
+                                                state.tree_view().with_ui_lines(state.tree.node(parent), |lines| {
+                                                    lines.partition_point(|ui_line| match ui_line {
+                                                        UILine::Sides(sides) => {
+                                                            let whl = &sides[side];
+                                                            whl.offset_override_for_selection.unwrap_or(whl.offset)
+                                                                < byte_offset
+                                                        }
+                                                        UILine::ExpanderLine(_) => false,
+                                                        _ => unreachable!(),
+                                                    })
+                                                });
+                                            // TODO: Open the file if it's closed.
+                                            state.scroll_pos = LeafPosition { parent, line_index };
+                                            state.cursor_pos = state.scroll_pos;
                                             state.fix_scroll_invariants(true);
                                         } else {
                                             write!(terminal.backend_mut(), "\x07")?;
