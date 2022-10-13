@@ -159,6 +159,12 @@ struct ExtendedDiff<'a> {
     files: &'a [FileDiff],
 }
 
+impl<'a> ExtendedDiff<'a> {
+    fn section_side(&self, section_id: usize, side: usize) -> &ExtendedDiffSectionSide<'a> {
+        self.section_sides[section_id][side].as_ref().unwrap()
+    }
+}
+
 fn make_extended_diff<'a>(
     diff: &'a Diff,
     file_input: &'a [[&'a str; 2]],
@@ -233,8 +239,8 @@ enum HalfLineStyle {
 }
 
 #[derive(Clone)]
-enum WrappedHalfLineContent {
-    FromInput { section_id: usize, offset: usize },
+enum TextSource {
+    Section(usize),
     Fabricated(String),
 }
 
@@ -242,7 +248,8 @@ enum WrappedHalfLineContent {
 struct WrappedHalfLine {
     style: HalfLineStyle,
     offset_override_for_selection: Option<usize>,
-    content: WrappedHalfLineContent,
+    source: TextSource,
+    offset: usize,
 }
 
 #[derive(Clone)]
@@ -268,17 +275,11 @@ struct BranchNode {
 }
 
 #[derive(Clone)]
-enum PaddedGroupRawElementContent {
-    Section(usize),
-    Fabricated(String),
-}
-
-#[derive(Clone)]
 struct PaddedGroupRawElement {
     style: HalfLineStyle,
     // TODO: Rename. It's also used for search and jumps (Some vs None).
     offset_override_for_selection: Option<usize>,
-    content: PaddedGroupRawElementContent,
+    source: TextSource,
 }
 
 #[derive(Clone)]
@@ -453,8 +454,8 @@ fn add_padded_group_to_range_maps(
         for side in 0..2 {
             for raw_element in &node.raw_elements[side] {
                 if raw_element.offset_override_for_selection.is_none() {
-                    if let PaddedGroupRawElementContent::Section(section_id) = raw_element.content {
-                        let section_side = diff.section_sides[section_id][side].as_ref().unwrap();
+                    if let TextSource::Section(section_id) = raw_element.source {
+                        let section_side = diff.section_side(section_id, side);
                         let visibility = if visible { Some(()) } else { None };
                         visible_byte_sets[section_side.file_id][side].set(section_side.byte_range.clone(), visibility);
                         byte_to_nid_maps[section_side.file_id][side].set(section_side.byte_range.clone(), Some(nid));
@@ -487,8 +488,7 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[Range
         is_move(a)
             && is_move(b)
             && a.0 == b.0
-            && diff.section_sides[a.1][other_side].as_ref().unwrap().byte_range.end
-                == diff.section_sides[b.1][other_side].as_ref().unwrap().byte_range.start
+            && diff.section_side(a.1, other_side).byte_range.end == diff.section_side(b.1, other_side).byte_range.start
     };
 
     let get_type = |(op, section_id): (DiffOp, usize)| -> SectionType {
@@ -526,7 +526,7 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[Range
             self.raw_elements[side].push(PaddedGroupRawElement {
                 style,
                 offset_override_for_selection: Some(self.offsets[side]),
-                content: PaddedGroupRawElementContent::Fabricated(content),
+                source: TextSource::Fabricated(content),
             });
             self
         }
@@ -540,7 +540,7 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[Range
             for side in 0..2 {
                 if both_sides || op.movement()[side] != 0 {
                     let style = styles[side];
-                    let section_side = self.diff.section_sides[section_id][side].as_ref().unwrap();
+                    let section_side = self.diff.section_side(section_id, side);
                     let offset_override_for_selection = if op.movement()[side] != 0 {
                         self.offsets[side] = section_side.byte_range.end;
                         None
@@ -550,7 +550,7 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[Range
                     self.raw_elements[side].push(PaddedGroupRawElement {
                         style,
                         offset_override_for_selection,
-                        content: PaddedGroupRawElementContent::Section(section_id),
+                        source: TextSource::Section(section_id),
                     });
                     if !self.diff.file_sides[section_side.file_id][side].content.ends_with('\n') {
                         self = self.add_fabricated(style, side, "No newline at end of file".to_string());
@@ -571,7 +571,7 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[Range
 
     let get_description_of_move = |(op, section_id): (DiffOp, usize), render_side: usize| -> String {
         let other_side = if op == DiffOp::Delete { 1 } else { 0 };
-        let section_other_side = diff.section_sides[section_id][other_side].as_ref().unwrap();
+        let section_other_side = diff.section_side(section_id, other_side);
         let start = section_other_side.byte_range.start;
         let file_other_side = &diff.file_sides[section_other_side.file_id][other_side];
         let filename = &file_other_side.filename;
@@ -761,7 +761,7 @@ struct LineLayout {
     offset_after: usize,
 }
 
-fn layout_one_line(
+fn layout_one_line_raw(
     input: &str,
     highlight_bounds: &[usize],
     highlight_first: bool,
@@ -835,51 +835,50 @@ fn layout_one_line(
     new_layout(cells, highlight, offset)
 }
 
+fn layout_one_line(
+    diff: &ExtendedDiff,
+    side: usize,
+    source: &TextSource,
+    offset: usize,
+    wrap_width: usize,
+) -> LineLayout {
+    match source {
+        &TextSource::Section(section_id) => {
+            let section_side = diff.section_side(section_id, side);
+            layout_one_line_raw(
+                diff.file_sides[section_side.file_id][side].content,
+                section_side.highlight_bounds,
+                section_side.highlight_first,
+                offset,
+                section_side.byte_range.end,
+                wrap_width,
+            )
+        }
+        TextSource::Fabricated(content) => {
+            layout_one_line_raw(content, &[0, content.len()], false, offset, content.len(), wrap_width)
+        }
+    }
+}
+
 fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_width: usize) -> Vec<WrappedHalfLine> {
     let mut out: Vec<WrappedHalfLine> = vec![];
     for raw_element in &node.raw_elements[side] {
-        let fabricated_highlight_bounds;
-        let (content, byte_range, highlight_bounds, highlight_first): (&str, _, &[_], _) = match raw_element.content {
-            PaddedGroupRawElementContent::Section(section_id) => {
-                let section_side = diff.section_sides[section_id][side].as_ref().unwrap();
-                let content = diff.file_sides[section_side.file_id][side].content;
-                (
-                    content,
-                    section_side.byte_range.clone(),
-                    &section_side.highlight_bounds,
-                    section_side.highlight_first,
-                )
-            }
-            PaddedGroupRawElementContent::Fabricated(ref content) => {
-                // TODO: Ugh
-                fabricated_highlight_bounds = vec![0, content.len()];
-                (content, 0..content.len(), &fabricated_highlight_bounds, false)
-            }
+        let Range { start: mut pos, end } = match &raw_element.source {
+            &TextSource::Section(section_id) => diff.section_side(section_id, side).byte_range.clone(),
+            TextSource::Fabricated(content) => 0..content.len(),
         };
 
-        let mut pos = byte_range.start;
-        while pos != byte_range.end {
-            let next = layout_one_line(
-                content,
-                highlight_bounds,
-                highlight_first,
-                pos,
-                byte_range.end,
-                wrap_width,
-            )
-            .offset_after;
+        while pos != end {
+            let next = layout_one_line(diff, side, &raw_element.source, pos, wrap_width).offset_after;
+            let (slice_source, slice_offset) = match &raw_element.source {
+                &TextSource::Section(section_id) => (TextSource::Section(section_id), pos),
+                TextSource::Fabricated(content) => (TextSource::Fabricated(content[pos..next].to_string()), 0),
+            };
             out.push(WrappedHalfLine {
                 style: raw_element.style,
                 offset_override_for_selection: raw_element.offset_override_for_selection,
-                content: match raw_element.content {
-                    PaddedGroupRawElementContent::Section(section_id) => WrappedHalfLineContent::FromInput {
-                        section_id,
-                        offset: pos,
-                    },
-                    PaddedGroupRawElementContent::Fabricated(..) => {
-                        WrappedHalfLineContent::Fabricated(content[pos..next].to_string())
-                    }
-                },
+                source: slice_source,
+                offset: slice_offset,
             });
             pos = next;
         }
@@ -904,14 +903,15 @@ impl<'a> TreeView<'a> {
                 Some((w, l)) if *w == self.wrap_width => func(l),
                 cached_wrap => {
                     let wrapped_sides =
-                        [0, 1].map(|side| (side, wrap_one_side(self.diff, &node, side, self.wrap_width)));
+                        [0, 1].map(|side| (side, wrap_one_side(self.diff, node, side, self.wrap_width)));
                     let len = std::cmp::max(wrapped_sides[0].1.len(), wrapped_sides[1].1.len());
                     let padded_wrapped_sides = wrapped_sides.map(|(side, whls)| {
                         // TODO: temporary padding indicators
                         let padding = WrappedHalfLine {
                             style: HalfLineStyle::Padding,
                             offset_override_for_selection: Some(node.end_offsets_for_selection[side]),
-                            content: WrappedHalfLineContent::Fabricated("@".to_string()),
+                            source: TextSource::Fabricated("@".to_string()),
+                            offset: 0,
                         };
                         whls.into_iter().chain(std::iter::repeat(padding))
                     });
@@ -928,25 +928,6 @@ impl<'a> TreeView<'a> {
             Node::FileHeaderLine(file_id) => func(&[UILine::FileHeaderLine(*file_id)]),
             Node::ExpanderLine(0) => func(&[]),
             Node::ExpanderLine(hidden_count) => func(&[UILine::ExpanderLine(*hidden_count)]),
-        }
-    }
-
-    fn get_wrapped_half_line_layout(&self, whl: &WrappedHalfLine, side: usize) -> LineLayout {
-        match whl.content {
-            WrappedHalfLineContent::FromInput { section_id, offset } => {
-                let section_side = self.diff.section_sides[section_id][side].as_ref().unwrap();
-                layout_one_line(
-                    self.diff.file_sides[section_side.file_id][side].content,
-                    &section_side.highlight_bounds,
-                    section_side.highlight_first,
-                    offset,
-                    section_side.byte_range.end,
-                    self.wrap_width,
-                )
-            }
-            WrappedHalfLineContent::Fabricated(ref content) => {
-                layout_one_line(content, &[0, content.len()], false, 0, content.len(), self.wrap_width)
-            }
         }
     }
 
@@ -1065,7 +1046,13 @@ fn print_plainly(tree_view: &TreeView, nid: Nid, output: &mut impl io::Write) ->
             match line {
                 UILine::Sides(sides) => {
                     let render_half = |side: usize| -> String {
-                        let layout = tree_view.get_wrapped_half_line_layout(&sides[side], side);
+                        let layout = layout_one_line(
+                            tree_view.diff,
+                            side,
+                            &sides[side].source,
+                            sides[side].offset,
+                            tree_view.wrap_width,
+                        );
                         fn show_cell(cell: &LineCell) -> String {
                             format!(
                                 "{}{}{}",
@@ -1359,7 +1346,7 @@ pub fn run_tui(
     let line_number_width = diff
         .file_sides
         .iter()
-        .flat_map(|file_sides| file_sides)
+        .flatten()
         .map(|file_side| file_side.line_offsets.len() - 1)
         .max()
         .unwrap_or(0)
@@ -1440,12 +1427,12 @@ pub fn run_tui(
                     UILine::Sides(sides) => {
                         for side in 0..2 {
                             let whl = &sides[side];
-                            let (file_id_for_rendering, line_number_str) = match whl.content {
-                                WrappedHalfLineContent::FromInput { section_id, offset, .. } => {
-                                    let file_id = diff.section_sides[section_id][side].as_ref().unwrap().file_id;
+                            let (file_id_for_rendering, line_number_str) = match whl.source {
+                                TextSource::Section(section_id) => {
+                                    let file_id = diff.section_side(section_id, side).file_id;
                                     let file_side = &diff.file_sides[file_id][side];
-                                    let line_number = file_side.byte_offset_to_line_number(offset);
-                                    let line_number_str = if offset == file_side.line_offsets[line_number] {
+                                    let line_number = file_side.byte_offset_to_line_number(whl.offset);
+                                    let line_number_str = if whl.offset == file_side.line_offsets[line_number] {
                                         format!("{line_number:>line_number_width$}")
                                     } else {
                                         let my_width = line_number.to_string().len();
@@ -1453,7 +1440,7 @@ pub fn run_tui(
                                     };
                                     (Some(file_id), line_number_str)
                                 }
-                                WrappedHalfLineContent::Fabricated(..) => (None, " ".repeat(line_number_width)),
+                                TextSource::Fabricated(..) => (None, " ".repeat(line_number_width)),
                             };
                             let lx = 1 + side * (line_number_width + 1 + state.wrap_width + 3 + state.wrap_width + 1);
                             let line_number_style = match whl.style {
@@ -1464,7 +1451,7 @@ pub fn run_tui(
 
                             let screen_start_x = 1 + line_number_width + 1 + side * (state.wrap_width + 3);
 
-                            let layout = tree_view.get_wrapped_half_line_layout(whl, side);
+                            let layout = layout_one_line(&diff, side, &whl.source, whl.offset, state.wrap_width);
 
                             // TODO: This loop runs at most a few times, but it might be nicer to avoid it.
                             let file_id_for_selection = {
