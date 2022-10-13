@@ -745,6 +745,7 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[Range
     (tree, visible_byte_sets, byte_to_nid_maps)
 }
 
+#[derive(Clone)]
 struct LineCell {
     /// Double-width characters are represented by a first LineCell with some egc and a second
     /// LineCell with an empty string.
@@ -757,8 +758,8 @@ struct LineCell {
 struct LineLayout {
     cells: Vec<LineCell>,
     newline_highlight: bool,
-    /// Offset after this line, including the newline if present.
-    offset_after: usize,
+    offset_after_except_newline: usize,
+    offset_after_with_newline: usize,
 }
 
 fn layout_one_line_raw(
@@ -774,10 +775,11 @@ fn layout_one_line_raw(
     let mut highlight_bounds_index = highlight_bounds.partition_point(|&point| point <= offset) - 1;
     let mut highlight = highlight_first ^ (highlight_bounds_index % 2 == 1);
 
-    let new_layout = |cells, newline_highlight, offset_after| LineLayout {
+    let new_layout = |cells, newline_highlight, offset_after_except_newline, offset_after_with_newline| LineLayout {
         cells,
         newline_highlight,
-        offset_after,
+        offset_after_except_newline,
+        offset_after_with_newline,
     };
 
     // The algorithm uses `unicode-segmentation` to split the line into EGCs, and `unicode-width`
@@ -791,7 +793,7 @@ fn layout_one_line_raw(
         }
 
         if egc == "\n" {
-            return new_layout(cells, highlight, offset + egc.len());
+            return new_layout(cells, highlight, offset, offset + egc.len());
         }
 
         assert!(!egc.contains('\n'));
@@ -817,7 +819,7 @@ fn layout_one_line_raw(
         assert!(cell_strings.len() <= wrap_width);
 
         if cells.len() + cell_strings.len() > wrap_width {
-            return new_layout(cells, highlight, offset);
+            return new_layout(cells, highlight, offset, offset);
         }
 
         for cell_string in cell_strings {
@@ -832,7 +834,7 @@ fn layout_one_line_raw(
         offset += egc.len();
     }
 
-    new_layout(cells, highlight, offset)
+    new_layout(cells, highlight, offset, offset)
 }
 
 fn layout_one_line(
@@ -869,7 +871,7 @@ fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_
         };
 
         while pos != end {
-            let next = layout_one_line(diff, side, &raw_element.source, pos, wrap_width).offset_after;
+            let next = layout_one_line(diff, side, &raw_element.source, pos, wrap_width).offset_after_with_newline;
             let (slice_source, slice_offset) = match &raw_element.source {
                 &TextSource::Section(section_id) => (TextSource::Section(section_id), pos),
                 TextSource::Fabricated(content) => (TextSource::Fabricated(content[pos..next].to_string()), 0),
@@ -1459,58 +1461,36 @@ pub fn run_tui(
                                 loop {
                                     if tree_view.tree.node_meta(nid).index_in_parent == 1 {
                                         let sibling_nid = tree_view.tree.sibling(nid, Prev).unwrap();
-                                        if let Node::FileHeaderLine(file_id) = tree_view.tree.node(sibling_nid) {
-                                            break Some(*file_id);
+                                        if let &Node::FileHeaderLine(file_id) = tree_view.tree.node(sibling_nid) {
+                                            break file_id;
                                         }
                                     }
                                     if let Some(parent_nid) = tree_view.tree.parent(nid) {
                                         nid = parent_nid;
                                     } else {
-                                        break None;
+                                        panic!("UILine::Sides was used outside of a file_content_node");
                                     }
                                 }
                             };
 
-                            if let Some(file_id_for_selection) = file_id_for_selection {
-                                for x in 0..state.wrap_width {
-                                    if let Some(offset) = whl.offset_override_for_selection {
-                                        mouse_cells[y][screen_start_x + x] = MouseCell::Text {
-                                            file_id: file_id_for_selection,
-                                            side,
-                                            offset,
-                                        };
-                                    } else if file_id_for_rendering == Some(file_id_for_selection) {
-                                        mouse_cells[y][screen_start_x + x] = MouseCell::Text {
-                                            file_id: file_id_for_selection,
-                                            side,
-                                            offset: layout.offset_after,
-                                        };
-                                    }
-                                }
+                            let eol_cell = LineCell {
+                                egc: " ".to_string(),
+                                highlight: config.highlight_newlines && layout.newline_highlight,
+                                fabricated_symbol: false,
+                                offset: layout.offset_after_except_newline,
                             };
 
-                            // TODO: Is this correct? Can it be merged with the above loop? WIP.
-                            for (x, cell) in layout
-                                .cells
-                                .into_iter()
-                                .chain(std::iter::repeat_with(|| LineCell {
-                                    egc: " ".to_string(),
-                                    highlight: config.highlight_newlines && layout.newline_highlight,
-                                    fabricated_symbol: false,
-                                    offset: layout.offset_after,
-                                }))
-                                .take(state.wrap_width)
-                                .enumerate()
-                            {
+                            for x in 0..state.wrap_width {
                                 let LineCell {
                                     egc,
                                     highlight,
                                     fabricated_symbol,
                                     offset,
-                                } = cell;
+                                } = layout.cells.get(x).unwrap_or(&eol_cell).clone();
+
                                 let selected = match &state.selection {
                                     Some(selection) => {
-                                        file_id_for_selection == Some(selection.file_id)
+                                        file_id_for_selection == selection.file_id
                                             && file_id_for_rendering == Some(selection.file_id)
                                             && whl.offset_override_for_selection.is_none()
                                             && side == selection.side
@@ -1519,13 +1499,14 @@ pub fn run_tui(
                                     }
                                     None => false,
                                 };
+
                                 let x = screen_start_x + x;
 
-                                if whl.offset_override_for_selection.is_none() {
-                                    if let Some(file_id) = file_id_for_selection {
-                                        mouse_cells[y][x] = MouseCell::Text { file_id, side, offset };
-                                    }
-                                }
+                                mouse_cells[y][x] = MouseCell::Text {
+                                    file_id: file_id_for_selection,
+                                    side,
+                                    offset: whl.offset_override_for_selection.unwrap_or(offset),
+                                };
 
                                 let x = usto16(x);
                                 let y = usto16(y);
