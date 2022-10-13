@@ -1,13 +1,12 @@
-use basic_terminal::{print, print_side_by_side};
 use std::fs::read_to_string;
 use std::io::stdout;
 use std::process::exit;
-use tui_terminal::{print_side_by_side_diff_plainly, run_in_terminal, run_tui};
-
-mod algorithm;
-mod basic_terminal;
-mod tui_terminal;
-mod validate;
+use vxdiff::tui_terminal::{print_side_by_side_diff_plainly, run_in_terminal, run_tui};
+use vxdiff::{
+    algorithm::compute_diff,
+    basic_terminal::{print, print_side_by_side},
+    validate::{print_errors, validate},
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().collect();
@@ -41,9 +40,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|&[ref old, ref new]| -> [&str; 2] { [old, new] })
         .collect();
 
-    let diff = algorithm::compute_diff(&file_input);
+    let diff = compute_diff(&file_input);
 
-    validate::print_errors(&validate::validate(&diff, &file_input, &file_names));
+    print_errors(&validate(&diff, &file_input, &file_names));
 
     let mode = args[1].to_str().unwrap_or("???");
     match mode {
