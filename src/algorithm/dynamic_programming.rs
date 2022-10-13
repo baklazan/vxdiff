@@ -8,146 +8,75 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
     bounds_scoring: &BoundsSliceScoring<FragmentScoring>,
     bound: [usize; 2],
 ) -> (Vec<DiffOp>, [usize; 2]) {
-    const BAND_SIZE_LINES: usize = 3;
-    const BAND_EOLS_BEFOREQ_BEST: usize = (BAND_SIZE_LINES / 2) + 1;
-    const BAND_EOLS_AFTER_BEST: usize = BAND_SIZE_LINES + 1 - BAND_EOLS_BEFOREQ_BEST;
+    const BAND_SIZE_WORDS: usize = 100;
 
-    let mut dp: Vec<Vec<AlignmentScoring::State>> = vec![vec![alignment_scoring.starting_state(TScore::NEG_INFINITY)]];
-    let mut row_starts = vec![0];
+    let mut dp: Vec<Vec<AlignmentScoring::State>> = vec![vec![alignment_scoring.starting_state(0.0)]];
+    let mut diag_start_new = vec![0];
 
     let mut best_start = ([0, 0], 0);
-    let mut best_score = TScore::NEG_INFINITY;
+    let mut best_score = bounds_scoring.fragment_bound_penalty([0, 0]);
 
-    let mut best_new_in_previous_row = 0;
+    let mut best_new_in_previous_diag = 0;
 
-    for old_index in 0..=bound[0] {
-        let central_new = if old_index == 0 {
-            0
-        } else {
-            if best_new_in_previous_row == bound[1] {
-                best_new_in_previous_row
-            } else {
-                best_new_in_previous_row + 1
-            }
-        };
-
-        if bounds_scoring.is_viable_bound(0, old_index) && old_index != bound[0] {
-            // compute matrix row starts for the next row of old text
-            let mut used_match_heuristic = false;
-            if bounds_scoring.is_viable_bound(1, central_new) && central_new != bound[1] {
-                // check if the following text lines are matching
-                let mut next_line_end_old = old_index + 1;
-                while !bounds_scoring.is_viable_bound(0, next_line_end_old) {
-                    next_line_end_old = next_line_end_old + 1;
-                }
-                let line_start_index_old = std::cmp::min(old_index, next_line_end_old);
-                let line_length = next_line_end_old - old_index;
-                let next_line_end_new = central_new + line_length;
-                let mut lines_matching = bounds_scoring.is_viable_bound(1, next_line_end_new);
-                let line_start_index_new = std::cmp::min(central_new, next_line_end_new);
-
-                for i in 0..line_length {
-                    lines_matching &= alignment_scoring.is_match([line_start_index_old + i, line_start_index_new + i]);
-                }
-
-                if lines_matching {
-                    for i in 1..=line_length {
-                        row_starts.push(central_new + i);
-                        dp.push(vec![alignment_scoring.starting_state(TScore::NEG_INFINITY); 1]);
-                    }
-                    used_match_heuristic = true;
-                }
-            }
-
-            if !used_match_heuristic {
-                let mut row_start = central_new;
-                let current_row_start = row_starts[old_index];
-                let mut row_end = central_new;
-
-                let mut seen_eols_beforeq = if bounds_scoring.is_viable_bound(1, row_start) {
-                    1
-                } else {
-                    0
-                };
-                while row_start != current_row_start && seen_eols_beforeq < BAND_EOLS_BEFOREQ_BEST {
-                    row_start = row_start - 1;
-                    if bounds_scoring.is_viable_bound(1, row_start) {
-                        seen_eols_beforeq += 1;
-                    }
-                }
-
-                let mut seen_eols_after = 0;
-                while row_end != bound[1] && seen_eols_after < BAND_EOLS_AFTER_BEST {
-                    row_end = row_end + 1;
-                    if bounds_scoring.is_viable_bound(1, row_end) {
-                        seen_eols_after += 1;
-                    }
-                }
-
-                let current_row_size = row_end - current_row_start + 1;
-                while dp[old_index].len() < current_row_size {
-                    dp[old_index].push(alignment_scoring.starting_state(TScore::NEG_INFINITY));
-                }
-                let row_size = row_end - row_start + 1;
-                let mut i = old_index + 1;
-                loop {
-                    row_starts.push(row_start);
-                    dp.push(vec![alignment_scoring.starting_state(TScore::NEG_INFINITY); row_size]);
-                    if bounds_scoring.is_viable_bound(0, i) {
-                        break;
-                    }
-                    i = i + 1;
-                }
-            }
+    for index_sum in 1..=(bound[0] + bound[1]) {
+        let mut starting_new = 0;
+        if index_sum > bound[0] {
+            starting_new = index_sum - bound[0];
         }
-        let mut best_score_in_previous_row = TScore::NEG_INFINITY;
-        for col_index in 0..dp[old_index].len() {
-            let new_index = row_starts[old_index] + col_index;
+        if best_new_in_previous_diag + 1 > starting_new + BAND_SIZE_WORDS / 2 {
+            starting_new = best_new_in_previous_diag + 1 - BAND_SIZE_WORDS / 2;
+        }
+        diag_start_new.push(starting_new);
+        let mut ending_new_inclusive = std::cmp::min(index_sum, bound[1]);
+        ending_new_inclusive = std::cmp::min(ending_new_inclusive, best_new_in_previous_diag + BAND_SIZE_WORDS / 2);
+
+        let diag_length = ending_new_inclusive - starting_new + 1;
+        dp.push(vec![
+            alignment_scoring.starting_state(TScore::NEG_INFINITY);
+            diag_length
+        ]);
+
+        let mut best_score_in_diag = TScore::NEG_INFINITY;
+        for new_index in starting_new..=ending_new_inclusive {
+            let old_index = index_sum - new_index;
+            let index_in_diag = new_index - starting_new;
 
             let mut valid_steps = vec![];
             for op in [DiffOp::Delete, DiffOp::Insert, DiffOp::Match] {
-                if old_index >= op.movement()[0] {
-                    let old_after = old_index - op.movement()[0];
-                    let row_index_after = old_after;
-                    if new_index - row_starts[row_index_after] >= op.movement()[1] {
-                        let new_after = new_index - op.movement()[1];
-                        let col_index_after = new_after - row_starts[row_index_after];
-                        if col_index_after < dp[row_index_after].len() {
-                            valid_steps.push((row_index_after, col_index_after, op));
-                        }
+                if old_index >= op.movement()[0] && new_index >= op.movement()[1] {
+                    let old_before = old_index - op.movement()[0];
+                    let new_before = new_index - op.movement()[1];
+                    let sum_before = old_before + new_before;
+                    if new_before >= diag_start_new[sum_before]
+                        && new_before < diag_start_new[sum_before] + dp[sum_before].len()
+                    {
+                        let index_in_diag_before = new_before - diag_start_new[sum_before];
+                        valid_steps.push((sum_before, index_in_diag_before, op));
                     }
                 }
             }
 
-            dp[old_index][col_index] = alignment_scoring.starting_state(TScore::NEG_INFINITY);
-            if old_index == 0 && new_index == 0 {
-                dp[old_index][col_index] = alignment_scoring.starting_state(0.0);
-            }
-
-            for step in valid_steps {
+            for (sum_before, index_in_diag_before, op) in valid_steps {
                 alignment_scoring.consider_step(
                     [old_index, new_index],
-                    dp[step.0][step.1].clone(),
-                    &mut dp[old_index][col_index],
-                    step.2,
+                    dp[sum_before][index_in_diag_before].clone(),
+                    &mut dp[index_sum][index_in_diag],
+                    op,
                 );
             }
 
             let nearest_bound_point = bounds_scoring.nearest_bound_point([old_index, new_index]);
             let change_state_penalty = bounds_scoring.fragment_bound_penalty(nearest_bound_point);
 
-            let change_state_score = bounds_scoring.fragment_bound_penalty([old_index, new_index]);
-
-            for (substate, &score) in dp[old_index][col_index].substate_scores().iter().enumerate() {
-                if score > best_score_in_previous_row {
-                    best_score_in_previous_row = score;
-                    best_new_in_previous_row = new_index;
+            for (substate, &score) in dp[index_sum][index_in_diag].substate_scores().iter().enumerate() {
+                if score > best_score_in_diag {
+                    best_score_in_diag = score;
+                    best_new_in_previous_diag = new_index;
                 }
 
                 let proposed_score = score
-                    + change_state_penalty
                     + alignment_scoring.append_gaps([old_index, new_index], nearest_bound_point, substate)
-                    + change_state_score;
+                    + change_state_penalty;
                 if proposed_score > best_score {
                     best_score = proposed_score;
                     best_start = ([old_index, new_index], substate);
@@ -155,25 +84,27 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
             }
         }
         const SCORE_SLACK: TScore = 20.0;
-        if best_score_in_previous_row < best_score - SCORE_SLACK {
+        if best_score_in_diag < best_score - SCORE_SLACK {
             break;
         }
     }
+
     let mut alignment = vec![];
     let actual_start = bounds_scoring.nearest_bound_point(best_start.0);
-    for _ in 0..(actual_start[0] - best_start.0[0]) {
+    for _ in best_start.0[0]..actual_start[0] {
         alignment.push(DiffOp::Delete);
     }
-    for _ in 0..(actual_start[1] - best_start.0[1]) {
+    for _ in best_start.0[1]..actual_start[1] {
         alignment.push(DiffOp::Insert);
     }
+
     let mut old_index = best_start.0[0];
     let mut new_index = best_start.0[1];
     let mut substate = best_start.1;
     while old_index != 0 || new_index != 0 {
-        let row_index = old_index;
-        let col_index = new_index - row_starts[row_index];
-        let movement = dp[row_index][col_index].substate_movements()[substate];
+        let index_sum = old_index + new_index;
+        let index_in_diag = new_index - diag_start_new[index_sum];
+        let movement = dp[index_sum][index_in_diag].substate_movements()[substate];
         assert!(movement.is_some());
         let (op, next_substate) = movement.unwrap();
         alignment.push(op);
@@ -182,7 +113,7 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
         new_index = new_index - op.movement()[1];
     }
     alignment.reverse();
-    (alignment, best_start.0)
+    (alignment, actual_start)
 }
 
 pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: FragmentBoundsScoringMethod>(

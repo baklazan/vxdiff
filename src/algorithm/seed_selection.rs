@@ -96,13 +96,16 @@ pub fn select_seeds(texts: &[[PartitionedText; 2]]) -> Vec<Seed> {
                     });
                     open_seed_index += 1;
                 }
+                let mut is_new_seed = true;
                 if open_seed_index < open_seed_starts.len() {
                     let (open_file_id, open_diagonal, _) = open_seed_starts[open_seed_index];
                     if open_file_id == old_file_id && open_diagonal == diagonal {
+                        is_new_seed = false;
                         new_open_seed_starts.push(open_seed_starts[open_seed_index]);
                         open_seed_index += 1;
                     }
-                } else {
+                }
+                if is_new_seed {
                     new_open_seed_starts.push((old_file_id, diagonal, [old_start, new_start]));
                 }
             }

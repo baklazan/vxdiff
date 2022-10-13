@@ -115,8 +115,8 @@ pub fn greedy_fragments(texts: &[[PartitionedText; 2]]) -> Vec<(AlignedFragment,
         let seed = current.1;
 
         let covered_for_seed = [&covered[seed.file_ids[0]][0], &covered[seed.file_ids[1]][1]];
-        let after_removal = remove_covered_parts(current.1, covered_for_seed);
-        if after_removal.len() != 1 || after_removal[0] != current.1 {
+        let after_removal = remove_covered_parts(seed, covered_for_seed);
+        if after_removal.len() != 1 || after_removal[0] != seed {
             // seed was invalid, insert its subseeds instead
             for seed in after_removal {
                 let score =

@@ -478,10 +478,13 @@ impl AlignmentScoringMethod for AffineScoring {
         starting_substate: usize,
     ) -> TScore {
         let gap_length = (end_indices[0] - start_indices[0]) + (end_indices[1] - start_indices[1]);
+        if gap_length == 0 {
+            return 0.0;
+        }
         let start_score = if starting_substate == Self::MATCH {
-            return Self::P_START_GAP.log2();
+            Self::P_START_GAP.log2()
         } else if starting_substate == Self::GAP {
-            return (1.0 - Self::P_END_GAP).log2();
+            (1.0 - Self::P_END_GAP).log2()
         } else {
             TScore::NEG_INFINITY
         };
