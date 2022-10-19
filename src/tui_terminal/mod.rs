@@ -1144,8 +1144,8 @@ struct SelectionState {
 #[derive(PartialEq, Eq)]
 struct SearchMatch {
     file_id: usize,
-    side: usize,
-    line_number: usize,
+    offset: usize,
+    parent: Nid,
 }
 
 struct State<'a> {
@@ -1158,7 +1158,7 @@ struct State<'a> {
     wrap_width: usize,
     scroll_height: usize,
     selection: Option<SelectionState>,
-    search_matches: Vec<SearchMatch>,
+    search_matches: [Vec<SearchMatch>; 2],
     search_highlights: Vec<[Vec<usize>; 2]>,
 }
 
@@ -1281,7 +1281,7 @@ impl<'a> State<'a> {
     }
 
     fn search(&mut self, pattern: &str) {
-        self.search_matches = vec![];
+        self.search_matches = [vec![], vec![]];
         self.search_highlights = self.diff.files.iter().map(|_| [vec![], vec![]]).collect();
 
         // TODO: case insensitive config (like less -i and less -I)
@@ -1313,19 +1313,86 @@ impl<'a> State<'a> {
                                 highlights.push(point);
                             }
                         }
-                        let line_number = self.diff.file_sides[file_id][side].byte_offset_to_line_number(start);
                         let my_match = SearchMatch {
                             file_id,
-                            side,
-                            line_number,
+                            offset: start,
+                            parent: self.byte_to_nid_maps[file_id][side].get(start).unwrap(),
                         };
-                        match self.search_matches.last() {
+                        match self.search_matches[side].last() {
                             Some(last_match) if *last_match == my_match => {}
-                            _ => self.search_matches.push(my_match),
+                            _ => self.search_matches[side].push(my_match),
                         }
                     }
                 }
             }
+        }
+    }
+
+    fn find_leaf_position_within_parent(&self, side: usize, parent: Nid, byte_offset: usize) -> LeafPosition {
+        let line_index = self.tree_view().with_ui_lines(self.tree.node(parent), |lines| {
+            lines
+                .binary_search_by(|ui_line| match ui_line {
+                    UILine::Sides(sides) => {
+                        let whl = &sides[side];
+                        whl.offset_override_for_selection
+                            .unwrap_or(whl.offset)
+                            .cmp(&byte_offset)
+                    }
+                    UILine::ExpanderLine(_) => Ordering::Equal,
+                    _ => unreachable!(),
+                })
+                .unwrap_or_else(|i| i - 1)
+        });
+        LeafPosition { parent, line_index }
+    }
+
+    fn find_leaf_position_of_line(&self, file_id: usize, side: usize, line_number: usize) -> LeafPosition {
+        let byte_offset = self.diff.file_sides[file_id][side].line_offsets[line_number];
+        let parent = self.byte_to_nid_maps[file_id][side].get(byte_offset).unwrap();
+        self.find_leaf_position_within_parent(side, parent, byte_offset)
+    }
+
+    fn next_or_same_search_result(&self, start: LeafPosition, dir: Direction) -> Option<LeafPosition> {
+        let candidates = [0, 1].map(|side| {
+            let compare_with_start = |probe: &SearchMatch| {
+                self.tree.compare_nodes(probe.parent, start.parent).then_with(|| {
+                    self.find_leaf_position_within_parent(side, probe.parent, probe.offset)
+                        .line_index
+                        .cmp(&start.line_index)
+                })
+            };
+            let matches = &self.search_matches[side];
+            let match_index = match matches.binary_search_by(compare_with_start) {
+                Ok(exact_index) => exact_index,
+                Err(between_index) => match dir {
+                    Prev => between_index.wrapping_sub(1),
+                    Next => between_index,
+                },
+            };
+            let my_match = matches.get(match_index)?;
+            Some(self.find_leaf_position_within_parent(side, my_match.parent, my_match.offset))
+            // TODO: Should it return results in closed files?
+        });
+        match candidates {
+            [None, None] => None,
+            [Some(x), None] => Some(x),
+            [None, Some(y)] => Some(y),
+            [Some(x), Some(y)] => match (dir, self.tree.compare_leaves(x, y)) {
+                (Prev, Ordering::Less | Ordering::Equal) => Some(y),
+                (Prev, Ordering::Greater) => Some(x),
+                (Next, Ordering::Less | Ordering::Equal) => Some(x),
+                (Next, Ordering::Greater) => Some(y),
+            },
+        }
+    }
+
+    fn go_to_next_result(&mut self, dir: Direction) {
+        let start = self.move_pos(self.scroll_pos, 1, dir);
+        if let Some(next) = self.next_or_same_search_result(start, dir) {
+            // TODO: Open the file if it's closed.
+            self.scroll_pos = next;
+            self.cursor_pos = next;
+            // TODO: Commented out: self.fix_scroll_invariants(true);
         }
     }
 }
@@ -1463,7 +1530,7 @@ pub fn run_tui(
             wrap_width: initial_wrap_width,
             scroll_height: u16tos(size.height),
             selection: None,
-            search_matches: vec![],
+            search_matches: [vec![], vec![]],
             search_highlights: diff.files.iter().map(|_| [vec![], vec![]]).collect(),
         }
     };
@@ -1783,6 +1850,10 @@ pub fn run_tui(
                     KeyCode::Char('x') => state.expand_expander(state.cursor_pos.parent, 3, Prev),
                     KeyCode::Char('c') => state.expand_expander(state.cursor_pos.parent, 3, Next),
                     KeyCode::Char('p') if e.modifiers.contains(KeyModifiers::CONTROL) => panic!("intentional panic"),
+                    KeyCode::F(3) if e.modifiers.contains(KeyModifiers::SHIFT) => state.go_to_next_result(Prev),
+                    KeyCode::F(3) => state.go_to_next_result(Next),
+                    KeyCode::Char('N') => state.go_to_next_result(Prev),
+                    KeyCode::Char('n') => state.go_to_next_result(Next),
                     // TODO: Do it properly.
                     KeyCode::Char('g') => {
                         let mut buffer = String::new();
@@ -1799,26 +1870,10 @@ pub fn run_tui(
                                         if let Ok(line_number) = buffer.parse::<usize>() {
                                             let file_id = 0;
                                             let side = 1;
-                                            let line_offsets = &diff.file_sides[file_id][side].line_offsets;
-                                            let line_number = std::cmp::min(line_number, line_offsets.len() - 1);
-                                            let byte_offset = line_offsets[line_number];
-                                            let parent =
-                                                state.byte_to_nid_maps[file_id][side].get(byte_offset).unwrap();
-                                            let line_index =
-                                                state.tree_view().with_ui_lines(state.tree.node(parent), |lines| {
-                                                    lines.partition_point(|ui_line| match ui_line {
-                                                        UILine::Sides(sides) => {
-                                                            let whl = &sides[side];
-                                                            whl.offset_override_for_selection.unwrap_or(whl.offset)
-                                                                < byte_offset
-                                                        }
-                                                        UILine::ExpanderLine(_) => false,
-                                                        _ => unreachable!(),
-                                                    })
-                                                });
+                                            let pos = state.find_leaf_position_of_line(file_id, side, line_number);
                                             // TODO: Open the file if it's closed.
-                                            state.scroll_pos = LeafPosition { parent, line_index };
-                                            state.cursor_pos = state.scroll_pos;
+                                            state.scroll_pos = pos;
+                                            state.cursor_pos = pos;
                                             state.fix_scroll_invariants(true);
                                         } else {
                                             write!(terminal.backend_mut(), "\x07")?;
