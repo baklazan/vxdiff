@@ -752,6 +752,7 @@ struct LineCell {
     egc: String,
     offset: usize,
     highlight: bool,
+    search_highlight: bool,
     fabricated_symbol: bool,
 }
 
@@ -766,6 +767,7 @@ fn layout_one_line_raw(
     input: &str,
     highlight_bounds: &[usize],
     highlight_first: bool,
+    search_bounds: &[usize],
     mut offset: usize,
     end: usize,
     wrap_width: usize,
@@ -774,6 +776,9 @@ fn layout_one_line_raw(
 
     let mut highlight_bounds_index = highlight_bounds.partition_point(|&point| point <= offset) - 1;
     let mut highlight = highlight_first ^ (highlight_bounds_index % 2 == 1);
+
+    let mut search_bounds_index = search_bounds.partition_point(|&point| point <= offset);
+    let mut search_highlight = search_bounds_index % 2 == 1;
 
     let new_layout = |cells, newline_highlight, offset_after_except_newline, offset_after_with_newline| LineLayout {
         cells,
@@ -790,6 +795,11 @@ fn layout_one_line_raw(
         if offset == highlight_bounds[highlight_bounds_index + 1] {
             highlight_bounds_index += 1;
             highlight = !highlight;
+        }
+
+        if search_bounds.get(search_bounds_index).cloned() == Some(offset) {
+            search_bounds_index += 1;
+            search_highlight = !search_highlight;
         }
 
         if egc == "\n" {
@@ -827,6 +837,7 @@ fn layout_one_line_raw(
                 egc: cell_string,
                 offset,
                 highlight,
+                search_highlight,
                 fabricated_symbol,
             });
         }
@@ -841,6 +852,7 @@ fn layout_one_line(
     diff: &ExtendedDiff,
     side: usize,
     source: &TextSource,
+    search_highlights: Option<&[[Vec<usize>; 2]]>,
     offset: usize,
     wrap_width: usize,
 ) -> LineLayout {
@@ -851,14 +863,24 @@ fn layout_one_line(
                 diff.file_sides[section_side.file_id][side].content,
                 section_side.highlight_bounds,
                 section_side.highlight_first,
+                match search_highlights {
+                    Some(search_highlights) => &search_highlights[section_side.file_id][side],
+                    None => &[],
+                },
                 offset,
                 section_side.byte_range.end,
                 wrap_width,
             )
         }
-        TextSource::Fabricated(content) => {
-            layout_one_line_raw(content, &[0, content.len()], false, offset, content.len(), wrap_width)
-        }
+        TextSource::Fabricated(content) => layout_one_line_raw(
+            content,
+            &[0, content.len()],
+            false,
+            &[],
+            offset,
+            content.len(),
+            wrap_width,
+        ),
     }
 }
 
@@ -871,7 +893,8 @@ fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_
         };
 
         while pos != end {
-            let next = layout_one_line(diff, side, &raw_element.source, pos, wrap_width).offset_after_with_newline;
+            let next =
+                layout_one_line(diff, side, &raw_element.source, None, pos, wrap_width).offset_after_with_newline;
             let (slice_source, slice_offset) = match &raw_element.source {
                 &TextSource::Section(section_id) => (TextSource::Section(section_id), pos),
                 TextSource::Fabricated(content) => (TextSource::Fabricated(content[pos..next].to_string()), 0),
@@ -1052,6 +1075,7 @@ fn print_plainly(tree_view: &TreeView, nid: Nid, output: &mut impl io::Write) ->
                             tree_view.diff,
                             side,
                             &sides[side].source,
+                            None,
                             sides[side].offset,
                             tree_view.wrap_width,
                         );
@@ -1117,6 +1141,13 @@ struct SelectionState {
     current_offset: usize,
 }
 
+#[derive(PartialEq, Eq)]
+struct SearchMatch {
+    file_id: usize,
+    side: usize,
+    line_number: usize,
+}
+
 struct State<'a> {
     tree: Tree,
     visible_byte_sets: Vec<[RangeMap<()>; 2]>,
@@ -1127,6 +1158,8 @@ struct State<'a> {
     wrap_width: usize,
     scroll_height: usize,
     selection: Option<SelectionState>,
+    search_matches: Vec<SearchMatch>,
+    search_highlights: Vec<[Vec<usize>; 2]>,
 }
 
 impl<'a> State<'a> {
@@ -1205,6 +1238,7 @@ impl<'a> State<'a> {
             *self.tree.node_mut(expander) = Node::ExpanderLine(0);
         }
         self.scroll_pos = self.move_pos(self.cursor_pos, cursor_distance, Prev);
+        // TODO: Redo current search.
     }
 
     fn fix_scroll_invariants(&mut self, prefer_changing_scroll: bool) {
@@ -1244,6 +1278,55 @@ impl<'a> State<'a> {
         self.scroll_pos = fix_position(&self.tree_view(), self.scroll_pos);
         self.cursor_pos = fix_position(&self.tree_view(), self.cursor_pos);
         self.fix_scroll_invariants(false);
+    }
+
+    fn search(&mut self, pattern: &str) {
+        self.search_matches = vec![];
+        self.search_highlights = self.diff.files.iter().map(|_| [vec![], vec![]]).collect();
+
+        // TODO: case insensitive config (like less -i and less -I)
+        // TODO: literal string search
+        let regex = regex::RegexBuilder::new(pattern)
+            .case_insensitive(true)
+            .multi_line(true)
+            .build();
+
+        let regex = match regex {
+            Ok(regex) => regex,
+            Err(_) => {
+                // TODO: show the error (if non-incremental search).
+                return;
+            }
+        };
+
+        for file_id in 0..self.diff.files.len() {
+            for side in 0..2 {
+                for (range, ()) in self.visible_byte_sets[file_id][side].ranges() {
+                    for mat in regex.find_iter(&self.diff.file_sides[file_id][side].content[range.clone()]) {
+                        let start = range.start + mat.start();
+                        let end = range.start + mat.end();
+                        for point in [start, end] {
+                            let highlights = &mut self.search_highlights[file_id][side];
+                            if highlights.last().cloned() == Some(point) {
+                                highlights.pop();
+                            } else {
+                                highlights.push(point);
+                            }
+                        }
+                        let line_number = self.diff.file_sides[file_id][side].byte_offset_to_line_number(start);
+                        let my_match = SearchMatch {
+                            file_id,
+                            side,
+                            line_number,
+                        };
+                        match self.search_matches.last() {
+                            Some(last_match) if *last_match == my_match => {}
+                            _ => self.search_matches.push(my_match),
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1380,6 +1463,8 @@ pub fn run_tui(
             wrap_width: initial_wrap_width,
             scroll_height: u16tos(size.height),
             selection: None,
+            search_matches: vec![],
+            search_highlights: diff.files.iter().map(|_| [vec![], vec![]]).collect(),
         }
     };
 
@@ -1399,6 +1484,9 @@ pub fn run_tui(
             }
         }
     }
+
+    // TODO
+    state.search("diff");
 
     #[derive(Clone)]
     enum MouseCell {
@@ -1455,7 +1543,14 @@ pub fn run_tui(
 
                             let screen_start_x = 1 + line_number_width + 1 + side * (state.wrap_width + 3);
 
-                            let layout = layout_one_line(&diff, side, &whl.source, whl.offset, state.wrap_width);
+                            let layout = layout_one_line(
+                                &diff,
+                                side,
+                                &whl.source,
+                                Some(&state.search_highlights),
+                                whl.offset,
+                                state.wrap_width,
+                            );
 
                             // TODO: This loop runs at most a few times, but it might be nicer to avoid it.
                             let file_id_for_selection = {
@@ -1478,6 +1573,7 @@ pub fn run_tui(
                             let eol_cell = LineCell {
                                 egc: " ".to_string(),
                                 highlight: config.highlight_newlines && layout.newline_highlight,
+                                search_highlight: false,
                                 fabricated_symbol: false,
                                 offset: layout.offset_after_except_newline,
                             };
@@ -1494,6 +1590,7 @@ pub fn run_tui(
                                 let LineCell {
                                     egc,
                                     highlight,
+                                    search_highlight,
                                     fabricated_symbol,
                                     offset,
                                 } = layout.cells.get(x).unwrap_or(&eol_cell).clone();
@@ -1553,6 +1650,10 @@ pub fn run_tui(
                                     }
                                     if fabricated_symbol {
                                         style = style.patch(config.theme.fabricated_symbol);
+                                    }
+                                    if search_highlight {
+                                        // TODO: Make it configurable too.
+                                        style = style.fg(Color::Black).bg(Color::Yellow);
                                     }
                                     if selected {
                                         // TODO: Fix this and make it configurable too.
