@@ -18,7 +18,7 @@ pub(super) fn copy_to_clipboard(mechanism: &ClipboardMechanism, text: &str) -> R
     match mechanism {
         ClipboardMechanism::Terminal => {
             // https://terminalguide.namepad.de/seq/osc-52/
-            io::stdout().write(format!("\x1b]52;c;{}\x1b\\", base64::encode(text)).as_bytes())?;
+            io::stdout().write_all(format!("\x1b]52;c;{}\x1b\\", base64::encode(text)).as_bytes())?;
         }
         ClipboardMechanism::ExternalHelper => {
             let mut found_candidate = false;
@@ -33,7 +33,7 @@ pub(super) fn copy_to_clipboard(mechanism: &ClipboardMechanism, text: &str) -> R
                         Ok(mut child) => {
                             found_candidate = true;
                             // TODO: We should use threads or select() or something.
-                            child.stdin.take().unwrap().write(text.as_bytes())?;
+                            child.stdin.take().unwrap().write_all(text.as_bytes())?;
                             let status = child.wait()?;
                             if !status.success() {
                                 return Err(io::Error::new(
