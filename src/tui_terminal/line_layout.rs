@@ -19,14 +19,14 @@ pub(super) struct LineLayout {
     pub offset_after_with_newline: usize,
 }
 
-pub(super) fn layout_one_line_raw(
+pub(super) fn layout_line(
     input: &str,
     highlight_bounds: &[usize],
     highlight_first: bool,
     search_bounds: &[usize],
     mut offset: usize,
     end: usize,
-    wrap_width: usize,
+    max_width: usize,
 ) -> LineLayout {
     let mut cells = vec![];
 
@@ -36,12 +36,7 @@ pub(super) fn layout_one_line_raw(
     let mut search_bounds_index = search_bounds.partition_point(|&point| point <= offset);
     let mut search_highlight = search_bounds_index % 2 == 1;
 
-    let new_layout = |cells, newline_highlight, offset_after_except_newline, offset_after_with_newline| LineLayout {
-        cells,
-        newline_highlight,
-        offset_after_except_newline,
-        offset_after_with_newline,
-    };
+    let mut found_newline_length = 0;
 
     // The algorithm uses `unicode-segmentation` to split the line into EGCs, and `unicode-width`
     // to compute the width of each EGC. I don't know if it's correct (precisely matches what
@@ -59,7 +54,8 @@ pub(super) fn layout_one_line_raw(
         }
 
         if egc == "\n" {
-            return new_layout(cells, highlight, offset, offset + egc.len());
+            found_newline_length = 1;
+            break;
         }
 
         assert!(!egc.contains('\n'));
@@ -82,10 +78,10 @@ pub(super) fn layout_one_line_raw(
             }
         };
 
-        assert!(cell_strings.len() <= wrap_width);
+        assert!(cell_strings.len() <= max_width);
 
-        if cells.len() + cell_strings.len() > wrap_width {
-            return new_layout(cells, highlight, offset, offset);
+        if cells.len() + cell_strings.len() > max_width {
+            break;
         }
 
         for cell_string in cell_strings {
@@ -101,5 +97,10 @@ pub(super) fn layout_one_line_raw(
         offset += egc.len();
     }
 
-    new_layout(cells, highlight, offset, offset)
+    LineLayout {
+        cells,
+        newline_highlight: highlight,
+        offset_after_except_newline: offset,
+        offset_after_with_newline: offset + found_newline_length,
+    }
 }

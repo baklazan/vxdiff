@@ -5,7 +5,7 @@ mod range_map;
 use super::algorithm::{Diff, DiffOp, FileDiff, Section};
 use clipboard::{copy_to_clipboard, ClipboardMechanism};
 use crossterm::event::{KeyCode, KeyModifiers};
-use line_layout::{layout_one_line_raw, LineCell, LineLayout};
+use line_layout::{layout_line, LineCell, LineLayout};
 use range_map::RangeMap;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -734,7 +734,7 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[Range
     (tree, visible_byte_sets, byte_to_nid_maps)
 }
 
-fn layout_one_line(
+fn layout_diff_line(
     diff: &ExtendedDiff,
     side: usize,
     source: &TextSource,
@@ -745,7 +745,7 @@ fn layout_one_line(
     match source {
         &TextSource::Section(section_id) => {
             let section_side = diff.section_side(section_id, side);
-            layout_one_line_raw(
+            layout_line(
                 diff.file_sides[section_side.file_id][side].content,
                 section_side.highlight_bounds,
                 section_side.highlight_first,
@@ -758,7 +758,7 @@ fn layout_one_line(
                 wrap_width,
             )
         }
-        TextSource::Fabricated(content) => layout_one_line_raw(
+        TextSource::Fabricated(content) => layout_line(
             content,
             &[0, content.len()],
             false,
@@ -780,7 +780,7 @@ fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_
 
         while pos != end {
             let next =
-                layout_one_line(diff, side, &raw_element.source, None, pos, wrap_width).offset_after_with_newline;
+                layout_diff_line(diff, side, &raw_element.source, None, pos, wrap_width).offset_after_with_newline;
             let (slice_source, slice_offset) = match &raw_element.source {
                 &TextSource::Section(section_id) => (TextSource::Section(section_id), pos),
                 TextSource::Fabricated(content) => (TextSource::Fabricated(content[pos..next].to_string()), 0),
@@ -957,7 +957,7 @@ fn print_plainly(tree_view: &TreeView, nid: Nid, output: &mut impl io::Write) ->
             match line {
                 UILine::Sides(sides) => {
                     let render_half = |side: usize| -> String {
-                        let layout = layout_one_line(
+                        let layout = layout_diff_line(
                             tree_view.diff,
                             side,
                             &sides[side].source,
@@ -1431,7 +1431,7 @@ pub fn run_tui(
 
                             let screen_start_x = 1 + line_number_width + 1 + side * (state.wrap_width + 3);
 
-                            let layout = layout_one_line(
+                            let layout = layout_diff_line(
                                 &diff,
                                 side,
                                 &whl.source,
