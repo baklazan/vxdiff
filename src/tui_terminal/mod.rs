@@ -1025,6 +1025,18 @@ fn compute_wrap_width(terminal_width: usize, line_number_width: usize) -> usize 
     (terminal_width - 6 - line_number_width * 2) / 2
 }
 
+#[derive(Clone)]
+enum MouseCell {
+    Inert,
+    Button(Rc<dyn Fn(&mut State)>),
+    Text { file_id: usize, side: usize, offset: usize },
+}
+
+struct RenderedInfo {
+    mouse_cells: Vec<Vec<MouseCell>>,
+    mouse_pseudocell_after: Vec<[MouseCell; 2]>,
+}
+
 struct SelectionState {
     file_id: usize,
     side: usize,
@@ -1053,6 +1065,41 @@ struct State<'a> {
     selection: Option<SelectionState>,
     search_matches: [Vec<SearchMatch>; 2],
     search_highlights: Vec<[Vec<usize>; 2]>,
+}
+
+fn update_selection_position(selection: &mut SelectionState, rendered: &RenderedInfo, x: usize, y: usize) {
+    let mut mx = x;
+    let mut my = y;
+    while my < rendered.mouse_cells.len() {
+        if mx < rendered.mouse_cells[my].len() {
+            if let MouseCell::Text { file_id, side, offset } = rendered.mouse_cells[my][mx] {
+                if file_id == selection.file_id && side == selection.side {
+                    selection.current_offset = offset;
+                    return;
+                }
+            }
+            mx += 1;
+        } else {
+            if let MouseCell::Text { file_id, side, offset } = rendered.mouse_pseudocell_after[my][selection.side] {
+                if file_id == selection.file_id && side == selection.side {
+                    selection.current_offset = offset;
+                    return;
+                }
+            }
+            mx = 0;
+            my += 1;
+        }
+    }
+    let mut my = y;
+    while my > 0 {
+        my -= 1;
+        if let MouseCell::Text { file_id, side, offset } = rendered.mouse_pseudocell_after[my][selection.side] {
+            if file_id == selection.file_id && side == selection.side {
+                selection.current_offset = offset;
+                return;
+            }
+        }
+    }
 }
 
 impl<'a> State<'a> {
@@ -1385,22 +1432,14 @@ pub fn run_tui(
     // TODO
     state.search("diff");
 
-    #[derive(Clone)]
-    enum MouseCell {
-        Inert,
-        Button(Rc<dyn Fn(&mut State)>),
-        Text { file_id: usize, side: usize, offset: usize },
-    }
-
     loop {
-        let mut mouse_cells: Vec<Vec<MouseCell>> = vec![];
-        let mut mouse_pseudocell_after: Vec<[MouseCell; 2]> = vec![];
+        let mut rendered = None;
 
         let render = |size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
             state.resize(u16tos(size.width), u16tos(size.height));
 
-            mouse_cells = vec![vec![MouseCell::Inert; u16tos(size.width)]; u16tos(size.height)];
-            mouse_pseudocell_after = vec![[MouseCell::Inert, MouseCell::Inert]; u16tos(size.height)];
+            let mut mouse_cells = vec![vec![MouseCell::Inert; u16tos(size.width)]; u16tos(size.height)];
+            let mut mouse_pseudocell_after = vec![[MouseCell::Inert, MouseCell::Inert]; u16tos(size.height)];
 
             let mut pos = state.scroll_pos;
             for y in 0..state.scroll_height {
@@ -1610,6 +1649,11 @@ pub fn run_tui(
                     break;
                 }
             }
+
+            rendered = Some(RenderedInfo {
+                mouse_cells,
+                mouse_pseudocell_after,
+            });
         };
 
         terminal.draw(|frame| {
@@ -1617,40 +1661,7 @@ pub fn run_tui(
             // TODO: eventually might want to call frame.set_cursor() for /search etc
         })?;
 
-        let update_selection_position = |selection: &mut SelectionState, x: usize, y: usize| {
-            let mut mx = x;
-            let mut my = y;
-            while my < mouse_cells.len() {
-                if mx < mouse_cells[my].len() {
-                    if let MouseCell::Text { file_id, side, offset } = mouse_cells[my][mx] {
-                        if file_id == selection.file_id && side == selection.side {
-                            selection.current_offset = offset;
-                            return;
-                        }
-                    }
-                    mx += 1;
-                } else {
-                    if let MouseCell::Text { file_id, side, offset } = mouse_pseudocell_after[my][selection.side] {
-                        if file_id == selection.file_id && side == selection.side {
-                            selection.current_offset = offset;
-                            return;
-                        }
-                    }
-                    mx = 0;
-                    my += 1;
-                }
-            }
-            let mut my = y;
-            while my > 0 {
-                my -= 1;
-                if let MouseCell::Text { file_id, side, offset } = mouse_pseudocell_after[my][selection.side] {
-                    if file_id == selection.file_id && side == selection.side {
-                        selection.current_offset = offset;
-                        return;
-                    }
-                }
-            }
-        };
+        let rendered = rendered.unwrap();
 
         loop {
             match crossterm::event::read()? {
@@ -1719,14 +1730,11 @@ pub fn run_tui(
                     _ => write!(terminal.backend_mut(), "\x07")?,
                 },
                 crossterm::event::Event::Mouse(e) => {
-                    if mouse_cells.is_empty() {
-                        continue;
-                    }
-                    let x = std::cmp::min(u16tos(e.column), mouse_cells[0].len() - 1);
-                    let y = std::cmp::min(u16tos(e.row), mouse_cells.len() - 1);
+                    let x = std::cmp::min(u16tos(e.column), rendered.mouse_cells[0].len() - 1);
+                    let y = std::cmp::min(u16tos(e.row), rendered.mouse_cells.len() - 1);
                     match e.kind {
                         crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                            match mouse_cells[y][x] {
+                            match rendered.mouse_cells[y][x] {
                                 MouseCell::Text { file_id, side, offset } => {
                                     state.selection = Some(SelectionState {
                                         file_id,
@@ -1743,7 +1751,7 @@ pub fn run_tui(
                         crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
                             match state.selection {
                                 Some(ref mut selection) if selection.selecting => {
-                                    update_selection_position(selection, x, y);
+                                    update_selection_position(selection, &rendered, x, y);
                                 }
                                 _ => {}
                             }
@@ -1751,7 +1759,7 @@ pub fn run_tui(
                         crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
                             match state.selection {
                                 Some(ref mut selection) if selection.selecting => {
-                                    update_selection_position(selection, x, y);
+                                    update_selection_position(selection, &rendered, x, y);
                                     selection.selecting = false;
                                     let from = std::cmp::min(selection.start_offset, selection.current_offset);
                                     let to = std::cmp::max(selection.start_offset, selection.current_offset);
