@@ -108,7 +108,9 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
             let nearest_bound_point = bounds_scoring.nearest_bound_point([old_index, new_index]);
             let change_state_penalty = bounds_scoring.fragment_bound_penalty(nearest_bound_point);
 
-            for (substate, &score) in dp[index_sum][index_in_diag].substate_scores().iter().enumerate() {
+            for substate in 0..AlignmentScoring::State::SUBSTATES_COUNT {
+                let score =
+                    alignment_scoring.substate_score(&dp[index_sum][index_in_diag], substate, [old_index, new_index]);
                 if score > best_score_in_diag {
                     best_score_in_diag = score;
                     best_new_in_previous_diag = new_index;
@@ -144,7 +146,7 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
     while old_index != 0 || new_index != 0 {
         let index_sum = old_index + new_index;
         let index_in_diag = new_index - diag_start_new[index_sum];
-        let movement = dp[index_sum][index_in_diag].substate_movements()[substate];
+        let movement = alignment_scoring.substate_movement(&dp[index_sum][index_in_diag], substate);
         assert!(movement.is_some());
         let (op, next_substate) = movement.unwrap();
         alignment.push(op);

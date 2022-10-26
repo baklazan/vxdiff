@@ -1,8 +1,9 @@
 mod dynamic_programming;
 mod fragment_selection;
+pub mod main_sequence;
 mod postprocess;
-mod preprocess;
-mod scoring;
+pub mod preprocess;
+pub mod scoring;
 mod seed_selection;
 
 use self::{fragment_selection::greedy_fragments, preprocess::partition_into_words};
@@ -87,14 +88,14 @@ pub struct PartitionedText<'a> {
 }
 
 impl<'a> PartitionedText<'a> {
-    fn word_count(&self) -> usize {
+    pub fn word_count(&self) -> usize {
         if self.word_bounds.is_empty() {
             0
         } else {
             self.word_bounds.len() - 1
         }
     }
-    fn get_word(&self, index: usize) -> &'a str {
+    pub fn get_word(&self, index: usize) -> &'a str {
         &self.text[self.word_bounds[index]..self.word_bounds[index + 1]]
     }
 }
