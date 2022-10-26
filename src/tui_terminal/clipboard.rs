@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::io::{self, Write as _};
 
 pub(super) enum ClipboardMechanism {
@@ -14,7 +13,7 @@ pub(super) enum ClipboardMechanism {
     None,
 }
 
-pub(super) fn copy_to_clipboard(mechanism: &ClipboardMechanism, text: &str) -> Result<(), Box<dyn Error>> {
+pub(super) fn copy_to_clipboard(mechanism: &ClipboardMechanism, text: &str) -> Result<(), io::Error> {
     match mechanism {
         ClipboardMechanism::Terminal => {
             // https://terminalguide.namepad.de/seq/osc-52/
@@ -22,7 +21,7 @@ pub(super) fn copy_to_clipboard(mechanism: &ClipboardMechanism, text: &str) -> R
         }
         ClipboardMechanism::ExternalHelper => {
             let mut found_candidate = false;
-            let mut try_candidate = |cmd: &str, args: &[&str]| -> Result<(), Box<dyn Error>> {
+            let mut try_candidate = |cmd: &str, args: &[&str]| {
                 if !found_candidate {
                     match std::process::Command::new(cmd)
                         .args(args)
@@ -39,13 +38,12 @@ pub(super) fn copy_to_clipboard(mechanism: &ClipboardMechanism, text: &str) -> R
                                 return Err(io::Error::new(
                                     std::io::ErrorKind::Other,
                                     &*format!("{cmd} exited with status {status}"),
-                                )
-                                .into());
+                                ));
                             }
                         }
                         Err(err) => {
                             if err.kind() != io::ErrorKind::NotFound {
-                                return Err(err.into());
+                                return Err(err);
                             }
                         }
                     }
