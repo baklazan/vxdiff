@@ -16,6 +16,10 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use tui::style::{Color, Modifier, Style};
 
+fn vec_of<T>(length: usize, func: impl Fn() -> T) -> Vec<T> {
+    (0..length).map(|_| func()).collect()
+}
+
 struct Theme {
     cursor: Style,
     line_numbers_default: Style,
@@ -160,7 +164,7 @@ fn make_extended_diff<'a>(
     file_names: &'a [[&'a str; 2]],
 ) -> ExtendedDiff<'a> {
     let mut extended_diff = ExtendedDiff {
-        section_sides: (0..diff.sections.len()).map(|_| [None, None]).collect(),
+        section_sides: vec_of(diff.sections.len(), Default::default),
         file_sides: (0..diff.files.len())
             .map(|file_id| {
                 [0, 1].map(|side| ExtendedDiffFileSide {
@@ -693,8 +697,8 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[Range
     };
 
     let mut tree = Tree::new(Node::new_branch());
-    let mut visible_byte_sets: Vec<_> = diff.files.iter().map(|_| [0, 1].map(|_| RangeMap::new())).collect();
-    let mut byte_to_nid_maps: Vec<_> = diff.files.iter().map(|_| [0, 1].map(|_| RangeMap::new())).collect();
+    let mut visible_byte_sets = vec_of(diff.files.len(), Default::default);
+    let mut byte_to_nid_maps = vec_of(diff.files.len(), Default::default);
 
     for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
         let file_nid = tree.add_child(tree.root, Node::new_branch());
@@ -1179,7 +1183,7 @@ impl<'a> State<'a> {
 
     fn search(&mut self, pattern: &str) {
         self.search_matches = [vec![], vec![]];
-        self.search_highlights = self.diff.files.iter().map(|_| [vec![], vec![]]).collect();
+        self.search_highlights = vec_of(self.diff.files.len(), Default::default);
 
         // TODO: case insensitive config (like less -i and less -I)
         // TODO: literal string search
@@ -1361,7 +1365,7 @@ pub fn run_tui(
             scroll_height: u16tos(size.height),
             selection: None,
             search_matches: [vec![], vec![]],
-            search_highlights: diff.files.iter().map(|_| [vec![], vec![]]).collect(),
+            search_highlights: vec_of(diff.files.len(), Default::default),
         }
     };
 

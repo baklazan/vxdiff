@@ -60,6 +60,12 @@ impl<T: Eq + Copy> RangeMap<T> {
     }
 }
 
+impl<T: Eq + Copy> Default for RangeMap<T> {
+    fn default() -> RangeMap<T> {
+        RangeMap::new()
+    }
+}
+
 struct Ranges<P>(P);
 
 impl<'a, T: 'a + Copy, I: Iterator<Item = (&'a usize, &'a Option<T>)>> Iterator for Ranges<Peekable<I>> {
