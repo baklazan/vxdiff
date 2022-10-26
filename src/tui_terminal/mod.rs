@@ -1472,6 +1472,244 @@ impl<'a> State<'a> {
             _ => Ok(EventResult::Nothing),
         }
     }
+
+    fn render_half_line(
+        &self,
+        tree_view: &TreeView,
+        pos: LeafPosition,
+        sides: &[WrappedHalfLine; 2],
+        side: usize,
+        content_screen_x: usize,
+        line_number_screen_x: usize,
+        screen_y: usize,
+        buffer: &mut tui::buffer::Buffer,
+        rendered: &mut RenderedInfo,
+    ) {
+        let theme = &self.config.theme;
+        let whl = &sides[side];
+        let file_id_for_rendering: Option<usize>;
+
+        match whl.source {
+            TextSource::Section(section_id) => {
+                let file_id = self.diff.section_side(section_id, side).file_id;
+                file_id_for_rendering = Some(file_id);
+
+                let file_side = &self.diff.file_sides[file_id][side];
+                let line_number = file_side.byte_offset_to_line_number(whl.offset);
+                let mut line_number_str = line_number.to_string();
+                if whl.offset != file_side.line_offsets[line_number] {
+                    line_number_str = "+".repeat(line_number_str.len());
+                }
+                let line_number_style = match whl.style {
+                    HalfLineStyle::Phantom => theme.line_numbers_phantom,
+                    _ => theme.line_numbers_default,
+                };
+                let screen_x = line_number_screen_x - line_number_str.len();
+                buffer.set_string(usto16(screen_x), usto16(screen_y), line_number_str, line_number_style);
+            }
+            TextSource::Fabricated(..) => file_id_for_rendering = None,
+        }
+
+        let layout = layout_diff_line(
+            self.diff,
+            side,
+            &whl.source,
+            &self.search_highlights,
+            whl.offset,
+            self.wrap_width,
+        );
+
+        // TODO: This loop runs at most a few times, but it might be nicer to avoid it.
+        let file_id_for_selection = {
+            let mut nid = pos.parent;
+            loop {
+                if tree_view.tree.node_meta(nid).index_in_parent == 1 {
+                    let sibling_nid = tree_view.tree.sibling(nid, Prev).unwrap();
+                    if let &Node::FileHeaderLine(file_id) = tree_view.tree.node(sibling_nid) {
+                        break file_id;
+                    }
+                }
+                if let Some(parent_nid) = tree_view.tree.parent(nid) {
+                    nid = parent_nid;
+                } else {
+                    panic!("UILine::Sides was used outside of a file_content_node");
+                }
+            }
+        };
+
+        let eol_cell = LineCell {
+            egc: " ".to_string(),
+            highlight: self.config.highlight_newlines && layout.newline_highlight,
+            search_highlight: false,
+            fabricated_symbol: false,
+            offset: layout.offset_after_except_newline,
+        };
+
+        rendered.mouse_pseudocell_after[screen_y][side] = MouseCell::Text {
+            file_id: file_id_for_selection,
+            side,
+            offset: whl
+                .offset_override_for_selection
+                .unwrap_or(layout.offset_after_with_newline),
+        };
+
+        for x in 0..self.wrap_width {
+            let LineCell {
+                egc,
+                highlight,
+                search_highlight,
+                fabricated_symbol,
+                offset,
+            } = layout.cells.get(x).unwrap_or(&eol_cell).clone();
+
+            let selected = match &self.selection {
+                Some(selection) => {
+                    file_id_for_selection == selection.file_id
+                        && file_id_for_rendering == Some(selection.file_id)
+                        && whl.offset_override_for_selection.is_none()
+                        && side == selection.side
+                        && offset >= std::cmp::min(selection.start_offset, selection.current_offset)
+                        && offset < std::cmp::max(selection.start_offset, selection.current_offset)
+                }
+                None => false,
+            };
+
+            let screen_x = content_screen_x + x;
+
+            rendered.mouse_cells[screen_y][screen_x] = MouseCell::Text {
+                file_id: file_id_for_selection,
+                side,
+                offset: whl.offset_override_for_selection.unwrap_or(offset),
+            };
+
+            // tui-rs encodes double-width characters as one normal cell and
+            // one default cell (containing a " "). See Buffer::set_stringn()
+            // and Cell::reset(). We don't call set_stringn here, but let's try
+            // to match its result. The " " in the second cell won't be printed
+            // because Buffer::diff skips over it.
+            let mut cell = tui::buffer::Cell::default();
+            if !egc.is_empty() {
+                let mut style = Style::default();
+                style = style.patch(match (whl.style, side != 0) {
+                    (HalfLineStyle::Equal, _) => theme.text_equal,
+                    (HalfLineStyle::Padding, _) => theme.text_padding,
+                    (HalfLineStyle::Change, false) => theme.text_change_old,
+                    (HalfLineStyle::Change, true) => theme.text_change_new,
+                    (HalfLineStyle::Move, false) => theme.text_move_old,
+                    (HalfLineStyle::Move, true) => theme.text_move_new,
+                    (HalfLineStyle::Phantom, false) => theme.text_phantom_old,
+                    (HalfLineStyle::Phantom, true) => theme.text_phantom_new,
+                });
+                if highlight {
+                    style = style.patch(match (whl.style, side != 0) {
+                        (HalfLineStyle::Equal, _) => Style::default(),
+                        (HalfLineStyle::Padding, _) => Style::default(),
+                        (HalfLineStyle::Change, false) => theme.highlight_change_old,
+                        (HalfLineStyle::Change, true) => theme.highlight_change_new,
+                        (HalfLineStyle::Move, false) => theme.highlight_move_old,
+                        (HalfLineStyle::Move, true) => theme.highlight_move_new,
+                        (HalfLineStyle::Phantom, false) => theme.highlight_phantom_old,
+                        (HalfLineStyle::Phantom, true) => theme.highlight_phantom_new,
+                    });
+                }
+                if fabricated_symbol {
+                    style = style.patch(theme.fabricated_symbol);
+                }
+                if search_highlight {
+                    // TODO: Make it configurable too.
+                    style = style.fg(Color::Black).bg(Color::Yellow);
+                }
+                if selected {
+                    // TODO: Fix this and make it configurable too.
+                    if style.fg == None || style.fg == Some(Color::Reset) {
+                        style = style.fg(Color::Black);
+                    }
+                    style = style.bg(Color::White);
+                }
+                cell.symbol = egc;
+                cell.set_style(style);
+            }
+            *buffer.get_mut(usto16(screen_x), usto16(screen_y)) = cell;
+        }
+    }
+
+    fn render(&mut self, term_width: usize, term_height: usize, buffer: &mut tui::buffer::Buffer) -> RenderedInfo {
+        self.resize(term_width, term_height);
+
+        let mut rendered = RenderedInfo {
+            mouse_cells: vec![vec![MouseCell::Inert; term_width]; term_height],
+            mouse_pseudocell_after: vec![[MouseCell::Inert, MouseCell::Inert]; term_height],
+        };
+
+        let mut pos = self.scroll_pos;
+        for y in 0..self.scroll_height {
+            if pos == self.cursor_pos {
+                buffer.set_string(0, usto16(y), ">", self.config.theme.cursor);
+            }
+            let parent_node = self.tree.node(pos.parent);
+            let tree_view = self.tree_view();
+            tree_view.with_ui_lines(parent_node, |lines| match &lines[pos.line_index] {
+                UILine::Sides(sides) => {
+                    let xl0 = 1 + self.line_number_width;
+                    let xc0 = xl0 + 1;
+                    let xm = xc0 + self.wrap_width + 1;
+                    let xc1 = xm + 2;
+                    let xl1 = xc1 + self.wrap_width + 1 + self.line_number_width;
+                    for side in 0..2 {
+                        self.render_half_line(
+                            &tree_view,
+                            pos,
+                            sides,
+                            side,
+                            [xc0, xc1][side],
+                            [xl0, xl1][side],
+                            y,
+                            buffer,
+                            &mut rendered,
+                        );
+                    }
+                    buffer.set_string(usto16(xm), usto16(y), tui::symbols::line::VERTICAL, Default::default());
+                }
+                &UILine::FileHeaderLine(file_id) => {
+                    let file_header_nid = pos.parent;
+                    let file_nid = self.tree.parent(file_header_nid).unwrap();
+                    let is_open = match self.tree.node(file_nid).as_branch().visible.end {
+                        1 => false,
+                        2 => true,
+                        _ => panic!("unexpected node.visible of FileHeaderLine's parent"),
+                    };
+                    buffer.set_string(
+                        1,
+                        usto16(y),
+                        format!(
+                            "{} vs {} (press z to {})",
+                            self.diff.file_sides[file_id][0].filename,
+                            self.diff.file_sides[file_id][1].filename,
+                            if is_open { "close" } else { "open" }
+                        ),
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(if is_open { Color::Green } else { Color::Red }),
+                    );
+                }
+                UILine::ExpanderLine(hidden_count) => {
+                    buffer.set_string(
+                        1,
+                        usto16(y),
+                        format!("...{} hidden lines... (press x/c to expand)", hidden_count),
+                        Style::default().fg(Color::Black).bg(Color::White),
+                    );
+                }
+            });
+            if let Some(next) = tree_view.next_leaf(pos, Next) {
+                pos = next;
+            } else {
+                break;
+            }
+        }
+
+        rendered
+    }
 }
 
 // This hack is needed because tui-rs doesn't have a way to get Buffer from Frame. The only thing
@@ -1570,225 +1808,7 @@ pub fn run_tui(
         let mut rendered = None;
 
         let render = |size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
-            state.resize(u16tos(size.width), u16tos(size.height));
-
-            let mut mouse_cells = vec![vec![MouseCell::Inert; u16tos(size.width)]; u16tos(size.height)];
-            let mut mouse_pseudocell_after = vec![[MouseCell::Inert, MouseCell::Inert]; u16tos(size.height)];
-
-            let mut pos = state.scroll_pos;
-            let theme = &state.config.theme;
-            for y in 0..state.scroll_height {
-                if pos == state.cursor_pos {
-                    buffer.set_string(0, usto16(y), ">", theme.cursor);
-                }
-                let parent_node = state.tree.node(pos.parent);
-                let tree_view = state.tree_view();
-                tree_view.with_ui_lines(parent_node, |lines| match &lines[pos.line_index] {
-                    UILine::Sides(sides) => {
-                        for side in 0..2 {
-                            let whl = &sides[side];
-                            let file_id_for_rendering: Option<usize>;
-
-                            match whl.source {
-                                TextSource::Section(section_id) => {
-                                    let file_id = diff.section_side(section_id, side).file_id;
-                                    file_id_for_rendering = Some(file_id);
-
-                                    let file_side = &diff.file_sides[file_id][side];
-                                    let line_number = file_side.byte_offset_to_line_number(whl.offset);
-                                    let mut line_number_str = line_number.to_string();
-                                    if whl.offset != file_side.line_offsets[line_number] {
-                                        line_number_str = "+".repeat(line_number_str.len());
-                                    }
-                                    let line_number_style = match whl.style {
-                                        HalfLineStyle::Phantom => theme.line_numbers_phantom,
-                                        _ => theme.line_numbers_default,
-                                    };
-                                    let lx = 1 + side
-                                        * (state.line_number_width + 1 + state.wrap_width + 3 + state.wrap_width + 1);
-                                    let lx = lx + state.line_number_width - line_number_str.len();
-                                    buffer.set_string(usto16(lx), usto16(y), line_number_str, line_number_style);
-                                }
-                                TextSource::Fabricated(..) => file_id_for_rendering = None,
-                            }
-
-                            let screen_start_x = 1 + state.line_number_width + 1 + side * (state.wrap_width + 3);
-
-                            let layout = layout_diff_line(
-                                &diff,
-                                side,
-                                &whl.source,
-                                &state.search_highlights,
-                                whl.offset,
-                                state.wrap_width,
-                            );
-
-                            // TODO: This loop runs at most a few times, but it might be nicer to avoid it.
-                            let file_id_for_selection = {
-                                let mut nid = pos.parent;
-                                loop {
-                                    if tree_view.tree.node_meta(nid).index_in_parent == 1 {
-                                        let sibling_nid = tree_view.tree.sibling(nid, Prev).unwrap();
-                                        if let &Node::FileHeaderLine(file_id) = tree_view.tree.node(sibling_nid) {
-                                            break file_id;
-                                        }
-                                    }
-                                    if let Some(parent_nid) = tree_view.tree.parent(nid) {
-                                        nid = parent_nid;
-                                    } else {
-                                        panic!("UILine::Sides was used outside of a file_content_node");
-                                    }
-                                }
-                            };
-
-                            let eol_cell = LineCell {
-                                egc: " ".to_string(),
-                                highlight: state.config.highlight_newlines && layout.newline_highlight,
-                                search_highlight: false,
-                                fabricated_symbol: false,
-                                offset: layout.offset_after_except_newline,
-                            };
-
-                            mouse_pseudocell_after[y][side] = MouseCell::Text {
-                                file_id: file_id_for_selection,
-                                side,
-                                offset: whl
-                                    .offset_override_for_selection
-                                    .unwrap_or(layout.offset_after_with_newline),
-                            };
-
-                            for x in 0..state.wrap_width {
-                                let LineCell {
-                                    egc,
-                                    highlight,
-                                    search_highlight,
-                                    fabricated_symbol,
-                                    offset,
-                                } = layout.cells.get(x).unwrap_or(&eol_cell).clone();
-
-                                let selected = match &state.selection {
-                                    Some(selection) => {
-                                        file_id_for_selection == selection.file_id
-                                            && file_id_for_rendering == Some(selection.file_id)
-                                            && whl.offset_override_for_selection.is_none()
-                                            && side == selection.side
-                                            && offset >= std::cmp::min(selection.start_offset, selection.current_offset)
-                                            && offset < std::cmp::max(selection.start_offset, selection.current_offset)
-                                    }
-                                    None => false,
-                                };
-
-                                let x = screen_start_x + x;
-
-                                mouse_cells[y][x] = MouseCell::Text {
-                                    file_id: file_id_for_selection,
-                                    side,
-                                    offset: whl.offset_override_for_selection.unwrap_or(offset),
-                                };
-
-                                let x = usto16(x);
-                                let y = usto16(y);
-                                // tui-rs encodes double-width characters as one normal cell and
-                                // one default cell (containing a " "). See Buffer::set_stringn()
-                                // and Cell::reset(). We don't call set_stringn here, but let's try
-                                // to match its result. The " " in the second cell won't be printed
-                                // because Buffer::diff skips over it.
-                                *buffer.get_mut(x, y) = if egc.is_empty() {
-                                    tui::buffer::Cell::default()
-                                } else {
-                                    let mut style = Style::default();
-                                    style = style.patch(match (whl.style, side != 0) {
-                                        (HalfLineStyle::Equal, _) => theme.text_equal,
-                                        (HalfLineStyle::Padding, _) => theme.text_padding,
-                                        (HalfLineStyle::Change, false) => theme.text_change_old,
-                                        (HalfLineStyle::Change, true) => theme.text_change_new,
-                                        (HalfLineStyle::Move, false) => theme.text_move_old,
-                                        (HalfLineStyle::Move, true) => theme.text_move_new,
-                                        (HalfLineStyle::Phantom, false) => theme.text_phantom_old,
-                                        (HalfLineStyle::Phantom, true) => theme.text_phantom_new,
-                                    });
-                                    if highlight {
-                                        style = style.patch(match (whl.style, side != 0) {
-                                            (HalfLineStyle::Equal, _) => Style::default(),
-                                            (HalfLineStyle::Padding, _) => Style::default(),
-                                            (HalfLineStyle::Change, false) => theme.highlight_change_old,
-                                            (HalfLineStyle::Change, true) => theme.highlight_change_new,
-                                            (HalfLineStyle::Move, false) => theme.highlight_move_old,
-                                            (HalfLineStyle::Move, true) => theme.highlight_move_new,
-                                            (HalfLineStyle::Phantom, false) => theme.highlight_phantom_old,
-                                            (HalfLineStyle::Phantom, true) => theme.highlight_phantom_new,
-                                        });
-                                    }
-                                    if fabricated_symbol {
-                                        style = style.patch(theme.fabricated_symbol);
-                                    }
-                                    if search_highlight {
-                                        // TODO: Make it configurable too.
-                                        style = style.fg(Color::Black).bg(Color::Yellow);
-                                    }
-                                    if selected {
-                                        // TODO: Fix this and make it configurable too.
-                                        if style.fg == None || style.fg == Some(Color::Reset) {
-                                            style = style.fg(Color::Black);
-                                        }
-                                        style = style.bg(Color::White);
-                                    }
-                                    let mut cell = tui::buffer::Cell::default();
-                                    cell.symbol = egc;
-                                    cell.set_style(style);
-                                    cell
-                                };
-                            }
-                        }
-                        buffer.set_string(
-                            usto16(1 + state.line_number_width + 1 + state.wrap_width + 1),
-                            usto16(y),
-                            tui::symbols::line::VERTICAL,
-                            Default::default(),
-                        );
-                    }
-                    &UILine::FileHeaderLine(file_id) => {
-                        let file_header_nid = pos.parent;
-                        let file_nid = state.tree.parent(file_header_nid).unwrap();
-                        let is_open = match state.tree.node(file_nid).as_branch().visible.end {
-                            1 => false,
-                            2 => true,
-                            _ => panic!("unexpected node.visible of FileHeaderLine's parent"),
-                        };
-                        buffer.set_string(
-                            1,
-                            usto16(y),
-                            format!(
-                                "{} vs {} (press z to {})",
-                                file_names[file_id][0],
-                                file_names[file_id][1],
-                                if is_open { "close" } else { "open" }
-                            ),
-                            Style::default()
-                                .fg(Color::Black)
-                                .bg(if is_open { Color::Green } else { Color::Red }),
-                        );
-                    }
-                    UILine::ExpanderLine(hidden_count) => {
-                        buffer.set_string(
-                            1,
-                            usto16(y),
-                            format!("...{} hidden lines... (press x/c to expand)", hidden_count),
-                            Style::default().fg(Color::Black).bg(Color::White),
-                        );
-                    }
-                });
-                if let Some(next) = tree_view.next_leaf(pos, Next) {
-                    pos = next;
-                } else {
-                    break;
-                }
-            }
-
-            rendered = Some(RenderedInfo {
-                mouse_cells,
-                mouse_pseudocell_after,
-            });
+            rendered = Some(state.render(u16tos(size.width), u16tos(size.height), buffer));
         };
 
         terminal.draw(|frame| {
