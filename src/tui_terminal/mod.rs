@@ -1059,6 +1059,7 @@ enum EventResult {
 }
 
 struct State<'a> {
+    config: Config,
     tree: Tree,
     visible_byte_sets: Vec<[RangeMap<()>; 2]>,
     byte_to_nid_maps: Vec<[RangeMap<Nid>; 2]>,
@@ -1422,7 +1423,6 @@ impl<'a> State<'a> {
         event: MouseEvent,
         rendered: &RenderedInfo,
     ) -> Result<EventResult, Box<dyn Error>> {
-        let config = default_config(); // TODO
         let x = std::cmp::min(u16tos(event.column), rendered.mouse_cells[0].len() - 1);
         let y = std::cmp::min(u16tos(event.row), rendered.mouse_cells.len() - 1);
         match event.kind {
@@ -1452,14 +1452,14 @@ impl<'a> State<'a> {
                     let from = std::cmp::min(selection.start_offset, selection.current_offset);
                     let to = std::cmp::max(selection.start_offset, selection.current_offset);
                     copy_to_clipboard(
-                        &config.clipboard_mechanism,
+                        &self.config.clipboard_mechanism,
                         &self.diff.file_sides[selection.file_id][selection.side].content[from..to],
                     )?;
                 }
                 _ => {}
             },
-            MouseEventKind::ScrollUp => self.scroll_by(config.mouse_wheel_scroll_lines, Prev),
-            MouseEventKind::ScrollDown => self.scroll_by(config.mouse_wheel_scroll_lines, Next),
+            MouseEventKind::ScrollUp => self.scroll_by(self.config.mouse_wheel_scroll_lines, Prev),
+            MouseEventKind::ScrollDown => self.scroll_by(self.config.mouse_wheel_scroll_lines, Next),
             _ => {}
         }
         Ok(EventResult::Nothing)
@@ -1504,9 +1504,10 @@ pub fn run_tui(
     terminal: &mut TheTerminal,
 ) -> TheResult {
     let diff = make_extended_diff(diff, file_input, file_names);
-    let config = default_config();
 
     let mut state = {
+        let config = default_config();
+
         // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
         let line_number_width = diff
             .file_sides
@@ -1529,6 +1530,7 @@ pub fn run_tui(
         .bordering_leaf_under(initial_tree.root, First)
         .unwrap();
         State {
+            config,
             tree: initial_tree,
             visible_byte_sets,
             byte_to_nid_maps,
@@ -1574,9 +1576,10 @@ pub fn run_tui(
             let mut mouse_pseudocell_after = vec![[MouseCell::Inert, MouseCell::Inert]; u16tos(size.height)];
 
             let mut pos = state.scroll_pos;
+            let theme = &state.config.theme;
             for y in 0..state.scroll_height {
                 if pos == state.cursor_pos {
-                    buffer.set_string(0, usto16(y), ">", config.theme.cursor);
+                    buffer.set_string(0, usto16(y), ">", theme.cursor);
                 }
                 let parent_node = state.tree.node(pos.parent);
                 let tree_view = state.tree_view();
@@ -1598,8 +1601,8 @@ pub fn run_tui(
                                         line_number_str = "+".repeat(line_number_str.len());
                                     }
                                     let line_number_style = match whl.style {
-                                        HalfLineStyle::Phantom => config.theme.line_numbers_phantom,
-                                        _ => config.theme.line_numbers_default,
+                                        HalfLineStyle::Phantom => theme.line_numbers_phantom,
+                                        _ => theme.line_numbers_default,
                                     };
                                     let lx = 1 + side
                                         * (state.line_number_width + 1 + state.wrap_width + 3 + state.wrap_width + 1);
@@ -1640,7 +1643,7 @@ pub fn run_tui(
 
                             let eol_cell = LineCell {
                                 egc: " ".to_string(),
-                                highlight: config.highlight_newlines && layout.newline_highlight,
+                                highlight: state.config.highlight_newlines && layout.newline_highlight,
                                 search_highlight: false,
                                 fabricated_symbol: false,
                                 offset: layout.offset_after_except_newline,
@@ -1695,29 +1698,29 @@ pub fn run_tui(
                                 } else {
                                     let mut style = Style::default();
                                     style = style.patch(match (whl.style, side != 0) {
-                                        (HalfLineStyle::Equal, _) => config.theme.text_equal,
-                                        (HalfLineStyle::Padding, _) => config.theme.text_padding,
-                                        (HalfLineStyle::Change, false) => config.theme.text_change_old,
-                                        (HalfLineStyle::Change, true) => config.theme.text_change_new,
-                                        (HalfLineStyle::Move, false) => config.theme.text_move_old,
-                                        (HalfLineStyle::Move, true) => config.theme.text_move_new,
-                                        (HalfLineStyle::Phantom, false) => config.theme.text_phantom_old,
-                                        (HalfLineStyle::Phantom, true) => config.theme.text_phantom_new,
+                                        (HalfLineStyle::Equal, _) => theme.text_equal,
+                                        (HalfLineStyle::Padding, _) => theme.text_padding,
+                                        (HalfLineStyle::Change, false) => theme.text_change_old,
+                                        (HalfLineStyle::Change, true) => theme.text_change_new,
+                                        (HalfLineStyle::Move, false) => theme.text_move_old,
+                                        (HalfLineStyle::Move, true) => theme.text_move_new,
+                                        (HalfLineStyle::Phantom, false) => theme.text_phantom_old,
+                                        (HalfLineStyle::Phantom, true) => theme.text_phantom_new,
                                     });
                                     if highlight {
                                         style = style.patch(match (whl.style, side != 0) {
                                             (HalfLineStyle::Equal, _) => Style::default(),
                                             (HalfLineStyle::Padding, _) => Style::default(),
-                                            (HalfLineStyle::Change, false) => config.theme.highlight_change_old,
-                                            (HalfLineStyle::Change, true) => config.theme.highlight_change_new,
-                                            (HalfLineStyle::Move, false) => config.theme.highlight_move_old,
-                                            (HalfLineStyle::Move, true) => config.theme.highlight_move_new,
-                                            (HalfLineStyle::Phantom, false) => config.theme.highlight_phantom_old,
-                                            (HalfLineStyle::Phantom, true) => config.theme.highlight_phantom_new,
+                                            (HalfLineStyle::Change, false) => theme.highlight_change_old,
+                                            (HalfLineStyle::Change, true) => theme.highlight_change_new,
+                                            (HalfLineStyle::Move, false) => theme.highlight_move_old,
+                                            (HalfLineStyle::Move, true) => theme.highlight_move_new,
+                                            (HalfLineStyle::Phantom, false) => theme.highlight_phantom_old,
+                                            (HalfLineStyle::Phantom, true) => theme.highlight_phantom_new,
                                         });
                                     }
                                     if fabricated_symbol {
-                                        style = style.patch(config.theme.fabricated_symbol);
+                                        style = style.patch(theme.fabricated_symbol);
                                     }
                                     if search_highlight {
                                         // TODO: Make it configurable too.
