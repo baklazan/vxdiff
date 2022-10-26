@@ -742,7 +742,7 @@ fn layout_diff_line(
     diff: &ExtendedDiff,
     side: usize,
     source: &TextSource,
-    search_highlights: Option<&[[Vec<usize>; 2]]>,
+    search_highlights: &[[Vec<usize>; 2]],
     offset: usize,
     wrap_width: usize,
 ) -> LineLayout {
@@ -753,10 +753,7 @@ fn layout_diff_line(
                 diff.file_sides[section_side.file_id][side].content,
                 section_side.highlight_bounds,
                 section_side.highlight_first,
-                match search_highlights {
-                    Some(search_highlights) => &search_highlights[section_side.file_id][side],
-                    None => &[],
-                },
+                search_highlights.get(section_side.file_id).map_or(&[], |a| &a[side]),
                 offset,
                 section_side.byte_range.end,
                 wrap_width,
@@ -784,7 +781,7 @@ fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_
 
         while pos != end {
             let next =
-                layout_diff_line(diff, side, &raw_element.source, None, pos, wrap_width).offset_after_with_newline;
+                layout_diff_line(diff, side, &raw_element.source, &[], pos, wrap_width).offset_after_with_newline;
             let (slice_source, slice_offset) = match &raw_element.source {
                 &TextSource::Section(section_id) => (TextSource::Section(section_id), pos),
                 TextSource::Fabricated(content) => (TextSource::Fabricated(content[pos..next].to_string()), 0),
@@ -965,7 +962,7 @@ fn print_plainly(tree_view: &TreeView, nid: Nid, output: &mut impl io::Write) ->
                             tree_view.diff,
                             side,
                             &sides[side].source,
-                            None,
+                            &[],
                             sides[side].offset,
                             tree_view.wrap_width,
                         );
@@ -1365,7 +1362,7 @@ pub fn run_tui(
             scroll_height: u16tos(size.height),
             selection: None,
             search_matches: [vec![], vec![]],
-            search_highlights: vec_of(diff.files.len(), Default::default),
+            search_highlights: Default::default(),
         }
     };
 
@@ -1449,7 +1446,7 @@ pub fn run_tui(
                                 &diff,
                                 side,
                                 &whl.source,
-                                Some(&state.search_highlights),
+                                &state.search_highlights,
                                 whl.offset,
                                 state.wrap_width,
                             );
