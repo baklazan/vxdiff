@@ -1019,6 +1019,11 @@ pub fn print_side_by_side_diff_plainly(
     print_plainly(&tree_view, tree.root, output)
 }
 
+fn compute_wrap_width(terminal_width: usize, line_number_width: usize) -> usize {
+    // TODO: Configurable wrap_width behavior (e.g. fixed 80, multiples of 10, fluid)
+    (terminal_width - 6 - line_number_width * 2) / 2
+}
+
 struct SelectionState {
     file_id: usize,
     side: usize,
@@ -1039,6 +1044,7 @@ struct State<'a> {
     visible_byte_sets: Vec<[RangeMap<()>; 2]>,
     byte_to_nid_maps: Vec<[RangeMap<Nid>; 2]>,
     diff: &'a ExtendedDiff<'a>,
+    line_number_width: usize,
     scroll_pos: LeafPosition,
     cursor_pos: LeafPosition,
     wrap_width: usize,
@@ -1150,7 +1156,12 @@ impl<'a> State<'a> {
         }
     }
 
-    fn resize(&mut self, wrap_width: usize, scroll_height: usize) {
+    fn resize(&mut self, term_width: usize, term_height: usize) {
+        let wrap_width = compute_wrap_width(term_width, self.line_number_width);
+        let scroll_height = term_height;
+        if (self.wrap_width, self.scroll_height) == (wrap_width, scroll_height) {
+            return;
+        }
         self.wrap_width = wrap_width;
         self.scroll_height = scroll_height;
         fn fix_position(tree_view: &TreeView, pos: LeafPosition) -> LeafPosition {
@@ -1315,25 +1326,22 @@ pub fn run_tui(
     let diff = make_extended_diff(diff, file_input, file_names);
     let config = default_config();
 
-    // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
-    let line_number_width = diff
-        .file_sides
-        .iter()
-        .flatten()
-        .map(|file_side| file_side.line_offsets.len() - 1)
-        .max()
-        .unwrap_or(0)
-        .to_string()
-        .len();
-
-    // TODO: Configurable wrap_width behavior (e.g. fixed 80, multiples of 10, fluid)
-    let compute_wrap_width = |terminal_width: usize| (terminal_width - 6 - line_number_width * 2) / 2;
-
     let mut size = terminal.size()?;
 
     let mut state = {
+        // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
+        let line_number_width = diff
+            .file_sides
+            .iter()
+            .flatten()
+            .map(|file_side| file_side.line_offsets.len() - 1)
+            .max()
+            .unwrap_or(0)
+            .to_string()
+            .len();
+
         let (initial_tree, visible_byte_sets, byte_to_nid_maps) = build_initial_tree(&config, &diff);
-        let initial_wrap_width = compute_wrap_width(u16tos(size.width));
+        let initial_wrap_width = compute_wrap_width(u16tos(size.width), line_number_width);
         let initial_scroll = TreeView {
             tree: &initial_tree,
             diff: &diff,
@@ -1346,6 +1354,7 @@ pub fn run_tui(
             visible_byte_sets,
             byte_to_nid_maps,
             diff: &diff,
+            line_number_width,
             scroll_pos: initial_scroll,
             cursor_pos: initial_scroll,
             wrap_width: initial_wrap_width,
@@ -1388,10 +1397,8 @@ pub fn run_tui(
         let mut mouse_pseudocell_after: Vec<[MouseCell; 2]> = vec![];
 
         let render = |new_size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
-            if new_size != size {
-                size = new_size;
-                state.resize(compute_wrap_width(u16tos(size.width)), u16tos(size.height));
-            }
+            state.resize(u16tos(new_size.width), u16tos(new_size.height));
+            size = new_size;
 
             mouse_cells = vec![vec![MouseCell::Inert; u16tos(size.width)]; u16tos(size.height)];
             mouse_pseudocell_after = vec![[MouseCell::Inert, MouseCell::Inert]; u16tos(size.height)];
@@ -1407,29 +1414,32 @@ pub fn run_tui(
                     UILine::Sides(sides) => {
                         for side in 0..2 {
                             let whl = &sides[side];
-                            let (file_id_for_rendering, line_number_str) = match whl.source {
+                            let file_id_for_rendering: Option<usize>;
+
+                            match whl.source {
                                 TextSource::Section(section_id) => {
                                     let file_id = diff.section_side(section_id, side).file_id;
+                                    file_id_for_rendering = Some(file_id);
+
                                     let file_side = &diff.file_sides[file_id][side];
                                     let line_number = file_side.byte_offset_to_line_number(whl.offset);
-                                    let line_number_str = if whl.offset == file_side.line_offsets[line_number] {
-                                        format!("{line_number:>line_number_width$}")
-                                    } else {
-                                        let my_width = line_number.to_string().len();
-                                        " ".repeat(line_number_width - my_width) + &"+".repeat(my_width)
+                                    let mut line_number_str = line_number.to_string();
+                                    if whl.offset != file_side.line_offsets[line_number] {
+                                        line_number_str = "+".repeat(line_number_str.len());
+                                    }
+                                    let line_number_style = match whl.style {
+                                        HalfLineStyle::Phantom => config.theme.line_numbers_phantom,
+                                        _ => config.theme.line_numbers_default,
                                     };
-                                    (Some(file_id), line_number_str)
+                                    let lx = 1 + side
+                                        * (state.line_number_width + 1 + state.wrap_width + 3 + state.wrap_width + 1);
+                                    let lx = lx + state.line_number_width - line_number_str.len();
+                                    buffer.set_string(usto16(lx), usto16(y), line_number_str, line_number_style);
                                 }
-                                TextSource::Fabricated(..) => (None, " ".repeat(line_number_width)),
-                            };
-                            let lx = 1 + side * (line_number_width + 1 + state.wrap_width + 3 + state.wrap_width + 1);
-                            let line_number_style = match whl.style {
-                                HalfLineStyle::Phantom => config.theme.line_numbers_phantom,
-                                _ => config.theme.line_numbers_default,
-                            };
-                            buffer.set_string(usto16(lx), usto16(y), line_number_str, line_number_style);
+                                TextSource::Fabricated(..) => file_id_for_rendering = None,
+                            }
 
-                            let screen_start_x = 1 + line_number_width + 1 + side * (state.wrap_width + 3);
+                            let screen_start_x = 1 + state.line_number_width + 1 + side * (state.wrap_width + 3);
 
                             let layout = layout_diff_line(
                                 &diff,
@@ -1558,7 +1568,7 @@ pub fn run_tui(
                             }
                         }
                         buffer.set_string(
-                            usto16(1 + line_number_width + 1 + state.wrap_width + 1),
+                            usto16(1 + state.line_number_width + 1 + state.wrap_width + 1),
                             usto16(y),
                             tui::symbols::line::VERTICAL,
                             Default::default(),
