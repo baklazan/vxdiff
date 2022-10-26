@@ -4,7 +4,7 @@ mod range_map;
 
 use super::algorithm::{Diff, DiffOp, FileDiff, Section};
 use clipboard::{copy_to_clipboard, ClipboardMechanism};
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use line_layout::{layout_line, LineCell, LineLayout};
 use range_map::RangeMap;
 use std::cell::RefCell;
@@ -1052,6 +1052,12 @@ struct SearchMatch {
     parent: Nid,
 }
 
+enum EventResult {
+    Nothing,
+    Bell,
+    Quit,
+}
+
 struct State<'a> {
     tree: Tree,
     visible_byte_sets: Vec<[RangeMap<()>; 2]>,
@@ -1338,6 +1344,132 @@ impl<'a> State<'a> {
             self.scroll_pos = next;
             self.cursor_pos = next;
             // TODO: Commented out: self.fix_scroll_invariants(true);
+        }
+    }
+
+    fn handle_key_event(&mut self, event: KeyEvent) -> Result<EventResult, Box<dyn Error>> {
+        match event.code {
+            KeyCode::Esc | KeyCode::Char('q') => return Ok(EventResult::Quit),
+            KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => return Ok(EventResult::Quit),
+            KeyCode::Up => self.scroll_by(1, Prev),
+            KeyCode::Down => self.scroll_by(1, Next),
+            KeyCode::PageUp | KeyCode::Char('b') => self.scroll_by(self.scroll_height, Prev),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_by(self.scroll_height, Next),
+            KeyCode::Char('w') | KeyCode::Char('k') => self.move_cursor_by(1, Prev),
+            KeyCode::Char('s') | KeyCode::Char('j') => self.move_cursor_by(1, Next),
+            // TODO: temporary key assignment for 'z', 'x', 'c'
+            KeyCode::Char('z') => {
+                if let Node::FileHeaderLine(_) = self.tree.node(self.cursor_pos.parent) {
+                    let file_nid = self.tree.parent(self.cursor_pos.parent).unwrap();
+                    let file_branch_node = self.tree.node_mut(file_nid).as_branch_mut();
+                    file_branch_node.visible.end = match file_branch_node.visible.end {
+                        1 => 2,
+                        2 => 1,
+                        _ => panic!("logic error: bad file_branch_node.visible.end"),
+                    };
+                    self.fix_scroll_invariants(false);
+                }
+            }
+            // TODO: configurable number of lines
+            // TODO: if at beginning xor end (zero context lines on one side), don't show that button
+            KeyCode::Char('x') => self.expand_expander(self.cursor_pos.parent, 3, Prev),
+            KeyCode::Char('c') => self.expand_expander(self.cursor_pos.parent, 3, Next),
+            KeyCode::Char('p') if event.modifiers.contains(KeyModifiers::CONTROL) => panic!("intentional panic"),
+            KeyCode::F(3) if event.modifiers.contains(KeyModifiers::SHIFT) => self.go_to_next_result(Prev),
+            KeyCode::F(3) => self.go_to_next_result(Next),
+            KeyCode::Char('N') => self.go_to_next_result(Prev),
+            KeyCode::Char('n') => self.go_to_next_result(Next),
+            // TODO: Do it properly.
+            KeyCode::Char('g') => {
+                let mut buffer = String::new();
+                loop {
+                    if let Event::Key(e) = crossterm::event::read()? {
+                        match e.code {
+                            KeyCode::Esc | KeyCode::Char('q') => break,
+                            KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                                return Ok(EventResult::Quit)
+                            }
+                            KeyCode::Char(c) => buffer.push(c),
+                            KeyCode::Backspace if !buffer.is_empty() => {
+                                buffer.pop();
+                            }
+                            KeyCode::Enter => {
+                                if let Ok(line_number) = buffer.parse::<usize>() {
+                                    let file_id = 0;
+                                    let side = 1;
+                                    let pos = self.find_leaf_position_of_line(file_id, side, line_number);
+                                    // TODO: Open the file if it's closed.
+                                    self.scroll_pos = pos;
+                                    self.cursor_pos = pos;
+                                    self.fix_scroll_invariants(true);
+                                } else {
+                                    return Ok(EventResult::Bell);
+                                }
+                                break;
+                            }
+                            _ => return Ok(EventResult::Bell),
+                        }
+                    }
+                }
+            }
+            _ => return Ok(EventResult::Bell),
+        }
+        Ok(EventResult::Nothing)
+    }
+
+    fn handle_mouse_event(
+        &mut self,
+        event: MouseEvent,
+        rendered: &RenderedInfo,
+    ) -> Result<EventResult, Box<dyn Error>> {
+        let config = default_config(); // TODO
+        let x = std::cmp::min(u16tos(event.column), rendered.mouse_cells[0].len() - 1);
+        let y = std::cmp::min(u16tos(event.row), rendered.mouse_cells.len() - 1);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => match rendered.mouse_cells[y][x] {
+                MouseCell::Text { file_id, side, offset } => {
+                    self.selection = Some(SelectionState {
+                        file_id,
+                        side,
+                        selecting: true,
+                        start_offset: offset,
+                        current_offset: offset,
+                    });
+                }
+                MouseCell::Button(ref fun) => fun(self),
+                MouseCell::Inert => {}
+            },
+            MouseEventKind::Drag(MouseButton::Left) => match self.selection {
+                Some(ref mut selection) if selection.selecting => {
+                    update_selection_position(selection, rendered, x, y);
+                }
+                _ => {}
+            },
+            MouseEventKind::Up(MouseButton::Left) => match self.selection {
+                Some(ref mut selection) if selection.selecting => {
+                    update_selection_position(selection, rendered, x, y);
+                    selection.selecting = false;
+                    let from = std::cmp::min(selection.start_offset, selection.current_offset);
+                    let to = std::cmp::max(selection.start_offset, selection.current_offset);
+                    copy_to_clipboard(
+                        &config.clipboard_mechanism,
+                        &self.diff.file_sides[selection.file_id][selection.side].content[from..to],
+                    )?;
+                }
+                _ => {}
+            },
+            MouseEventKind::ScrollUp => self.scroll_by(config.mouse_wheel_scroll_lines, Prev),
+            MouseEventKind::ScrollDown => self.scroll_by(config.mouse_wheel_scroll_lines, Next),
+            _ => {}
+        }
+        Ok(EventResult::Nothing)
+    }
+
+    fn handle_event(&mut self, event: Event, rendered: &RenderedInfo) -> Result<EventResult, Box<dyn Error>> {
+        match event {
+            Event::Key(e) => self.handle_key_event(e),
+            Event::Mouse(e) => self.handle_mouse_event(e, rendered),
+            _ => Ok(EventResult::Nothing),
         }
     }
 }
@@ -1664,124 +1796,11 @@ pub fn run_tui(
         let rendered = rendered.unwrap();
 
         loop {
-            match crossterm::event::read()? {
-                crossterm::event::Event::Key(e) => match e.code {
-                    KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Char('c') if e.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
-                    KeyCode::Up => state.scroll_by(1, Prev),
-                    KeyCode::Down => state.scroll_by(1, Next),
-                    KeyCode::PageUp | KeyCode::Char('b') => state.scroll_by(state.scroll_height, Prev),
-                    KeyCode::PageDown | KeyCode::Char(' ') => state.scroll_by(state.scroll_height, Next),
-                    KeyCode::Char('w') | KeyCode::Char('k') => state.move_cursor_by(1, Prev),
-                    KeyCode::Char('s') | KeyCode::Char('j') => state.move_cursor_by(1, Next),
-                    // TODO: temporary key assignment for 'z', 'x', 'c'
-                    KeyCode::Char('z') => {
-                        if let Node::FileHeaderLine(_) = state.tree.node(state.cursor_pos.parent) {
-                            let file_nid = state.tree.parent(state.cursor_pos.parent).unwrap();
-                            let file_branch_node = state.tree.node_mut(file_nid).as_branch_mut();
-                            file_branch_node.visible.end = match file_branch_node.visible.end {
-                                1 => 2,
-                                2 => 1,
-                                _ => panic!("logic error: bad file_branch_node.visible.end"),
-                            };
-                            state.fix_scroll_invariants(false);
-                        }
-                    }
-                    // TODO: configurable number of lines
-                    // TODO: if at beginning xor end (zero context lines on one side), don't show that button
-                    KeyCode::Char('x') => state.expand_expander(state.cursor_pos.parent, 3, Prev),
-                    KeyCode::Char('c') => state.expand_expander(state.cursor_pos.parent, 3, Next),
-                    KeyCode::Char('p') if e.modifiers.contains(KeyModifiers::CONTROL) => panic!("intentional panic"),
-                    KeyCode::F(3) if e.modifiers.contains(KeyModifiers::SHIFT) => state.go_to_next_result(Prev),
-                    KeyCode::F(3) => state.go_to_next_result(Next),
-                    KeyCode::Char('N') => state.go_to_next_result(Prev),
-                    KeyCode::Char('n') => state.go_to_next_result(Next),
-                    // TODO: Do it properly.
-                    KeyCode::Char('g') => {
-                        let mut buffer = String::new();
-                        loop {
-                            if let crossterm::event::Event::Key(e) = crossterm::event::read()? {
-                                match e.code {
-                                    KeyCode::Esc | KeyCode::Char('q') => break,
-                                    KeyCode::Char('c') if e.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
-                                    KeyCode::Char(c) => buffer.push(c),
-                                    KeyCode::Backspace if !buffer.is_empty() => {
-                                        buffer.pop();
-                                    }
-                                    KeyCode::Enter => {
-                                        if let Ok(line_number) = buffer.parse::<usize>() {
-                                            let file_id = 0;
-                                            let side = 1;
-                                            let pos = state.find_leaf_position_of_line(file_id, side, line_number);
-                                            // TODO: Open the file if it's closed.
-                                            state.scroll_pos = pos;
-                                            state.cursor_pos = pos;
-                                            state.fix_scroll_invariants(true);
-                                        } else {
-                                            write!(terminal.backend_mut(), "\x07")?;
-                                        }
-                                        break;
-                                    }
-                                    _ => write!(terminal.backend_mut(), "\x07")?,
-                                }
-                            }
-                        }
-                    }
-                    _ => write!(terminal.backend_mut(), "\x07")?,
-                },
-                crossterm::event::Event::Mouse(e) => {
-                    let x = std::cmp::min(u16tos(e.column), rendered.mouse_cells[0].len() - 1);
-                    let y = std::cmp::min(u16tos(e.row), rendered.mouse_cells.len() - 1);
-                    match e.kind {
-                        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                            match rendered.mouse_cells[y][x] {
-                                MouseCell::Text { file_id, side, offset } => {
-                                    state.selection = Some(SelectionState {
-                                        file_id,
-                                        side,
-                                        selecting: true,
-                                        start_offset: offset,
-                                        current_offset: offset,
-                                    });
-                                }
-                                MouseCell::Button(ref fun) => fun(&mut state),
-                                MouseCell::Inert => {}
-                            }
-                        }
-                        crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
-                            match state.selection {
-                                Some(ref mut selection) if selection.selecting => {
-                                    update_selection_position(selection, &rendered, x, y);
-                                }
-                                _ => {}
-                            }
-                        }
-                        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
-                            match state.selection {
-                                Some(ref mut selection) if selection.selecting => {
-                                    update_selection_position(selection, &rendered, x, y);
-                                    selection.selecting = false;
-                                    let from = std::cmp::min(selection.start_offset, selection.current_offset);
-                                    let to = std::cmp::max(selection.start_offset, selection.current_offset);
-                                    copy_to_clipboard(
-                                        &config.clipboard_mechanism,
-                                        &file_input[selection.file_id][selection.side][from..to],
-                                    )?;
-                                }
-                                _ => {}
-                            }
-                        }
-                        crossterm::event::MouseEventKind::ScrollUp => {
-                            state.scroll_by(config.mouse_wheel_scroll_lines, Prev);
-                        }
-                        crossterm::event::MouseEventKind::ScrollDown => {
-                            state.scroll_by(config.mouse_wheel_scroll_lines, Next);
-                        }
-                        _ => {}
-                    };
-                }
-                _ => {}
-            };
+            match state.handle_event(crossterm::event::read()?, &rendered)? {
+                EventResult::Nothing => {}
+                EventResult::Bell => write!(terminal.backend_mut(), "\x07")?,
+                EventResult::Quit => return Ok(()),
+            }
             if !crossterm::event::poll(std::time::Duration::ZERO)? {
                 break;
             }
