@@ -1327,8 +1327,6 @@ pub fn run_tui(
     let diff = make_extended_diff(diff, file_input, file_names);
     let config = default_config();
 
-    let mut size = terminal.size()?;
-
     let mut state = {
         // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
         let line_number_width = diff
@@ -1342,6 +1340,7 @@ pub fn run_tui(
             .len();
 
         let (initial_tree, visible_byte_sets, byte_to_nid_maps) = build_initial_tree(&config, &diff);
+        let size = terminal.size()?;
         let initial_wrap_width = compute_wrap_width(u16tos(size.width), line_number_width);
         let initial_scroll = TreeView {
             tree: &initial_tree,
@@ -1397,9 +1396,8 @@ pub fn run_tui(
         let mut mouse_cells: Vec<Vec<MouseCell>> = vec![];
         let mut mouse_pseudocell_after: Vec<[MouseCell; 2]> = vec![];
 
-        let render = |new_size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
-            state.resize(u16tos(new_size.width), u16tos(new_size.height));
-            size = new_size;
+        let render = |size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
+            state.resize(u16tos(size.width), u16tos(size.height));
 
             mouse_cells = vec![vec![MouseCell::Inert; u16tos(size.width)]; u16tos(size.height)];
             mouse_pseudocell_after = vec![[MouseCell::Inert, MouseCell::Inert]; u16tos(size.height)];
@@ -1622,15 +1620,16 @@ pub fn run_tui(
         let update_selection_position = |selection: &mut SelectionState, x: usize, y: usize| {
             let mut mx = x;
             let mut my = y;
-            while my < u16tos(size.height) {
-                if let MouseCell::Text { file_id, side, offset } = mouse_cells[my][mx] {
-                    if file_id == selection.file_id && side == selection.side {
-                        selection.current_offset = offset;
-                        return;
+            while my < mouse_cells.len() {
+                if mx < mouse_cells[my].len() {
+                    if let MouseCell::Text { file_id, side, offset } = mouse_cells[my][mx] {
+                        if file_id == selection.file_id && side == selection.side {
+                            selection.current_offset = offset;
+                            return;
+                        }
                     }
-                }
-                mx += 1;
-                if mx == u16tos(size.width) {
+                    mx += 1;
+                } else {
                     if let MouseCell::Text { file_id, side, offset } = mouse_pseudocell_after[my][selection.side] {
                         if file_id == selection.file_id && side == selection.side {
                             selection.current_offset = offset;
@@ -1720,8 +1719,11 @@ pub fn run_tui(
                     _ => write!(terminal.backend_mut(), "\x07")?,
                 },
                 crossterm::event::Event::Mouse(e) => {
-                    let x = u16tos(e.column);
-                    let y = u16tos(e.row);
+                    if mouse_cells.is_empty() {
+                        continue;
+                    }
+                    let x = std::cmp::min(u16tos(e.column), mouse_cells[0].len() - 1);
+                    let y = std::cmp::min(u16tos(e.row), mouse_cells.len() - 1);
                     match e.kind {
                         crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                             match mouse_cells[y][x] {
