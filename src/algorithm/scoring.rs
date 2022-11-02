@@ -455,67 +455,78 @@ impl AffineScoring {
     }
 
     pub fn alignment_score(&self, alignment: &[DiffOp], file_ids: [usize; 2], start: [usize; 2]) -> Option<TScore> {
-        let mut states = vec![];
-        let mut gap_started = None;
-        let mut gap_is_white = true;
+        let mut current_gap_score: TScore = 0.0;
+        let mut current_white_gap_score: TScore = 0.0;
+        let mut in_gap = false;
+
         let mut word_indices = start;
+        let mut result: TScore = 0.0;
         for (i, &op) in alignment.iter().enumerate() {
             if op == DiffOp::Match {
                 if !self.is_match(word_indices, file_ids) {
                     return None;
                 }
-                if gap_started.is_some() {
-                    let gap_type = if gap_is_white { Self::WHITE_GAP } else { Self::GAP };
-                    for _ in gap_started.unwrap()..i {
-                        states.push(gap_type);
-                    }
-                    gap_started = None;
+                if in_gap {
+                    current_gap_score +=
+                        self.transition_cost(file_ids, word_indices, Self::GAP, Self::MATCH, DpDirection::Forward);
+                    current_white_gap_score += self.transition_cost(
+                        file_ids,
+                        word_indices,
+                        Self::WHITE_GAP,
+                        Self::MATCH,
+                        DpDirection::Forward,
+                    );
+                    result += TScore::max(current_gap_score, current_white_gap_score);
+                    in_gap = false;
+                } else if i > 0 {
+                    result +=
+                        self.transition_cost(file_ids, word_indices, Self::MATCH, Self::MATCH, DpDirection::Forward);
                 }
-                states.push(Self::MATCH);
+                result += self.information_values[file_ids[0]][0][word_indices[0]];
             } else {
-                if gap_started.is_none() {
-                    gap_started = Some(i);
-                    gap_is_white = true;
+                if !in_gap {
+                    in_gap = true;
+                    current_gap_score = 0.0;
+                    current_white_gap_score = 0.0;
+
+                    if i > 0 {
+                        current_gap_score +=
+                            self.transition_cost(file_ids, word_indices, Self::MATCH, Self::GAP, DpDirection::Forward);
+                        current_white_gap_score += self.transition_cost(
+                            file_ids,
+                            word_indices,
+                            Self::MATCH,
+                            Self::WHITE_GAP,
+                            DpDirection::Forward,
+                        );
+                    }
+                } else {
+                    current_gap_score +=
+                        self.transition_cost(file_ids, word_indices, Self::GAP, Self::GAP, DpDirection::Forward);
+                    current_white_gap_score += self.transition_cost(
+                        file_ids,
+                        word_indices,
+                        Self::WHITE_GAP,
+                        Self::WHITE_GAP,
+                        DpDirection::Forward,
+                    );
                 }
                 let side = if op == DiffOp::Delete { 0 } else { 1 };
-                gap_is_white &= self.is_white[file_ids[side]][side][word_indices[side]];
+                if !self.is_white[file_ids[side]][side][word_indices[side]] {
+                    current_white_gap_score = TScore::NEG_INFINITY;
+                }
             }
             for side in 0..2 {
                 word_indices[side] += op.movement()[side];
             }
         }
-        if gap_started.is_some() {
-            let gap_type = if gap_is_white { Self::WHITE_GAP } else { Self::GAP };
-            for _ in gap_started.unwrap()..alignment.len() {
-                states.push(gap_type);
-            }
+        if in_gap {
+            result += TScore::max(current_gap_score, current_white_gap_score);
         }
 
         for side in 0..2 {
             if word_indices[side] != self.symbols[file_ids[side]][side].len() {
                 return None;
-            }
-        }
-
-        let mut result = 0.0;
-        let mut word_indices = start;
-        for (i, &op) in alignment.iter().enumerate() {
-            if i >= 1 {
-                let transition_matrix = if self.line_splits_at[file_ids[0]][0][word_indices[0]]
-                    && self.line_splits_at[file_ids[1]][1][word_indices[1]]
-                {
-                    &self.transition_matrix_newline
-                } else {
-                    &self.transition_matrix
-                };
-                result += transition_matrix[states[i - 1]][states[i]];
-            }
-            if op == DiffOp::Match {
-                result += self.information_values[file_ids[0]][0][word_indices[0]];
-            }
-
-            for side in 0..2 {
-                word_indices[side] += op.movement()[side];
             }
         }
         Some(result)

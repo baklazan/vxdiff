@@ -88,7 +88,7 @@ pub fn compute_score<AlignmentScoring: AlignmentScoringMethod>(
                 &matrix[sizes[0] % 2][sizes[1]],
                 substate,
                 [0, 0],
-                [sizes[0] % 2, sizes[1]],
+                [sizes[0], sizes[1]],
                 DpDirection::Forward,
             )
         })
