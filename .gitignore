@@ -1,1 +1,4 @@
 /target
+*.left
+*.right
+*.score

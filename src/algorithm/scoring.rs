@@ -491,6 +491,12 @@ impl AffineScoring {
             }
         }
 
+        for side in 0..2 {
+            if word_indices[side] != self.symbols[file_ids[side]][side].len() {
+                return None;
+            }
+        }
+
         let mut result = 0.0;
         let mut word_indices = start;
         for (i, &op) in alignment.iter().enumerate() {
