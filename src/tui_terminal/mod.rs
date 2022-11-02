@@ -1,6 +1,7 @@
 mod clipboard;
 mod line_layout;
 mod range_map;
+mod text_input;
 
 use super::algorithm::{Diff, DiffOp, FileDiff, Section};
 use clipboard::{copy_to_clipboard, ClipboardMechanism};
@@ -14,6 +15,7 @@ use std::io::{self, Write as _};
 use std::ops::{DerefMut as _, Range};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use text_input::TextInput;
 use tui::style::{Color, Modifier, Style};
 
 fn vec_of<T>(length: usize, func: impl Fn() -> T) -> Vec<T> {
@@ -1024,6 +1026,7 @@ enum MouseCell {
 struct RenderedInfo {
     mouse_cells: Vec<Vec<MouseCell>>,
     mouse_pseudocell_after: Vec<[MouseCell; 2]>,
+    terminal_cursor: Option<(u16, u16)>,
 }
 
 struct SelectionState {
@@ -1047,6 +1050,11 @@ enum EventResult {
     Quit,
 }
 
+enum GuiMode {
+    Default,
+    Jump { input: TextInput, side: usize },
+}
+
 struct State<'a> {
     config: Config,
     tree: Tree,
@@ -1061,6 +1069,7 @@ struct State<'a> {
     selection: Option<SelectionState>,
     search_matches: [Vec<SearchMatch>; 2],
     search_highlights: Vec<[Vec<Range<usize>>; 2]>,
+    mode: GuiMode,
 }
 
 fn update_selection_position(selection: &mut SelectionState, rendered: &RenderedInfo, x: usize, y: usize) {
@@ -1288,7 +1297,8 @@ impl<'a> State<'a> {
     }
 
     fn find_leaf_position_of_line(&self, file_id: usize, side: usize, line_number: usize) -> LeafPosition {
-        let byte_offset = self.diff.file_sides[file_id][side].line_offsets[line_number];
+        let line_offsets = &self.diff.file_sides[file_id][side].line_offsets;
+        let byte_offset = line_offsets[std::cmp::min(line_number, line_offsets.len() - 1)];
         let parent = self.byte_to_nid_maps[file_id][side].get(byte_offset).unwrap();
         self.find_leaf_position_within_parent(side, parent, byte_offset)
     }
@@ -1371,36 +1381,10 @@ impl<'a> State<'a> {
             KeyCode::Char('n') => self.go_to_next_result(Next),
             // TODO: Do it properly.
             KeyCode::Char('g') => {
-                let mut buffer = String::new();
-                loop {
-                    if let Event::Key(e) = crossterm::event::read()? {
-                        match e.code {
-                            KeyCode::Esc | KeyCode::Char('q') => break,
-                            KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
-                                return Ok(EventResult::Quit)
-                            }
-                            KeyCode::Char(c) => buffer.push(c),
-                            KeyCode::Backspace if !buffer.is_empty() => {
-                                buffer.pop();
-                            }
-                            KeyCode::Enter => {
-                                if let Ok(line_number) = buffer.parse::<usize>() {
-                                    let file_id = 0;
-                                    let side = 1;
-                                    let pos = self.find_leaf_position_of_line(file_id, side, line_number);
-                                    // TODO: Open the file if it's closed.
-                                    self.scroll_pos = pos;
-                                    self.cursor_pos = pos;
-                                    self.fix_scroll_invariants(true);
-                                } else {
-                                    return Ok(EventResult::Bell);
-                                }
-                                break;
-                            }
-                            _ => return Ok(EventResult::Bell),
-                        }
-                    }
-                }
+                self.mode = GuiMode::Jump {
+                    input: TextInput::new(),
+                    side: 1,
+                };
             }
             _ => return Ok(EventResult::Bell),
         }
@@ -1455,10 +1439,47 @@ impl<'a> State<'a> {
     }
 
     fn handle_event(&mut self, event: Event, rendered: &RenderedInfo) -> Result<EventResult, Box<dyn Error>> {
-        match event {
-            Event::Key(e) => self.handle_key_event(e),
-            Event::Mouse(e) => self.handle_mouse_event(e, rendered),
-            _ => Ok(EventResult::Nothing),
+        match self.mode {
+            GuiMode::Default => match event {
+                Event::Key(e) => self.handle_key_event(e),
+                Event::Mouse(e) => self.handle_mouse_event(e, rendered),
+                _ => Ok(EventResult::Nothing),
+            },
+            GuiMode::Jump { ref mut input, side } => {
+                if let Event::Key(event) = &event {
+                    match event.code {
+                        KeyCode::Esc => {
+                            self.mode = GuiMode::Default;
+                            return Ok(EventResult::Nothing);
+                        }
+                        KeyCode::Backspace if input.get_content().is_empty() => {
+                            self.mode = GuiMode::Default;
+                            return Ok(EventResult::Nothing);
+                        }
+                        KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                            return Ok(EventResult::Quit)
+                        }
+                        KeyCode::Enter => {
+                            if let Ok(line_number) = input.get_content().parse::<usize>() {
+                                let file_id = 0;
+                                let pos = self.find_leaf_position_of_line(file_id, side, line_number);
+                                // TODO: Open the file if it's closed.
+                                self.scroll_pos = pos;
+                                self.cursor_pos = pos;
+                                self.fix_scroll_invariants(true);
+                            }
+                            self.mode = GuiMode::Default;
+                            return Ok(EventResult::Nothing);
+                        }
+                        _ => {}
+                    }
+                }
+                let validator = |string: &str| string.chars().all(|c| c.is_ascii_digit());
+                match input.handle_event(&event, validator) {
+                    text_input::TextInputEventResult::Handled => Ok(EventResult::Nothing),
+                    text_input::TextInputEventResult::Unhandled => Ok(EventResult::Bell),
+                }
+            }
         }
     }
 
@@ -1628,10 +1649,15 @@ impl<'a> State<'a> {
         let mut rendered = RenderedInfo {
             mouse_cells: vec![vec![MouseCell::Inert; term_width]; term_height],
             mouse_pseudocell_after: vec![[MouseCell::Inert, MouseCell::Inert]; term_height],
+            terminal_cursor: None,
         };
 
         let mut pos = self.scroll_pos;
-        for y in 0..self.scroll_height {
+        let real_scroll_height = match self.mode {
+            GuiMode::Default => self.scroll_height,
+            GuiMode::Jump { .. } => self.scroll_height - 1,
+        };
+        for y in 0..real_scroll_height {
             if pos == self.cursor_pos {
                 buffer.set_string(0, usto16(y), ">", self.config.theme.cursor);
             }
@@ -1694,6 +1720,16 @@ impl<'a> State<'a> {
                 pos = next;
             } else {
                 break;
+            }
+        }
+
+        match self.mode {
+            GuiMode::Default => {}
+            GuiMode::Jump { ref mut input, side } => {
+                let y = usto16(self.scroll_height - 1);
+                buffer.set_string(0, y, "g", Style::default());
+                let input_area = tui::layout::Rect::new(1, y, usto16(term_width - 1), 1);
+                input.render(input_area, buffer, &mut rendered.terminal_cursor);
             }
         }
 
@@ -1770,6 +1806,7 @@ pub fn run_tui(
             selection: None,
             search_matches: [vec![], vec![]],
             search_highlights: Default::default(),
+            mode: GuiMode::Default,
         }
     };
 
@@ -1796,13 +1833,16 @@ pub fn run_tui(
     loop {
         let mut rendered = None;
 
-        let render = |size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
-            rendered = Some(state.render(u16tos(size.width), u16tos(size.height), buffer));
-        };
-
         terminal.draw(|frame| {
+            let render = |size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
+                rendered = Some(state.render(u16tos(size.width), u16tos(size.height), buffer));
+            };
+
             frame.render_widget(WidgetWrapper(render), frame.size());
-            // TODO: eventually might want to call frame.set_cursor() for /search etc
+
+            if let Some((x, y)) = rendered.as_ref().unwrap().terminal_cursor {
+                frame.set_cursor(x, y);
+            }
         })?;
 
         let rendered = rendered.unwrap();
