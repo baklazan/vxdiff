@@ -1,3 +1,4 @@
+use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
@@ -21,20 +22,18 @@ pub(super) struct LineLayout {
 
 pub(super) fn layout_line(
     input: &str,
-    highlight_bounds: &[usize],
-    highlight_first: bool,
-    search_bounds: &[usize],
+    highlight_ranges: &[Range<usize>],
+    search_ranges: &[Range<usize>],
     mut offset: usize,
     end: usize,
     max_width: usize,
 ) -> LineLayout {
     let mut cells = vec![];
 
-    let mut highlight_bounds_index = highlight_bounds.partition_point(|&point| point <= offset) - 1;
-    let mut highlight = highlight_first ^ (highlight_bounds_index % 2 == 1);
+    let mut highlight_index = highlight_ranges.partition_point(|range| range.end <= offset);
+    let mut highlight = false;
 
-    let mut search_bounds_index = search_bounds.partition_point(|&point| point <= offset);
-    let mut search_highlight = search_bounds_index % 2 == 1;
+    let mut search_index = search_ranges.partition_point(|range| range.end <= offset);
 
     let mut found_newline_length = 0;
 
@@ -42,15 +41,17 @@ pub(super) fn layout_line(
     // to compute the width of each EGC. I don't know if it's correct (precisely matches what
     // terminal emulators do), but at least it matches the behavior of our library (tui-rs).
     for egc in input[offset..end].graphemes(true) {
-        assert!(highlight_bounds_index + 1 < highlight_bounds.len());
-        if offset == highlight_bounds[highlight_bounds_index + 1] {
-            highlight_bounds_index += 1;
-            highlight = !highlight;
+        let sentinel = usize::MAX..usize::MAX;
+        let highlight_range = highlight_ranges.get(highlight_index).unwrap_or(&sentinel);
+        highlight = highlight_range.contains(&offset);
+        if offset >= highlight_range.end {
+            highlight_index += 1;
         }
 
-        if search_bounds.get(search_bounds_index).cloned() == Some(offset) {
-            search_bounds_index += 1;
-            search_highlight = !search_highlight;
+        let search_range = search_ranges.get(search_index).unwrap_or(&sentinel);
+        let search_highlight = search_range.contains(&offset);
+        if offset >= search_range.end {
+            search_index += 1;
         }
 
         if egc == "\n" {

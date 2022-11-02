@@ -5,24 +5,39 @@ fn highlighted_subsegments<'a>(
     text: &PartitionedText<'a>,
     word_indices_and_highlight: &[(bool, usize)],
 ) -> SectionSide {
-    if word_indices_and_highlight.is_empty() {
-        return SectionSide {
-            highlight_bounds: vec![],
-            highlight_first: false,
-        };
+    for i in 1..word_indices_and_highlight.len() {
+        assert_eq!(word_indices_and_highlight[i - 1].1 + 1, word_indices_and_highlight[i].1);
     }
-    let (highlight_first, first_word_offset) = word_indices_and_highlight[0];
-    let mut highlight_bounds = vec![text.word_bounds[first_word_offset]];
 
-    for (i, (highlight, word_index)) in word_indices_and_highlight.iter().enumerate() {
-        if i + 1 >= word_indices_and_highlight.len() || (*highlight != word_indices_and_highlight[i + 1].0) {
-            let word_end_offset = text.word_bounds[word_index + 1];
-            highlight_bounds.push(word_end_offset);
+    let last_word_index = match word_indices_and_highlight.last() {
+        Some((_, last_word_index)) => last_word_index,
+        None => {
+            return SectionSide {
+                byte_range: 0..0,
+                highlight_ranges: vec![],
+            };
+        }
+    };
+
+    let mut highlight_ranges = vec![];
+    let mut current_highlight_from = None;
+
+    let sentinel = (false, last_word_index + 1);
+    for &(highlight, word_index) in word_indices_and_highlight.iter().chain(std::iter::once(&sentinel)) {
+        match (highlight, current_highlight_from) {
+            (true, Some(_)) => {}
+            (true, None) => current_highlight_from = Some(word_index),
+            (false, Some(start_index)) => {
+                highlight_ranges.push(text.word_bounds[start_index]..text.word_bounds[word_index]);
+                current_highlight_from = None;
+            }
+            (false, None) => {}
         }
     }
+
     SectionSide {
-        highlight_bounds,
-        highlight_first,
+        byte_range: text.word_bounds[word_indices_and_highlight[0].1]..text.word_bounds[last_word_index + 1],
+        highlight_ranges,
     }
 }
 
@@ -69,9 +84,7 @@ fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> 
 
         if (is_match && is_newline) || is_last {
             let sides = [0, 1].map(|side| highlighted_subsegments(&texts[side], &section_contents[side]));
-            let equal = sides
-                .iter()
-                .all(|side| side.highlight_first == false && side.highlight_bounds.len() <= 2);
+            let equal = sides.iter().all(|side| side.highlight_ranges.is_empty());
             result.push(Section { sides, equal });
             section_contents = [vec![], vec![]];
             current_line_start = [0, 0];
@@ -124,7 +137,7 @@ pub fn build_diff<'a>(texts: &[[PartitionedText<'a>; 2]], fragments: Vec<(Aligne
                 let section = &sections[section_id];
                 let mut relevant_sides = fragment_op.movement();
                 for side in 0..2 {
-                    if section.sides[side].highlight_bounds.is_empty() {
+                    if section.sides[side].byte_range.is_empty() {
                         relevant_sides[side] = 0;
                     }
                 }

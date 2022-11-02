@@ -124,8 +124,7 @@ fn default_config() -> Config {
 struct ExtendedDiffSectionSide<'a> {
     file_id: usize,
     byte_range: Range<usize>,
-    highlight_bounds: &'a [usize],
-    highlight_first: bool,
+    highlight_ranges: &'a [Range<usize>],
 }
 
 struct ExtendedDiffFileSide<'a> {
@@ -187,9 +186,8 @@ fn make_extended_diff<'a>(
                 let section_side = &diff.sections[section_id].sides[side];
                 extended_diff.section_sides[section_id][side] = Some(ExtendedDiffSectionSide {
                     file_id,
-                    byte_range: section_side.highlight_bounds[0]..*section_side.highlight_bounds.last().unwrap(),
-                    highlight_bounds: &section_side.highlight_bounds,
-                    highlight_first: section_side.highlight_first,
+                    byte_range: section_side.byte_range.clone(),
+                    highlight_ranges: &section_side.highlight_ranges,
                 });
             }
             for (i, c) in file_input[file_id][side].char_indices() {
@@ -742,7 +740,7 @@ fn layout_diff_line(
     diff: &ExtendedDiff,
     side: usize,
     source: &TextSource,
-    search_highlights: &[[Vec<usize>; 2]],
+    search_highlights: &[[Vec<Range<usize>>; 2]],
     offset: usize,
     wrap_width: usize,
 ) -> LineLayout {
@@ -751,23 +749,14 @@ fn layout_diff_line(
             let section_side = diff.section_side(section_id, side);
             layout_line(
                 diff.file_sides[section_side.file_id][side].content,
-                section_side.highlight_bounds,
-                section_side.highlight_first,
+                section_side.highlight_ranges,
                 search_highlights.get(section_side.file_id).map_or(&[], |a| &a[side]),
                 offset,
                 section_side.byte_range.end,
                 wrap_width,
             )
         }
-        TextSource::Fabricated(content) => layout_line(
-            content,
-            &[0, content.len()],
-            false,
-            &[],
-            offset,
-            content.len(),
-            wrap_width,
-        ),
+        TextSource::Fabricated(content) => layout_line(content, &[], &[], offset, content.len(), wrap_width),
     }
 }
 
@@ -1071,7 +1060,7 @@ struct State<'a> {
     scroll_height: usize,
     selection: Option<SelectionState>,
     search_matches: [Vec<SearchMatch>; 2],
-    search_highlights: Vec<[Vec<usize>; 2]>,
+    search_highlights: Vec<[Vec<Range<usize>>; 2]>,
 }
 
 fn update_selection_position(selection: &mut SelectionState, rendered: &RenderedInfo, x: usize, y: usize) {
@@ -1257,12 +1246,12 @@ impl<'a> State<'a> {
                     for mat in regex.find_iter(&self.diff.file_sides[file_id][side].content[range.clone()]) {
                         let start = range.start + mat.start();
                         let end = range.start + mat.end();
-                        for point in [start, end] {
+                        if start != end {
                             let highlights = &mut self.search_highlights[file_id][side];
-                            if highlights.last().cloned() == Some(point) {
-                                highlights.pop();
+                            if highlights.last().map(|range| range.end) == Some(start) {
+                                highlights.last_mut().unwrap().end = end;
                             } else {
-                                highlights.push(point);
+                                highlights.push(start..end);
                             }
                         }
                         let my_match = SearchMatch {

@@ -13,7 +13,7 @@ fn print_side(
     file_input_side: &str,
     write_line: &mut impl FnMut(&str, usize, &Style) -> TheResult,
 ) -> TheResult {
-    if section_side.highlight_bounds.is_empty() {
+    if section_side.byte_range.is_empty() {
         return Ok(());
     }
 
@@ -22,31 +22,37 @@ fn print_side(
     let mut current_line = "".to_string();
     let mut current_line_visible_length = 0;
 
-    for i in 0..(section_side.highlight_bounds.len() - 1) {
-        let highlight = section_side.highlight_first ^ (i % 2 == 1);
-        let start_offset = section_side.highlight_bounds[i];
-        let end_offset = section_side.highlight_bounds[i + 1];
-        let text = &file_input_side[start_offset..end_offset];
-
-        let my_style = if highlight { &highlighted_style } else { &style_var };
-        for part_with_eol in text.split_inclusive('\n') {
-            let (part, eol) = match part_with_eol.strip_suffix('\n') {
-                Some(part) => (part, true),
-                None => (part_with_eol, false),
-            };
-            if current_line.is_empty() {
-                write!(&mut current_line, "{}", style_var.apply_to(prefix))?;
-                current_line_visible_length += 1;
+    let mut pos = section_side.byte_range.start;
+    let sentinel = section_side.byte_range.end..section_side.byte_range.end;
+    for highlight_range in section_side.highlight_ranges.iter().chain(std::iter::once(&sentinel)) {
+        for (range, highlight) in [(pos..highlight_range.start, false), (highlight_range.clone(), true)] {
+            if range.is_empty() {
+                continue;
             }
-            write!(&mut current_line, "{}", my_style.apply_to(part))?;
-            current_line_visible_length += part.len();
-            if eol {
-                write_line(&current_line, current_line_visible_length, my_style)?;
-                current_line = "".to_string();
-                current_line_visible_length = 0;
+            let text = &file_input_side[range];
+
+            let my_style = if highlight { &highlighted_style } else { style_var };
+            for part_with_eol in text.split_inclusive('\n') {
+                let (part, eol) = match part_with_eol.strip_suffix('\n') {
+                    Some(part) => (part, true),
+                    None => (part_with_eol, false),
+                };
+                if current_line.is_empty() {
+                    write!(&mut current_line, "{}", style_var.apply_to(prefix))?;
+                    current_line_visible_length += 1;
+                }
+                write!(&mut current_line, "{}", my_style.apply_to(part))?;
+                current_line_visible_length += part.len();
+                if eol {
+                    write_line(&current_line, current_line_visible_length, my_style)?;
+                    current_line = "".to_string();
+                    current_line_visible_length = 0;
+                }
             }
         }
+        pos = highlight_range.end;
     }
+
     if !current_line.is_empty() {
         write_line(&current_line, current_line_visible_length, &Style::new())?;
         let warn = "\\ No newline at end of file";

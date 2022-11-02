@@ -7,6 +7,7 @@ pub mod scoring;
 mod seed_selection;
 
 use self::{fragment_selection::greedy_fragments, preprocess::partition_into_words};
+use std::ops::Range;
 
 #[derive(Debug, Default)]
 pub struct Diff {
@@ -27,8 +28,8 @@ pub struct Section {
 
 #[derive(Debug, PartialEq)]
 pub struct SectionSide {
-    pub highlight_bounds: Vec<usize>,
-    pub highlight_first: bool,
+    pub byte_range: Range<usize>,
+    pub highlight_ranges: Vec<Range<usize>>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
