@@ -16,9 +16,13 @@ struct Testcase {
 }
 
 type AlignmentScoring = vxdiff::algorithm::scoring::AffineScoring;
-type Algorithm = fn(&[PartitionedText; 2], &AlignmentScoring, [usize; 2]) -> Vec<DiffOp>;
+type Algorithm = fn(&[[PartitionedText; 2]], &AlignmentScoring) -> Vec<DiffOp>;
 
-fn naive_dp(_partitioned_texts: &[PartitionedText; 2], scoring: &AlignmentScoring, sizes: [usize; 2]) -> Vec<DiffOp> {
+fn naive_dp(partitioned_texts: &[[PartitionedText; 2]], scoring: &AlignmentScoring) -> Vec<DiffOp> {
+    let sizes = [
+        partitioned_texts[0][0].word_count(),
+        partitioned_texts[0][1].word_count(),
+    ];
     main_sequence::naive_dp::naive_dp(scoring, sizes)
 }
 
@@ -65,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         testcases.push(Testcase { left, right, score });
     }
 
-    let algorithms: [Algorithm; 1] = [naive_dp];
+    let algorithms: [Algorithm; 1] = [vxdiff::algorithm::main_sequence::greedy_seeds::greedy_seeds];
 
     for testcase in testcases {
         println!("Compare {:?} vs {:?}", testcase.left, testcase.right);
@@ -101,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Optimal score is {}", optimal_score);
 
         for algorithm in algorithms {
-            let alignment = algorithm(&all_texts[0], &scoring, sizes);
+            let alignment = algorithm(&all_texts, &scoring);
             println!("score: {:?}", scoring.alignment_score(&alignment, [0, 0], [0, 0]));
         }
     }

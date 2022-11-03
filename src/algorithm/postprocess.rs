@@ -1,4 +1,4 @@
-use super::{AlignedFragment, Diff, DiffOp, FileDiff, PartitionedText, Section, SectionSide};
+use super::{get_partitioned_subtext, AlignedFragment, Diff, DiffOp, FileDiff, PartitionedText, Section, SectionSide};
 use std::ops::Range;
 
 fn highlighted_subsegments<'a>(
@@ -92,13 +92,6 @@ fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> 
         }
     }
     result
-}
-
-fn get_partitioned_subtext<'a>(text: &PartitionedText<'a>, word_range: Range<usize>) -> PartitionedText<'a> {
-    PartitionedText {
-        text: text.text,
-        word_bounds: &text.word_bounds[word_range.start..=word_range.end],
-    }
 }
 
 pub fn build_diff<'a>(texts: &[[PartitionedText<'a>; 2]], fragments: Vec<(AlignedFragment, bool)>) -> Diff {

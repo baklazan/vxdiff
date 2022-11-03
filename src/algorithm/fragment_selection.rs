@@ -71,29 +71,6 @@ pub fn greedy_fragments(texts: &[[PartitionedText; 2]]) -> Vec<(AlignedFragment,
         prefix_scores.push(file_prefix_scores);
     }
 
-    impl Ord for Seed {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            for side in 0..2 {
-                if self.file_ids[side] != other.file_ids[side] {
-                    return usize::cmp(&self.file_ids[side], &other.file_ids[side]);
-                }
-                if self.start[side] != other.start[side] {
-                    return usize::cmp(&self.start[side], &other.start[side]);
-                }
-                if self.end[side] != other.end[side] {
-                    return usize::cmp(&self.end[side], &other.end[side]);
-                }
-            }
-            std::cmp::Ordering::Equal
-        }
-    }
-
-    impl PartialOrd for Seed {
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
     const SEED_INFORMATION_THRESHOLD: TScore = 20.0;
     let mut seeds_by_score: BTreeSet<(FloatOrd<TScore>, Seed)> = BTreeSet::new();
     for seed in seeds {

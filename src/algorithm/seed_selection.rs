@@ -8,6 +8,29 @@ pub struct Seed {
     pub file_ids: [usize; 2],
 }
 
+impl Ord for Seed {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        for side in 0..2 {
+            if self.file_ids[side] != other.file_ids[side] {
+                return usize::cmp(&self.file_ids[side], &other.file_ids[side]);
+            }
+            if self.start[side] != other.start[side] {
+                return usize::cmp(&self.start[side], &other.start[side]);
+            }
+            if self.end[side] != other.end[side] {
+                return usize::cmp(&self.end[side], &other.end[side]);
+            }
+        }
+        std::cmp::Ordering::Equal
+    }
+}
+
+impl PartialOrd for Seed {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 struct HashFunctionParams {
     pub mod_p: u64,
     pub factor: u64,
@@ -60,6 +83,10 @@ pub fn select_seeds(texts: &[[PartitionedText; 2]]) -> Vec<Seed> {
             k_word_hashes(&file_texts[1], K, &hash_function),
         ]);
         hashtable_size += file_texts[0].word_count();
+    }
+
+    if hashtable_size == 0 {
+        return vec![];
     }
 
     let mut old_starts_by_hash = vec![vec![]; hashtable_size];

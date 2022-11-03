@@ -6,6 +6,8 @@ pub mod preprocess;
 pub mod scoring;
 mod seed_selection;
 
+use std::ops::Range;
+
 use self::{fragment_selection::greedy_fragments, preprocess::partition_into_words};
 use std::ops::Range;
 
@@ -98,5 +100,12 @@ impl<'a> PartitionedText<'a> {
     }
     pub fn get_word(&self, index: usize) -> &'a str {
         &self.text[self.word_bounds[index]..self.word_bounds[index + 1]]
+    }
+}
+
+pub fn get_partitioned_subtext<'a>(text: &PartitionedText<'a>, word_range: Range<usize>) -> PartitionedText<'a> {
+    PartitionedText {
+        text: text.text,
+        word_bounds: &text.word_bounds[word_range.start..=word_range.end],
     }
 }
