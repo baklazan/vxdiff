@@ -1,4 +1,5 @@
 mod clipboard;
+mod gui_layout;
 mod line_layout;
 mod range_map;
 mod text_input;
@@ -6,6 +7,7 @@ mod text_input;
 use super::algorithm::{Diff, DiffOp, FileDiff, Section};
 use clipboard::{copy_to_clipboard, ClipboardMechanism};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use gui_layout::gui_layout;
 use line_layout::{layout_line, LineCell, LineLayout};
 use range_map::RangeMap;
 use std::cell::RefCell;
@@ -738,6 +740,23 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[Range
     (tree, visible_byte_sets, byte_to_nid_maps)
 }
 
+fn get_file_id_from_tree_ancestors(tree: &Tree, mut nid: Nid) -> Option<usize> {
+    loop {
+        if let Node::Branch(node) = tree.node(nid) {
+            if !node.children.is_empty() {
+                if let &Node::FileHeaderLine(file_id) = tree.node(node.children[0]) {
+                    return Some(file_id);
+                }
+            }
+        }
+        if let Some(parent_nid) = tree.parent(nid) {
+            nid = parent_nid;
+        } else {
+            return None;
+        }
+    }
+}
+
 fn layout_diff_line(
     diff: &ExtendedDiff,
     side: usize,
@@ -1011,9 +1030,25 @@ pub fn print_side_by_side_diff_plainly(
     print_plainly(&tree_view, tree.root, output)
 }
 
-fn compute_wrap_width(terminal_width: usize, line_number_width: usize) -> usize {
+fn compute_wrap_width(layout: &[Range<usize>; 10]) -> usize {
+    layout[3].end - layout[3].start
+}
+
+fn main_gui_layout(terminal_width: usize, line_number_width: usize) -> [Range<usize>; 10] {
     // TODO: Configurable wrap_width behavior (e.g. fixed 80, multiples of 10, fluid)
-    (terminal_width - 6 - line_number_width * 2) / 2
+    let constraints = [
+        Some(1),
+        Some(line_number_width),
+        Some(1),
+        None,
+        Some(1),
+        Some(1),
+        Some(1),
+        None,
+        Some(1),
+        Some(line_number_width),
+    ];
+    gui_layout(constraints, 0..terminal_width)
 }
 
 #[derive(Clone)]
@@ -1052,7 +1087,7 @@ enum EventResult {
 
 enum GuiMode {
     Default,
-    Jump { input: TextInput, side: usize },
+    Jump { input: TextInput },
 }
 
 struct State<'a> {
@@ -1070,6 +1105,7 @@ struct State<'a> {
     search_matches: [Vec<SearchMatch>; 2],
     search_highlights: Vec<[Vec<Range<usize>>; 2]>,
     mode: GuiMode,
+    focused_side: usize,
 }
 
 fn update_selection_position(selection: &mut SelectionState, rendered: &RenderedInfo, x: usize, y: usize) {
@@ -1209,9 +1245,7 @@ impl<'a> State<'a> {
         }
     }
 
-    fn resize(&mut self, term_width: usize, term_height: usize) {
-        let wrap_width = compute_wrap_width(term_width, self.line_number_width);
-        let scroll_height = term_height;
+    fn resize(&mut self, wrap_width: usize, scroll_height: usize) {
         if (self.wrap_width, self.scroll_height) == (wrap_width, scroll_height) {
             return;
         }
@@ -1379,11 +1413,9 @@ impl<'a> State<'a> {
             KeyCode::F(3) => self.go_to_next_result(Next),
             KeyCode::Char('N') => self.go_to_next_result(Prev),
             KeyCode::Char('n') => self.go_to_next_result(Next),
-            // TODO: Do it properly.
             KeyCode::Char('g') => {
                 self.mode = GuiMode::Jump {
                     input: TextInput::new(),
-                    side: 1,
                 };
             }
             _ => return Ok(EventResult::Bell),
@@ -1445,7 +1477,7 @@ impl<'a> State<'a> {
                 Event::Mouse(e) => self.handle_mouse_event(e, rendered),
                 _ => Ok(EventResult::Nothing),
             },
-            GuiMode::Jump { ref mut input, side } => {
+            GuiMode::Jump { ref mut input } => {
                 if let Event::Key(event) = &event {
                     match event.code {
                         KeyCode::Esc => {
@@ -1459,10 +1491,23 @@ impl<'a> State<'a> {
                         KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
                             return Ok(EventResult::Quit)
                         }
+                        KeyCode::Char('l') => {
+                            self.focused_side = 0;
+                            return Ok(EventResult::Nothing);
+                        }
+                        KeyCode::Char('r') => {
+                            self.focused_side = 1;
+                            return Ok(EventResult::Nothing);
+                        }
+                        KeyCode::Tab => {
+                            self.focused_side = 1 - self.focused_side;
+                            return Ok(EventResult::Nothing);
+                        }
                         KeyCode::Enter => {
                             if let Ok(line_number) = input.get_content().parse::<usize>() {
-                                let file_id = 0;
-                                let pos = self.find_leaf_position_of_line(file_id, side, line_number);
+                                let file_id =
+                                    get_file_id_from_tree_ancestors(&self.tree, self.cursor_pos.parent).unwrap_or(0);
+                                let pos = self.find_leaf_position_of_line(file_id, self.focused_side, line_number);
                                 // TODO: Open the file if it's closed.
                                 self.scroll_pos = pos;
                                 self.cursor_pos = pos;
@@ -1485,7 +1530,6 @@ impl<'a> State<'a> {
 
     fn render_half_line(
         &self,
-        tree_view: &TreeView,
         pos: LeafPosition,
         sides: &[WrappedHalfLine; 2],
         side: usize,
@@ -1529,23 +1573,9 @@ impl<'a> State<'a> {
             self.wrap_width,
         );
 
-        // TODO: This loop runs at most a few times, but it might be nicer to avoid it.
-        let file_id_for_selection = {
-            let mut nid = pos.parent;
-            loop {
-                if tree_view.tree.node_meta(nid).index_in_parent == 1 {
-                    let sibling_nid = tree_view.tree.sibling(nid, Prev).unwrap();
-                    if let &Node::FileHeaderLine(file_id) = tree_view.tree.node(sibling_nid) {
-                        break file_id;
-                    }
-                }
-                if let Some(parent_nid) = tree_view.tree.parent(nid) {
-                    nid = parent_nid;
-                } else {
-                    panic!("UILine::Sides was used outside of a file_content_node");
-                }
-            }
-        };
+        // TODO: The loop in get_file_id_from_tree_ancestors runs at most a few times, but it might be nicer to avoid it.
+        let file_id_for_selection = get_file_id_from_tree_ancestors(&self.tree, pos.parent)
+            .expect("UILine::Sides was used outside of a file_content_node");
 
         let eol_cell = LineCell {
             egc: " ".to_string(),
@@ -1644,7 +1674,9 @@ impl<'a> State<'a> {
     }
 
     fn render(&mut self, term_width: usize, term_height: usize, buffer: &mut tui::buffer::Buffer) -> RenderedInfo {
-        self.resize(term_width, term_height);
+        let layout = main_gui_layout(term_width, self.line_number_width);
+        self.resize(compute_wrap_width(&layout), term_height);
+        let [xcursor, xnuml, _, xmainl, _, xsep, _, xmainr, _, xnumr] = layout;
 
         let mut rendered = RenderedInfo {
             mouse_cells: vec![vec![MouseCell::Inert; term_width]; term_height],
@@ -1659,31 +1691,30 @@ impl<'a> State<'a> {
         };
         for y in 0..real_scroll_height {
             if pos == self.cursor_pos {
-                buffer.set_string(0, usto16(y), ">", self.config.theme.cursor);
+                buffer.set_string(usto16(xcursor.start), usto16(y), ">", self.config.theme.cursor);
             }
             let parent_node = self.tree.node(pos.parent);
             let tree_view = self.tree_view();
             tree_view.with_ui_lines(parent_node, |lines| match &lines[pos.line_index] {
                 UILine::Sides(sides) => {
-                    let xl0 = 1 + self.line_number_width;
-                    let xc0 = xl0 + 1;
-                    let xm = xc0 + self.wrap_width + 1;
-                    let xc1 = xm + 2;
-                    let xl1 = xc1 + self.wrap_width + 1 + self.line_number_width;
                     for side in 0..2 {
                         self.render_half_line(
-                            &tree_view,
                             pos,
                             sides,
                             side,
-                            [xc0, xc1][side],
-                            [xl0, xl1][side],
+                            [xmainl.start, xmainr.start][side],
+                            [xnuml.end, xnumr.end][side],
                             y,
                             buffer,
                             &mut rendered,
                         );
                     }
-                    buffer.set_string(usto16(xm), usto16(y), tui::symbols::line::VERTICAL, Default::default());
+                    buffer.set_string(
+                        usto16(xsep.start),
+                        usto16(y),
+                        tui::symbols::line::VERTICAL,
+                        Default::default(),
+                    );
                 }
                 &UILine::FileHeaderLine(file_id) => {
                     let file_header_nid = pos.parent;
@@ -1725,11 +1756,34 @@ impl<'a> State<'a> {
 
         match self.mode {
             GuiMode::Default => {}
-            GuiMode::Jump { ref mut input, side } => {
+            GuiMode::Jump { ref mut input } => {
                 let y = usto16(self.scroll_height - 1);
-                buffer.set_string(0, y, "g", Style::default());
-                let input_area = tui::layout::Rect::new(1, y, usto16(term_width - 1), 1);
+                let text = "Go to line: ";
+                let text_left = "L=left";
+                let text_right = "R=right";
+                let constraints = [
+                    Some(text.len()),
+                    None,
+                    Some(1),
+                    Some(text_left.len()),
+                    Some(1),
+                    Some(text_right.len()),
+                ];
+                let [text_pos, input_pos, _, left_pos, _, right_pos] = gui_layout(constraints, 0..term_width);
+                buffer.set_string(usto16(text_pos.start), y, text, Style::default());
+                let input_area = tui::layout::Rect {
+                    x: usto16(input_pos.start),
+                    y,
+                    width: usto16(input_pos.end - input_pos.start),
+                    height: 1,
+                };
                 input.render(input_area, buffer, &mut rendered.terminal_cursor);
+                let styles = [
+                    Style::default().add_modifier(Modifier::BOLD),
+                    Style::default().add_modifier(Modifier::CROSSED_OUT),
+                ];
+                buffer.set_string(usto16(left_pos.start), y, text_left, styles[self.focused_side]);
+                buffer.set_string(usto16(right_pos.start), y, text_right, styles[1 - self.focused_side]);
             }
         }
 
@@ -1784,7 +1838,7 @@ pub fn run_tui(
 
         let (initial_tree, visible_byte_sets, byte_to_nid_maps) = build_initial_tree(&config, &diff);
         let size = terminal.size()?;
-        let initial_wrap_width = compute_wrap_width(u16tos(size.width), line_number_width);
+        let initial_wrap_width = compute_wrap_width(&main_gui_layout(u16tos(size.width), line_number_width));
         let initial_scroll = TreeView {
             tree: &initial_tree,
             diff: &diff,
@@ -1807,6 +1861,7 @@ pub fn run_tui(
             search_matches: [vec![], vec![]],
             search_highlights: Default::default(),
             mode: GuiMode::Default,
+            focused_side: 1,
         }
     };
 
