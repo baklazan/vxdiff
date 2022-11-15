@@ -1,10 +1,7 @@
-use float_ord::FloatOrd;
-use std::collections::{BTreeMap, BTreeSet};
-
 use crate::algorithm::{
     get_partitioned_subtext,
     scoring::{AffineScoring, TScore},
-    seed_selection::{select_seeds, Seed},
+    seed_selection::select_seeds,
     DiffOp, PartitionedText,
 };
 
@@ -50,16 +47,20 @@ fn greedy_seeds_recursive(texts: &[[PartitionedText; 2]], prefix_scores: &[TScor
     );
 }
 
-pub fn greedy_seeds(texts: &[[PartitionedText; 2]], scoring: &AffineScoring) -> Vec<DiffOp> {
+pub(in crate::algorithm) fn greedy_seeds(
+    texts: &[PartitionedText; 2],
+    scoring: &AffineScoring,
+    file_ids: [usize; 2],
+) -> Vec<DiffOp> {
     let mut result = vec![];
 
     let mut prefix_scores = vec![0.0];
     let mut score = 0.0;
-    for value in scoring.information_values[0][0].iter() {
+    for value in scoring.information_values[file_ids[0]][0].iter() {
         score += value;
         prefix_scores.push(score);
     }
 
-    greedy_seeds_recursive(&texts, &prefix_scores[..], &mut result);
+    greedy_seeds_recursive(&[[texts[0].clone(), texts[1].clone()]], &prefix_scores[..], &mut result);
     result
 }

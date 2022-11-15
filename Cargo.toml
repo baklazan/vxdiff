@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 base64 = "*"
+clap = {version = "*", features = ['derive']}
 console = "*"
 crossterm = "*"
 float-ord = "*"

@@ -1,10 +1,10 @@
 use crate::algorithm::{
-    scoring::{AlignmentScoringMethod, DpDirection, ScoreState, TScore},
+    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, ScoreState, TScore},
     DiffOp,
 };
 
 fn compute_dp_matrix<AlignmentScoring: AlignmentScoringMethod>(
-    alignment_scoring: &AlignmentScoring,
+    alignment_scoring: &AlignmentSliceScoring<AlignmentScoring>,
     sizes: [usize; 2],
     row_range: usize,
 ) -> Vec<Vec<AlignmentScoring::State>> {
@@ -22,11 +22,9 @@ fn compute_dp_matrix<AlignmentScoring: AlignmentScoringMethod>(
                 if old_index >= op.movement()[0] && new_index >= op.movement()[1] {
                     alignment_scoring.consider_step(
                         [old_index, new_index],
-                        [0, 0],
                         result[(old_index - op.movement()[0]) % row_range][new_index - op.movement()[1]].clone(),
                         &mut result[old_index % row_range][new_index],
                         op,
-                        DpDirection::Forward,
                     )
                 }
             }
@@ -37,22 +35,14 @@ fn compute_dp_matrix<AlignmentScoring: AlignmentScoringMethod>(
 }
 
 pub fn naive_dp<AlignmentScoring: AlignmentScoringMethod>(
-    alignment_scoring: &AlignmentScoring,
+    alignment_scoring: &AlignmentSliceScoring<AlignmentScoring>,
     sizes: [usize; 2],
 ) -> Vec<DiffOp> {
     let matrix = compute_dp_matrix(alignment_scoring, sizes, sizes[0] + 1);
 
     let mut best_substate = 0;
     let final_scores: Vec<TScore> = (0..AlignmentScoring::State::SUBSTATES_COUNT)
-        .map(|substate| {
-            alignment_scoring.substate_score(
-                &matrix[sizes[0]][sizes[1]],
-                substate,
-                [0, 0],
-                [sizes[0], sizes[1]],
-                DpDirection::Forward,
-            )
-        })
+        .map(|substate| alignment_scoring.substate_score(&matrix[sizes[0]][sizes[1]], substate, [sizes[0], sizes[1]]))
         .collect();
     for substate in 1..AlignmentScoring::State::SUBSTATES_COUNT {
         if final_scores[substate] > final_scores[best_substate] {
@@ -78,19 +68,13 @@ pub fn naive_dp<AlignmentScoring: AlignmentScoringMethod>(
 }
 
 pub fn compute_score<AlignmentScoring: AlignmentScoringMethod>(
-    alignment_scoring: &AlignmentScoring,
+    alignment_scoring: &AlignmentSliceScoring<AlignmentScoring>,
     sizes: [usize; 2],
 ) -> TScore {
     let matrix = compute_dp_matrix(alignment_scoring, sizes, 2);
     let scores: Vec<TScore> = (0..AlignmentScoring::State::SUBSTATES_COUNT)
         .map(|substate| {
-            alignment_scoring.substate_score(
-                &matrix[sizes[0] % 2][sizes[1]],
-                substate,
-                [0, 0],
-                [sizes[0], sizes[1]],
-                DpDirection::Forward,
-            )
+            alignment_scoring.substate_score(&matrix[sizes[0] % 2][sizes[1]], substate, [sizes[0], sizes[1]])
         })
         .collect();
 

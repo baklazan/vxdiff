@@ -1,14 +1,15 @@
+pub mod benchmark;
 mod dynamic_programming;
 mod fragment_selection;
-pub mod main_sequence;
+mod main_sequence;
 mod postprocess;
-pub mod preprocess;
-pub mod scoring;
+mod preprocess;
+mod scoring;
 mod seed_selection;
 
-use std::ops::Range;
-
-use self::{fragment_selection::greedy_fragments, preprocess::partition_into_words};
+use self::{
+    fragment_selection::greedy_fragments, main_sequence::main_sequence_fragments, preprocess::partition_into_words,
+};
 use std::ops::Range;
 
 #[derive(Debug, Default)]
@@ -51,7 +52,17 @@ impl DiffOp {
     }
 }
 
-pub fn compute_diff(files: &[[&str; 2]]) -> Diff {
+pub enum DiffAlgorithm {
+    MainSequence(MainSequenceAlgorithm),
+    MovingSeeds,
+}
+
+pub enum MainSequenceAlgorithm {
+    Naive,
+    Seeds,
+}
+
+pub fn compute_diff(files: &[[&str; 2]], algorithm: DiffAlgorithm) -> Diff {
     let mut word_bounds = vec![];
     let mut texts = vec![];
 
@@ -73,19 +84,19 @@ pub fn compute_diff(files: &[[&str; 2]]) -> Diff {
         texts.push(file_texts);
     }
 
-    let aligned_fragments = greedy_fragments(&texts);
+    let aligned_fragments = compute_fragments(&texts, algorithm);
     postprocess::build_diff(&texts, aligned_fragments)
 }
 
-pub struct AlignedFragment {
+struct AlignedFragment {
     starts: [usize; 2],
     ends: [usize; 2],
     file_ids: [usize; 2],
     alignment: Vec<DiffOp>,
 }
 
-#[derive(Default)]
-pub struct PartitionedText<'a> {
+#[derive(Default, Clone)]
+struct PartitionedText<'a> {
     pub text: &'a str,
     pub word_bounds: &'a [usize],
 }
@@ -103,9 +114,16 @@ impl<'a> PartitionedText<'a> {
     }
 }
 
-pub fn get_partitioned_subtext<'a>(text: &PartitionedText<'a>, word_range: Range<usize>) -> PartitionedText<'a> {
+fn get_partitioned_subtext<'a>(text: &PartitionedText<'a>, word_range: Range<usize>) -> PartitionedText<'a> {
     PartitionedText {
         text: text.text,
         word_bounds: &text.word_bounds[word_range.start..=word_range.end],
+    }
+}
+
+fn compute_fragments(texts: &[[PartitionedText; 2]], algorithm: DiffAlgorithm) -> Vec<(AlignedFragment, bool)> {
+    match algorithm {
+        DiffAlgorithm::MovingSeeds => greedy_fragments(texts),
+        DiffAlgorithm::MainSequence(main_sequence_algorithm) => main_sequence_fragments(texts, main_sequence_algorithm),
     }
 }

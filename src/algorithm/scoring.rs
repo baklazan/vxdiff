@@ -220,7 +220,7 @@ impl SimpleScoring {
     }
 
     #[allow(dead_code)]
-    pub fn new(texts: &[[PartitionedText; 2]]) -> SimpleScoring {
+    pub(super) fn new(texts: &[[PartitionedText; 2]]) -> SimpleScoring {
         SimpleScoring {
             symbols: internalize_words(texts),
             information_values: information_values(texts),
@@ -338,7 +338,7 @@ impl AffineScoring {
     const BASE_BOUND_SCORE: TScore = -1.0;
     const LINE_CONTENT_COEF: TScore = -0.8;
 
-    pub fn new(texts: &[[PartitionedText; 2]]) -> AffineScoring {
+    pub(super) fn new(texts: &[[PartitionedText; 2]]) -> AffineScoring {
         let information_values = information_values(texts);
 
         let mut is_white = vec![];
@@ -454,12 +454,12 @@ impl AffineScoring {
         }
     }
 
-    pub fn alignment_score(&self, alignment: &[DiffOp], file_ids: [usize; 2], start: [usize; 2]) -> Option<TScore> {
+    pub fn alignment_score(&self, alignment: &[DiffOp], file_ids: [usize; 2]) -> Option<TScore> {
         let mut current_gap_score: TScore = 0.0;
         let mut current_white_gap_score: TScore = 0.0;
         let mut in_gap = false;
 
-        let mut word_indices = start;
+        let mut word_indices = [0, 0];
         let mut result: TScore = 0.0;
         for (i, &op) in alignment.iter().enumerate() {
             if op == DiffOp::Match {

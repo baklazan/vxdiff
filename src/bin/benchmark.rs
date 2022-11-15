@@ -2,11 +2,14 @@ use std::{
     ffi::OsStr,
     fs::read_to_string,
     path::{Path, PathBuf},
-    process::exit,
 };
 
+use clap::{Parser, ValueEnum};
 use regex::Regex;
-use vxdiff::algorithm::{main_sequence, preprocess::partition_into_words, DiffOp, PartitionedText};
+use vxdiff::algorithm::{
+    benchmark::{compute_optimal_score, run_algorithm, PreprocessedTestcase},
+    MainSequenceAlgorithm,
+};
 
 #[derive(Debug)]
 struct Testcase {
@@ -15,32 +18,39 @@ struct Testcase {
     score: PathBuf,
 }
 
-type AlignmentScoring = vxdiff::algorithm::scoring::AffineScoring;
-type Algorithm = fn(&[[PartitionedText; 2]], &AlignmentScoring) -> Vec<DiffOp>;
+#[derive(Clone, ValueEnum)]
+pub enum AlgorithmType {
+    Naive,
+    Seeds,
+}
 
-fn naive_dp(partitioned_texts: &[[PartitionedText; 2]], scoring: &AlignmentScoring) -> Vec<DiffOp> {
-    let sizes = [
-        partitioned_texts[0][0].word_count(),
-        partitioned_texts[0][1].word_count(),
-    ];
-    main_sequence::naive_dp::naive_dp(scoring, sizes)
+impl AlgorithmType {
+    pub fn convert(&self) -> MainSequenceAlgorithm {
+        match &self {
+            AlgorithmType::Naive => MainSequenceAlgorithm::Naive,
+            AlgorithmType::Seeds => MainSequenceAlgorithm::Seeds,
+        }
+    }
+}
+
+#[derive(Parser)]
+struct Args {
+    testcase_directory: String,
+
+    #[arg(short, long, default_value_t = String::from(""))]
+    filter: String,
+
+    #[arg(value_enum)]
+    algorithms: Vec<AlgorithmType>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = std::env::args_os().collect();
-    if args.len() < 2 || args.len() > 3 {
-        eprintln!("usage: {:?} directory-with-test-cases [regex]", args[0]);
-        exit(1);
-    }
+    let args = Args::parse();
 
-    let regex: Regex = if args.len() == 3 {
-        Regex::new(args[2].to_str().ok_or("can't convert second argument to str")?)?
-    } else {
-        Regex::new("")?
-    };
+    let regex = Regex::new(&args.filter)?;
 
     let mut testcases = vec![];
-    let directory = Path::new(&args[1]);
+    let directory = Path::new(&args.testcase_directory);
     let files = std::fs::read_dir(directory)?;
     for file in files {
         let path = file?.path();
@@ -69,44 +79,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         testcases.push(Testcase { left, right, score });
     }
 
-    let algorithms: [Algorithm; 1] = [vxdiff::algorithm::main_sequence::greedy_seeds::greedy_seeds];
-
     for testcase in testcases {
         println!("Compare {:?} vs {:?}", testcase.left, testcase.right);
 
         let left = read_to_string(testcase.left)?;
         let right = read_to_string(testcase.right)?;
-        let left_bounds = partition_into_words(&left);
-        let right_bounds = partition_into_words(&right);
-        let all_texts = [[
-            PartitionedText {
-                text: &left,
-                word_bounds: &left_bounds,
-            },
-            PartitionedText {
-                text: &right,
-                word_bounds: &right_bounds,
-            },
-        ]];
-        let file_texts = &all_texts[0];
 
-        let scoring = AlignmentScoring::new(&all_texts);
-        let sizes = [file_texts[0].word_count(), file_texts[1].word_count()];
+        let preprocessed_testcase = PreprocessedTestcase::new(&left, &right);
 
         let optimal_score = if testcase.score.exists() {
             read_to_string(testcase.score)?.parse::<f64>()?
         } else {
-            let score = main_sequence::naive_dp::compute_score(&scoring, sizes);
+            let score = compute_optimal_score(&preprocessed_testcase);
             std::fs::write(testcase.score, format!("{}", score))?;
             score
         };
 
-        println!("Input size is {:?}", sizes);
         println!("Optimal score is {}", optimal_score);
 
-        for algorithm in algorithms {
-            let alignment = algorithm(&all_texts, &scoring);
-            println!("score: {:?}", scoring.alignment_score(&alignment, [0, 0], [0, 0]));
+        for algorithm in args.algorithms.iter() {
+            let score = run_algorithm(&preprocessed_testcase, algorithm.convert());
+            println!("score: {:?}", score);
         }
     }
 

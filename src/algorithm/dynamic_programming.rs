@@ -158,7 +158,7 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
     (alignment, actual_start)
 }
 
-pub fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: FragmentBoundsScoringMethod>(
+pub(super) fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: FragmentBoundsScoringMethod>(
     alignment_scoring: &AlignmentScoring,
     bounds_scoring: &FragmentScoring,
     seed: Seed,

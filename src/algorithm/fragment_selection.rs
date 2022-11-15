@@ -57,7 +57,7 @@ fn remove_covered_parts(seed: Seed, covered: [&BTreeSet<(usize, usize)>; 2]) -> 
     result
 }
 
-pub fn greedy_fragments(texts: &[[PartitionedText; 2]]) -> Vec<(AlignedFragment, bool)> {
+pub(super) fn greedy_fragments(texts: &[[PartitionedText; 2]]) -> Vec<(AlignedFragment, bool)> {
     let seeds = select_seeds(texts);
     let scoring = AffineScoring::new(&texts);
     let mut prefix_scores = vec![];
