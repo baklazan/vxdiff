@@ -1,5 +1,5 @@
 use super::line_layout::{layout_line, LineCell};
-use crossterm::event::{Event, KeyCode};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 
 pub struct TextInput {
     old_width: usize,
@@ -69,7 +69,7 @@ impl TextInput {
     pub fn handle_event(&mut self, event: &Event, validator: impl Fn(&str) -> bool) -> TextInputEventResult {
         match event {
             Event::Key(e) => match e.code {
-                KeyCode::Char(c) if e.modifiers.is_empty() => {
+                KeyCode::Char(c) if e.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
                     self.write(&c.to_string(), validator);
                     TextInputEventResult::Handled
                 }

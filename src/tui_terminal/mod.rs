@@ -10,6 +10,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, Mous
 use gui_layout::gui_layout;
 use line_layout::{layout_line, LineCell, LineLayout};
 use range_map::RangeMap;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::error::Error;
@@ -101,6 +102,13 @@ fn new_theme() -> Theme {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SearchCaseSensitivity {
+    CaseSensitive,
+    CaseInsensitive,
+    DependsOnPattern,
+}
+
 struct Config {
     context_lines: usize,
     mouse_wheel_scroll_lines: usize,
@@ -108,6 +116,9 @@ struct Config {
     highlight_newlines: bool,
     theme: Theme,
     clipboard_mechanism: ClipboardMechanism,
+    search_incremental: bool,
+    search_default_case_sensitivity: SearchCaseSensitivity,
+    search_default_regexp: bool,
 }
 
 fn default_config() -> Config {
@@ -122,6 +133,9 @@ fn default_config() -> Config {
         } else {
             ClipboardMechanism::Terminal
         },
+        search_incremental: true,
+        search_default_case_sensitivity: SearchCaseSensitivity::DependsOnPattern,
+        search_default_regexp: true,
     }
 }
 
@@ -1072,6 +1086,12 @@ struct SelectionState {
     current_offset: usize,
 }
 
+struct SearchQuery {
+    pattern: String,
+    case_sensitive: bool,
+    regexp: bool,
+}
+
 #[derive(PartialEq, Eq)]
 struct SearchMatch {
     file_id: usize,
@@ -1087,7 +1107,19 @@ enum EventResult {
 
 enum GuiMode {
     Default,
-    Jump { input: TextInput },
+    Jump {
+        input: TextInput,
+    },
+    Search {
+        input: TextInput,
+        direction: Direction,
+        case_sensitivity: SearchCaseSensitivity,
+        regexp: bool,
+        old_scroll_pos: LeafPosition,
+        old_cursor_pos: LeafPosition,
+        // new_scroll_pos: LeafPosition,
+        // new_cursor_pos: LeafPosition,
+    },
 }
 
 struct State<'a> {
@@ -1102,6 +1134,7 @@ struct State<'a> {
     wrap_width: usize,
     scroll_height: usize,
     selection: Option<SelectionState>,
+    search_query: Option<SearchQuery>,
     search_matches: [Vec<SearchMatch>; 2],
     search_highlights: Vec<[Vec<Range<usize>>; 2]>,
     mode: GuiMode,
@@ -1140,6 +1173,14 @@ fn update_selection_position(selection: &mut SelectionState, rendered: &Rendered
                 return;
             }
         }
+    }
+}
+
+fn is_search_case_sensitive(sensitivity: SearchCaseSensitivity, pattern: &str) -> bool {
+    match sensitivity {
+        SearchCaseSensitivity::CaseSensitive => true,
+        SearchCaseSensitivity::CaseInsensitive => false,
+        SearchCaseSensitivity::DependsOnPattern => pattern.chars().any(char::is_uppercase),
     }
 }
 
@@ -1219,7 +1260,7 @@ impl<'a> State<'a> {
             *self.tree.node_mut(expander) = Node::ExpanderLine(0);
         }
         self.scroll_pos = self.move_pos(self.cursor_pos, cursor_distance, Prev);
-        // TODO: Redo current search.
+        self.perform_search();
     }
 
     fn fix_scroll_invariants(&mut self, prefer_changing_scroll: bool) {
@@ -1264,31 +1305,64 @@ impl<'a> State<'a> {
         self.fix_scroll_invariants(false);
     }
 
-    fn search(&mut self, pattern: &str) {
+    fn perform_search(&mut self) {
         self.search_matches = [vec![], vec![]];
         self.search_highlights = vec_of(self.diff.files.len(), Default::default);
 
-        // TODO: case insensitive config (like less -i and less -I)
-        // TODO: literal string search
-        let regex = regex::RegexBuilder::new(pattern)
-            .case_insensitive(true)
-            .multi_line(true)
-            .build();
-
-        let regex = match regex {
-            Ok(regex) => regex,
-            Err(_) => {
-                // TODO: show the error (if non-incremental search).
-                return;
+        let (pattern, case_sensitive, regexp) = 'out: {
+            match self.mode {
+                GuiMode::Search {
+                    ref input,
+                    case_sensitivity,
+                    regexp,
+                    ..
+                } if self.config.search_incremental => {
+                    let pattern = input.get_content();
+                    if !pattern.is_empty() {
+                        let case_sensitive = is_search_case_sensitive(case_sensitivity, pattern);
+                        break 'out (pattern, case_sensitive, regexp);
+                    }
+                }
+                _ => {}
             }
+            if let Some(ref sq) = self.search_query {
+                break 'out (&sq.pattern, sq.case_sensitive, sq.regexp);
+            }
+            return;
+        };
+
+        let (pattern, regexp) = if !regexp && !case_sensitive {
+            (Cow::Owned(regex::escape(pattern)), true)
+        } else {
+            (Cow::Borrowed(pattern), regexp)
+        };
+
+        enum Matcher<'a> {
+            Regex(regex::Regex),
+            Memmem(memchr::memmem::Finder<'a>),
+        }
+
+        let matcher = if regexp {
+            let regex = regex::RegexBuilder::new(&pattern)
+                .case_insensitive(!case_sensitive)
+                .multi_line(true)
+                .build();
+
+            match regex {
+                Ok(regex) => Matcher::Regex(regex),
+                Err(_) => {
+                    // TODO: show the error (if non-incremental search).
+                    return;
+                }
+            }
+        } else {
+            Matcher::Memmem(memchr::memmem::Finder::new(pattern.as_bytes()))
         };
 
         for file_id in 0..self.diff.files.len() {
             for side in 0..2 {
                 for (range, ()) in self.visible_byte_sets[file_id][side].ranges() {
-                    for mat in regex.find_iter(&self.diff.file_sides[file_id][side].content[range.clone()]) {
-                        let start = range.start + mat.start();
-                        let end = range.start + mat.end();
+                    let mut process_match = |start: usize, end: usize| {
                         if start != end {
                             let highlights = &mut self.search_highlights[file_id][side];
                             if highlights.last().map(|range| range.end) == Some(start) {
@@ -1305,6 +1379,21 @@ impl<'a> State<'a> {
                         match self.search_matches[side].last() {
                             Some(last_match) if *last_match == my_match => {}
                             _ => self.search_matches[side].push(my_match),
+                        }
+                    };
+
+                    let subcontent = &self.diff.file_sides[file_id][side].content[range.clone()];
+
+                    match matcher {
+                        Matcher::Regex(ref regex) => {
+                            for mat in regex.find_iter(subcontent) {
+                                process_match(range.start + mat.start(), range.start + mat.end());
+                            }
+                        }
+                        Matcher::Memmem(ref finder) => {
+                            for mat in finder.find_iter(subcontent.as_bytes()) {
+                                process_match(range.start + mat, range.start + mat + pattern.len());
+                            }
                         }
                     }
                 }
@@ -1371,14 +1460,27 @@ impl<'a> State<'a> {
         }
     }
 
-    fn go_to_next_result(&mut self, dir: Direction) {
-        let start = self.move_pos(self.scroll_pos, 1, dir);
+    fn go_to_next_result(&mut self, at_least: usize, dir: Direction) {
+        let start = self.move_pos(self.scroll_pos, at_least, dir);
         if let Some(next) = self.next_or_same_search_result(start, dir) {
             // TODO: Open the file if it's closed.
             self.scroll_pos = next;
             self.cursor_pos = next;
             // TODO: Commented out: self.fix_scroll_invariants(true);
         }
+    }
+
+    fn enter_search_mode(&mut self, direction: Direction) {
+        self.mode = GuiMode::Search {
+            input: TextInput::new(),
+            direction,
+            case_sensitivity: self.config.search_default_case_sensitivity,
+            regexp: self.config.search_default_regexp,
+            old_scroll_pos: self.scroll_pos,
+            old_cursor_pos: self.cursor_pos,
+            // new_scroll_pos: self.scroll_pos,
+            // new_cursor_pos: self.cursor_pos,
+        };
     }
 
     fn handle_key_event(&mut self, event: KeyEvent) -> Result<EventResult, Box<dyn Error>> {
@@ -1409,15 +1511,17 @@ impl<'a> State<'a> {
             KeyCode::Char('x') => self.expand_expander(self.cursor_pos.parent, 3, Prev),
             KeyCode::Char('c') => self.expand_expander(self.cursor_pos.parent, 3, Next),
             KeyCode::Char('p') if event.modifiers.contains(KeyModifiers::CONTROL) => panic!("intentional panic"),
-            KeyCode::F(3) if event.modifiers.contains(KeyModifiers::SHIFT) => self.go_to_next_result(Prev),
-            KeyCode::F(3) => self.go_to_next_result(Next),
-            KeyCode::Char('N') => self.go_to_next_result(Prev),
-            KeyCode::Char('n') => self.go_to_next_result(Next),
+            KeyCode::F(3) if event.modifiers.contains(KeyModifiers::SHIFT) => self.go_to_next_result(1, Prev),
+            KeyCode::F(3) => self.go_to_next_result(1, Next),
+            KeyCode::Char('N') => self.go_to_next_result(1, Prev),
+            KeyCode::Char('n') => self.go_to_next_result(1, Next),
             KeyCode::Char('g') => {
                 self.mode = GuiMode::Jump {
                     input: TextInput::new(),
                 };
             }
+            KeyCode::Char('/') => self.enter_search_mode(Next),
+            KeyCode::Char('?') => self.enter_search_mode(Prev),
             _ => return Ok(EventResult::Bell),
         }
         Ok(EventResult::Nothing)
@@ -1478,6 +1582,7 @@ impl<'a> State<'a> {
                 _ => Ok(EventResult::Nothing),
             },
             GuiMode::Jump { ref mut input } => {
+                // TODO: Shouldn't we also handle mouse events in jump mode?
                 if let Event::Key(event) = &event {
                     match event.code {
                         KeyCode::Esc => {
@@ -1524,6 +1629,77 @@ impl<'a> State<'a> {
                     text_input::TextInputEventResult::Handled => Ok(EventResult::Nothing),
                     text_input::TextInputEventResult::Unhandled => Ok(EventResult::Bell),
                 }
+            }
+            GuiMode::Search {
+                ref mut input,
+                ref mut case_sensitivity,
+                ref mut regexp,
+                direction,
+                old_scroll_pos,
+                old_cursor_pos,
+                ..
+            } => {
+                // TODO: Shouldn't we also handle mouse events in search mode?
+                if let Event::Key(kevent) = &event {
+                    match kevent.code {
+                        KeyCode::Esc => {
+                            self.scroll_pos = old_scroll_pos;
+                            self.cursor_pos = old_cursor_pos;
+                            self.mode = GuiMode::Default;
+                            self.perform_search();
+                            return Ok(EventResult::Nothing);
+                        }
+                        KeyCode::Backspace if input.get_content().is_empty() => {
+                            self.scroll_pos = old_scroll_pos;
+                            self.cursor_pos = old_cursor_pos;
+                            self.mode = GuiMode::Default;
+                            self.perform_search();
+                            return Ok(EventResult::Nothing);
+                        }
+                        KeyCode::Char('c') if kevent.modifiers.contains(KeyModifiers::CONTROL) => {
+                            return Ok(EventResult::Quit);
+                        }
+                        KeyCode::Char('s') if kevent.modifiers.contains(KeyModifiers::CONTROL) => {
+                            *case_sensitivity = match is_search_case_sensitive(*case_sensitivity, input.get_content()) {
+                                true => SearchCaseSensitivity::CaseInsensitive,
+                                false => SearchCaseSensitivity::CaseSensitive,
+                            };
+                        }
+                        KeyCode::Char('r') if kevent.modifiers.contains(KeyModifiers::CONTROL) => {
+                            *regexp = !*regexp;
+                        }
+                        KeyCode::Enter => {
+                            let pattern = input.get_content();
+                            let at_least;
+                            if pattern.is_empty() {
+                                at_least = 1;
+                            } else {
+                                self.search_query = Some(SearchQuery {
+                                    pattern: pattern.to_owned(),
+                                    case_sensitive: is_search_case_sensitive(*case_sensitivity, pattern),
+                                    regexp: *regexp,
+                                });
+                                at_least = 0;
+                            }
+                            self.scroll_pos = old_scroll_pos;
+                            self.cursor_pos = old_cursor_pos;
+                            self.mode = GuiMode::Default;
+                            self.perform_search();
+                            self.go_to_next_result(at_least, direction);
+                            return Ok(EventResult::Nothing);
+                        }
+                        // TODO: up/down = search history
+                        _ => match input.handle_event(&event, |_| true) {
+                            text_input::TextInputEventResult::Handled => {}
+                            text_input::TextInputEventResult::Unhandled => return Ok(EventResult::Bell),
+                        },
+                    }
+                    if self.config.search_incremental {
+                        self.perform_search();
+                        // TODO: move?
+                    }
+                }
+                Ok(EventResult::Nothing)
             }
         }
     }
@@ -1688,6 +1864,7 @@ impl<'a> State<'a> {
         let real_scroll_height = match self.mode {
             GuiMode::Default => self.scroll_height,
             GuiMode::Jump { .. } => self.scroll_height - 1,
+            GuiMode::Search { .. } => self.scroll_height - 1,
         };
         for y in 0..real_scroll_height {
             if pos == self.cursor_pos {
@@ -1785,6 +1962,45 @@ impl<'a> State<'a> {
                 buffer.set_string(usto16(left_pos.start), y, text_left, styles[self.focused_side]);
                 buffer.set_string(usto16(right_pos.start), y, text_right, styles[1 - self.focused_side]);
             }
+            GuiMode::Search {
+                ref mut input,
+                direction,
+                case_sensitivity,
+                regexp,
+                ..
+            } => {
+                let y = usto16(self.scroll_height - 1);
+                let prefix_text = match direction {
+                    Next => "/",
+                    Prev => "?",
+                };
+                let regex_text = "C-R=regex";
+                let case_text = "C-S=case-sensitive";
+                let constraints = [
+                    Some(prefix_text.len()),
+                    None,
+                    Some(1),
+                    Some(regex_text.len()),
+                    Some(1),
+                    Some(case_text.len()),
+                ];
+                let [prefix_pos, input_pos, _, regex_pos, _, case_pos] = gui_layout(constraints, 0..term_width);
+                buffer.set_string(usto16(prefix_pos.start), y, prefix_text, Style::default());
+                let input_area = tui::layout::Rect {
+                    x: usto16(input_pos.start),
+                    y,
+                    width: usto16(input_pos.end - input_pos.start),
+                    height: 1,
+                };
+                input.render(input_area, buffer, &mut rendered.terminal_cursor);
+                let style = |enabled| match enabled {
+                    false => Style::default().add_modifier(Modifier::CROSSED_OUT),
+                    true => Style::default().add_modifier(Modifier::BOLD),
+                };
+                let case_sensitive = is_search_case_sensitive(case_sensitivity, input.get_content());
+                buffer.set_string(usto16(regex_pos.start), y, regex_text, style(regexp));
+                buffer.set_string(usto16(case_pos.start), y, case_text, style(case_sensitive));
+            }
         }
 
         rendered
@@ -1858,6 +2074,7 @@ pub fn run_tui(
             wrap_width: initial_wrap_width,
             scroll_height: u16tos(size.height),
             selection: None,
+            search_query: None,
             search_matches: [vec![], vec![]],
             search_highlights: Default::default(),
             mode: GuiMode::Default,
@@ -1881,9 +2098,6 @@ pub fn run_tui(
             }
         }
     }
-
-    // TODO
-    state.search("diff");
 
     loop {
         let mut rendered = None;

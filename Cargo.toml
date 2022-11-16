@@ -11,6 +11,7 @@ clap = {version = "*", features = ['derive']}
 console = "*"
 crossterm = "*"
 float-ord = "*"
+memchr = "*"
 rand = "*"
 regex = "*"
 string-interner = "*"
