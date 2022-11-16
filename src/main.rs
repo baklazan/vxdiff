@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{error::ErrorKind, CommandFactory as _, Parser, ValueEnum};
 use std::fs::read_to_string;
 use std::io::stdout;
 use vxdiff::tui_terminal::{print_side_by_side_diff_plainly, run_in_terminal, run_tui};
@@ -39,11 +39,13 @@ impl DiffAlgorithm {
 }
 
 #[derive(Parser)]
+#[command(arg_required_else_help(true))]
 struct Args {
     #[arg(short, long, default_value_t = OutputMode::Tui, value_enum)]
     mode: OutputMode,
     #[arg(short, long, default_value_t = DiffAlgorithm::MovingSeeds, value_enum)]
     algorithm: DiffAlgorithm,
+    #[arg(required = true, value_names = ["OLD1", "NEW1", "OLD2", "NEW2"])]
     files: Vec<String>,
 }
 
@@ -52,6 +54,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut file_input_storage = vec![];
     let mut file_names_storage = vec![];
+
+    if args.files.len() % 2 != 0 {
+        Args::command()
+            .error(ErrorKind::TooFewValues, "File count must be even")
+            .exit();
+    }
 
     for i in (0..args.files.len()).step_by(2) {
         let old_name = &args.files[i];
