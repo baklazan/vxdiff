@@ -1,5 +1,5 @@
 use super::{
-    scoring::{AffineScoring, AlignmentSliceScoring, DpDirection, InputSliceBounds},
+    scoring::{affine_scoring::AffineScoring, AlignmentSliceScoring, DpDirection, InputSliceBounds},
     AlignedFragment, MainSequenceAlgorithm, PartitionedText,
 };
 

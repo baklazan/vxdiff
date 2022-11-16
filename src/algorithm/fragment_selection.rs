@@ -1,9 +1,9 @@
 use float_ord::FloatOrd;
 
-use crate::algorithm::dynamic_programming::extend_seed;
+use crate::algorithm::{dynamic_programming::extend_seed, scoring::affine_scoring::AffineScoring};
 
 use super::{
-    scoring::{AffineScoring, TScore},
+    scoring::TScore,
     seed_selection::{select_seeds, Seed},
     AlignedFragment, PartitionedText,
 };

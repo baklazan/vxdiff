@@ -1,16 +1,19 @@
+use crate::algorithm::dp_substate_vec::DpStateVec;
+
 use super::seed_selection::*;
 
 use super::scoring::*;
 use super::*;
 
-pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: FragmentBoundsScoringMethod>(
-    alignment_scoring: &AlignmentSliceScoring<AlignmentScoring>,
+pub fn adaptive_dp<FragmentScoring: FragmentBoundsScoringMethod>(
+    alignment_scoring: &AlignmentSliceScoring,
     bounds_scoring: &BoundsSliceScoring<FragmentScoring>,
     bound: [usize; 2],
 ) -> (Vec<DiffOp>, [usize; 2]) {
     const BAND_SIZE_WORDS: usize = 100;
 
-    let mut dp: Vec<Vec<AlignmentScoring::State>> = vec![vec![alignment_scoring.starting_state(0.0)]];
+    let mut dp: Vec<DpStateVec> = vec![DpStateVec::new(1, alignment_scoring.substates_count())];
+    alignment_scoring.set_starting_state(0.0, &mut dp[0][0]);
     let mut diag_start_new = vec![0];
 
     let mut best_start = ([0, 0], 0);
@@ -68,10 +71,12 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
         let (starting_new, ending_new) = compute_diagonal_bounds(index_sum, best_new_in_previous_diag);
         diag_start_new.push(starting_new);
         let diag_length = ending_new - starting_new;
-        dp.push(vec![
-            alignment_scoring.starting_state(TScore::NEG_INFINITY);
-            diag_length
-        ]);
+        let mut dp_diagonal = DpStateVec::new(diag_length, alignment_scoring.substates_count());
+        for i in 0..diag_length {
+            alignment_scoring.set_starting_state(TScore::NEG_INFINITY, &mut dp_diagonal[i]);
+        }
+        dp.push(dp_diagonal);
+
         if diag_length == 0 {
             continue;
         }
@@ -96,10 +101,12 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
                 }
             }
 
+            let mut read_state = vec![DpSubstate::default(); alignment_scoring.substates_count()];
             for (sum_before, index_in_diag_before, op) in valid_steps {
+                read_state.clone_from_slice(&dp[sum_before][index_in_diag_before]);
                 alignment_scoring.consider_step(
                     [old_index, new_index],
-                    dp[sum_before][index_in_diag_before].clone(),
+                    &read_state,
                     &mut dp[index_sum][index_in_diag],
                     op,
                 );
@@ -108,7 +115,7 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
             let nearest_bound_point = bounds_scoring.nearest_bound_point([old_index, new_index]);
             let change_state_penalty = bounds_scoring.fragment_bound_penalty(nearest_bound_point);
 
-            for substate in 0..AlignmentScoring::State::SUBSTATES_COUNT {
+            for substate in 0..alignment_scoring.substates_count() {
                 let score =
                     alignment_scoring.substate_score(&dp[index_sum][index_in_diag], substate, [old_index, new_index]);
                 if score > best_score_in_diag {
@@ -146,7 +153,7 @@ pub fn adaptive_dp<AlignmentScoring: AlignmentScoringMethod, FragmentScoring: Fr
     while old_index != 0 || new_index != 0 {
         let index_sum = old_index + new_index;
         let index_in_diag = new_index - diag_start_new[index_sum];
-        let movement = alignment_scoring.substate_movement(&dp[index_sum][index_in_diag], substate);
+        let movement = dp[index_sum][index_in_diag][substate].previous_step;
         assert!(movement.is_some());
         let (op, next_substate) = movement.unwrap();
         alignment.push(op);

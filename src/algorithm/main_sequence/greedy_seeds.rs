@@ -1,6 +1,6 @@
 use crate::algorithm::{
     get_partitioned_subtext,
-    scoring::{AffineScoring, TScore},
+    scoring::{affine_scoring::AffineScoring, TScore},
     seed_selection::select_seeds,
     DiffOp, PartitionedText,
 };

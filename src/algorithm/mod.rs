@@ -1,4 +1,5 @@
 pub mod benchmark;
+mod dp_substate_vec;
 mod dynamic_programming;
 mod fragment_selection;
 mod main_sequence;

@@ -1,14 +1,15 @@
 use crate::algorithm::{
-    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, ScoreState, TScore},
+    dp_substate_vec::DpStateVec,
+    scoring::{AlignmentSliceScoring, DpSubstate, TScore},
     DiffOp,
 };
 
-fn compute_dp_matrix<AlignmentScoring: AlignmentScoringMethod>(
-    alignment_scoring: &AlignmentSliceScoring<AlignmentScoring>,
+fn compute_dp_matrix(
+    alignment_scoring: &AlignmentSliceScoring,
     sizes: [usize; 2],
     row_range: usize,
-) -> Vec<Vec<AlignmentScoring::State>> {
-    let mut result = vec![vec![alignment_scoring.starting_state(TScore::NEG_INFINITY); sizes[1] + 1]; row_range];
+) -> Vec<DpStateVec> {
+    let mut result = vec![DpStateVec::new(sizes[1] + 1, alignment_scoring.substates_count()); row_range];
 
     for old_index in 0..=sizes[0] {
         for new_index in 0..=sizes[1] {
@@ -17,12 +18,16 @@ fn compute_dp_matrix<AlignmentScoring: AlignmentScoringMethod>(
             } else {
                 TScore::NEG_INFINITY
             };
-            result[old_index % row_range][new_index] = alignment_scoring.starting_state(default_score);
+            alignment_scoring.set_starting_state(default_score, &mut result[old_index % row_range][new_index]);
+            let mut read_state = vec![DpSubstate::default(); alignment_scoring.substates_count()];
             for op in [DiffOp::Delete, DiffOp::Insert, DiffOp::Match] {
                 if old_index >= op.movement()[0] && new_index >= op.movement()[1] {
+                    read_state.clone_from_slice(
+                        &result[(old_index - op.movement()[0]) % row_range][new_index - op.movement()[1]],
+                    );
                     alignment_scoring.consider_step(
                         [old_index, new_index],
-                        result[(old_index - op.movement()[0]) % row_range][new_index - op.movement()[1]].clone(),
+                        &read_state,
                         &mut result[old_index % row_range][new_index],
                         op,
                     )
@@ -34,17 +39,14 @@ fn compute_dp_matrix<AlignmentScoring: AlignmentScoringMethod>(
     result
 }
 
-pub fn naive_dp<AlignmentScoring: AlignmentScoringMethod>(
-    alignment_scoring: &AlignmentSliceScoring<AlignmentScoring>,
-    sizes: [usize; 2],
-) -> Vec<DiffOp> {
+pub fn naive_dp(alignment_scoring: &AlignmentSliceScoring, sizes: [usize; 2]) -> Vec<DiffOp> {
     let matrix = compute_dp_matrix(alignment_scoring, sizes, sizes[0] + 1);
 
     let mut best_substate = 0;
-    let final_scores: Vec<TScore> = (0..AlignmentScoring::State::SUBSTATES_COUNT)
+    let final_scores: Vec<TScore> = (0..alignment_scoring.substates_count())
         .map(|substate| alignment_scoring.substate_score(&matrix[sizes[0]][sizes[1]], substate, [sizes[0], sizes[1]]))
         .collect();
-    for substate in 1..AlignmentScoring::State::SUBSTATES_COUNT {
+    for substate in 1..alignment_scoring.substates_count() {
         if final_scores[substate] > final_scores[best_substate] {
             best_substate = substate;
         }
@@ -54,9 +56,7 @@ pub fn naive_dp<AlignmentScoring: AlignmentScoringMethod>(
     let mut substate = best_substate;
     let mut indices = sizes;
     while indices[0] > 0 || indices[1] > 0 {
-        let (op, next_substate) = alignment_scoring
-            .substate_movement(&matrix[indices[0]][indices[1]], substate)
-            .unwrap();
+        let (op, next_substate) = matrix[indices[0]][indices[1]][substate].previous_step.unwrap();
         substate = next_substate;
         result.push(op);
         for side in 0..2 {
@@ -67,19 +67,16 @@ pub fn naive_dp<AlignmentScoring: AlignmentScoringMethod>(
     result
 }
 
-pub fn compute_score<AlignmentScoring: AlignmentScoringMethod>(
-    alignment_scoring: &AlignmentSliceScoring<AlignmentScoring>,
-    sizes: [usize; 2],
-) -> TScore {
+pub fn compute_score(alignment_scoring: &AlignmentSliceScoring, sizes: [usize; 2]) -> TScore {
     let matrix = compute_dp_matrix(alignment_scoring, sizes, 2);
-    let scores: Vec<TScore> = (0..AlignmentScoring::State::SUBSTATES_COUNT)
+    let scores: Vec<TScore> = (0..alignment_scoring.substates_count())
         .map(|substate| {
             alignment_scoring.substate_score(&matrix[sizes[0] % 2][sizes[1]], substate, [sizes[0], sizes[1]])
         })
         .collect();
 
     let mut result = scores[0];
-    for substate in 1..AlignmentScoring::State::SUBSTATES_COUNT {
+    for substate in 1..alignment_scoring.substates_count() {
         if scores[substate] > result {
             result = scores[substate];
         }
