@@ -5,7 +5,7 @@ use super::{
     FragmentBoundsScoringMethod, TScore,
 };
 
-pub struct AffineScoring {
+pub struct AffineWordScoring {
     // these matrices should be constant, but Rust doesn't allow floating point operations in const expressions
     transition_matrix: [[TScore; 3]; 3],
     transition_matrix_newline: [[TScore; 3]; 3],
@@ -19,7 +19,7 @@ pub struct AffineScoring {
     bound_score: Vec<[Vec<TScore>; 2]>,
 }
 
-impl AffineScoring {
+impl AffineWordScoring {
     const MATCH: usize = 0;
     const GAP: usize = 1;
     const WHITE_GAP: usize = 2;
@@ -51,7 +51,7 @@ impl AffineScoring {
     const BASE_BOUND_SCORE: TScore = -1.0;
     const LINE_CONTENT_COEF: TScore = -0.8;
 
-    pub(in crate::algorithm) fn new(texts: &[[PartitionedText; 2]]) -> AffineScoring {
+    pub(in crate::algorithm) fn new(texts: &[[PartitionedText; 2]]) -> AffineWordScoring {
         let information_values = information_values(texts);
 
         let mut is_white = vec![];
@@ -133,7 +133,7 @@ impl AffineScoring {
             Self::P_END_WHITE_GAP * Self::NEWLINE_STATE_CHANGE_COEF,
         );
 
-        AffineScoring {
+        AffineWordScoring {
             transition_matrix,
             transition_matrix_newline,
             symbols: internalize_words(texts),
@@ -246,7 +246,7 @@ impl AffineScoring {
     }
 }
 
-impl AlignmentScoringMethod for AffineScoring {
+impl AlignmentScoringMethod for AffineWordScoring {
     fn substates_count(&self) -> usize {
         3
     }
@@ -366,7 +366,7 @@ impl AlignmentScoringMethod for AffineScoring {
     }
 }
 
-impl FragmentBoundsScoringMethod for AffineScoring {
+impl FragmentBoundsScoringMethod for AffineWordScoring {
     const SUPERSECTION_THRESHOLD: TScore = 5.0;
     const MOVED_SUPERSECTION_THRESHOLD: TScore = 10.0;
 

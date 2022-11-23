@@ -5,7 +5,7 @@ use super::{
     DiffOp, MainSequenceAlgorithm, PartitionedText,
 };
 
-type AlignmentScoring = super::scoring::affine_scoring::AffineScoring;
+type AlignmentScoring = super::scoring::affine_scoring::AffineWordScoring;
 
 pub struct PreprocessedTestcase<'a> {
     text_strings: [&'a str; 2],

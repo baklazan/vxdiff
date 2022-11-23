@@ -1,6 +1,6 @@
 use crate::algorithm::{
     get_partitioned_subtext,
-    scoring::{affine_scoring::AffineScoring, TScore},
+    scoring::{affine_scoring::AffineWordScoring, TScore},
     seed_selection::select_seeds,
     DiffOp, PartitionedText,
 };
@@ -49,7 +49,7 @@ fn greedy_seeds_recursive(texts: &[[PartitionedText; 2]], prefix_scores: &[TScor
 
 pub(in crate::algorithm) fn greedy_seeds(
     texts: &[PartitionedText; 2],
-    scoring: &AffineScoring,
+    scoring: &AffineWordScoring,
     file_ids: [usize; 2],
 ) -> Vec<DiffOp> {
     let mut result = vec![];

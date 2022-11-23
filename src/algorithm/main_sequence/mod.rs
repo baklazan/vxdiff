@@ -1,5 +1,5 @@
 use super::{
-    scoring::{affine_scoring::AffineScoring, AlignmentSliceScoring, DpDirection, InputSliceBounds},
+    scoring::{affine_scoring::AffineWordScoring, AlignmentSliceScoring, DpDirection, InputSliceBounds},
     AlignedFragment, MainSequenceAlgorithm, PartitionedText,
 };
 
@@ -10,7 +10,7 @@ pub(super) fn main_sequence_fragments(
     texts: &[[PartitionedText; 2]],
     algorithm: MainSequenceAlgorithm,
 ) -> Vec<(AlignedFragment, bool)> {
-    let scoring = AffineScoring::new(texts);
+    let scoring = AffineWordScoring::new(texts);
     let mut result: Vec<(AlignedFragment, bool)> = vec![];
     for (file_id, file_texts) in texts.iter().enumerate() {
         let slice = InputSliceBounds {

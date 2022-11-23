@@ -1,6 +1,6 @@
 use float_ord::FloatOrd;
 
-use crate::algorithm::{dynamic_programming::extend_seed, scoring::affine_scoring::AffineScoring};
+use crate::algorithm::{dynamic_programming::extend_seed, scoring::affine_scoring::AffineWordScoring};
 
 use super::{
     scoring::TScore,
@@ -59,7 +59,7 @@ fn remove_covered_parts(seed: Seed, covered: [&BTreeSet<(usize, usize)>; 2]) -> 
 
 pub(super) fn greedy_fragments(texts: &[[PartitionedText; 2]]) -> Vec<(AlignedFragment, bool)> {
     let seeds = select_seeds(texts);
-    let scoring = AffineScoring::new(&texts);
+    let scoring = AffineWordScoring::new(&texts);
     let mut prefix_scores = vec![];
     for file_id in 0..texts.len() {
         let mut file_prefix_scores = vec![0.0];
