@@ -65,28 +65,28 @@ pub enum MainSequenceAlgorithm {
 
 pub fn compute_diff(files: &[[&str; 2]], algorithm: DiffAlgorithm) -> Diff {
     let mut word_bounds = vec![];
-    let mut texts = vec![];
+    let mut text_words = vec![];
 
     for file in files {
         let bounds = [partition_into_words(file[0]), partition_into_words(file[1])];
         word_bounds.push(bounds);
     }
     for (file_id, file) in files.iter().enumerate() {
-        let file_texts: [PartitionedText; 2] = [
+        let file_text_words: [PartitionedText; 2] = [
             PartitionedText {
                 text: file[0],
-                word_bounds: &word_bounds[file_id][0],
+                part_bounds: &word_bounds[file_id][0],
             },
             PartitionedText {
                 text: file[1],
-                word_bounds: &word_bounds[file_id][1],
+                part_bounds: &word_bounds[file_id][1],
             },
         ];
-        texts.push(file_texts);
+        text_words.push(file_text_words);
     }
 
-    let aligned_fragments = compute_fragments(&texts, algorithm);
-    postprocess::build_diff(&texts, aligned_fragments)
+    let aligned_fragments = compute_fragments(&text_words, algorithm);
+    postprocess::build_diff(&text_words, aligned_fragments)
 }
 
 struct AlignedFragment {
@@ -99,32 +99,34 @@ struct AlignedFragment {
 #[derive(Default, Clone)]
 struct PartitionedText<'a> {
     pub text: &'a str,
-    pub word_bounds: &'a [usize],
+    pub part_bounds: &'a [usize],
 }
 
 impl<'a> PartitionedText<'a> {
-    pub fn word_count(&self) -> usize {
-        if self.word_bounds.is_empty() {
+    pub fn part_count(&self) -> usize {
+        if self.part_bounds.is_empty() {
             0
         } else {
-            self.word_bounds.len() - 1
+            self.part_bounds.len() - 1
         }
     }
-    pub fn get_word(&self, index: usize) -> &'a str {
-        &self.text[self.word_bounds[index]..self.word_bounds[index + 1]]
+    pub fn get_part(&self, index: usize) -> &'a str {
+        &self.text[self.part_bounds[index]..self.part_bounds[index + 1]]
     }
 }
 
-fn get_partitioned_subtext<'a>(text: &PartitionedText<'a>, word_range: Range<usize>) -> PartitionedText<'a> {
+fn get_partitioned_subtext<'a>(text: &PartitionedText<'a>, part_range: Range<usize>) -> PartitionedText<'a> {
     PartitionedText {
         text: text.text,
-        word_bounds: &text.word_bounds[word_range.start..=word_range.end],
+        part_bounds: &text.part_bounds[part_range.start..=part_range.end],
     }
 }
 
-fn compute_fragments(texts: &[[PartitionedText; 2]], algorithm: DiffAlgorithm) -> Vec<(AlignedFragment, bool)> {
+fn compute_fragments(text_words: &[[PartitionedText; 2]], algorithm: DiffAlgorithm) -> Vec<(AlignedFragment, bool)> {
     match algorithm {
-        DiffAlgorithm::MovingSeeds => greedy_fragments(texts),
-        DiffAlgorithm::MainSequence(main_sequence_algorithm) => main_sequence_fragments(texts, main_sequence_algorithm),
+        DiffAlgorithm::MovingSeeds => greedy_fragments(text_words),
+        DiffAlgorithm::MainSequence(main_sequence_algorithm) => {
+            main_sequence_fragments(text_words, main_sequence_algorithm)
+        }
     }
 }

@@ -2,7 +2,7 @@ use super::{get_partitioned_subtext, AlignedFragment, Diff, DiffOp, FileDiff, Pa
 use std::ops::Range;
 
 fn highlighted_subsegments<'a>(
-    text: &PartitionedText<'a>,
+    text_words: &PartitionedText<'a>,
     word_indices_and_highlight: &[(bool, usize)],
 ) -> SectionSide {
     for i in 1..word_indices_and_highlight.len() {
@@ -28,7 +28,7 @@ fn highlighted_subsegments<'a>(
             (true, Some(_)) => {}
             (true, None) => current_highlight_from = Some(word_index),
             (false, Some(start_index)) => {
-                highlight_ranges.push(text.word_bounds[start_index]..text.word_bounds[word_index]);
+                highlight_ranges.push(text_words.part_bounds[start_index]..text_words.part_bounds[word_index]);
                 current_highlight_from = None;
             }
             (false, None) => {}
@@ -36,12 +36,13 @@ fn highlighted_subsegments<'a>(
     }
 
     SectionSide {
-        byte_range: text.word_bounds[word_indices_and_highlight[0].1]..text.word_bounds[last_word_index + 1],
+        byte_range: text_words.part_bounds[word_indices_and_highlight[0].1]
+            ..text_words.part_bounds[last_word_index + 1],
         highlight_ranges,
     }
 }
 
-fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> Vec<Section> {
+fn make_sections<'a>(text_words: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> Vec<Section> {
     let mut result = vec![];
 
     let mut section_contents: [Vec<(bool, usize)>; 2] = [vec![], vec![]];
@@ -58,7 +59,7 @@ fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> 
 
         for side in 0..2 {
             for _i in 0..used_words[side] {
-                is_newline = texts[side].get_word(word_indices[side]) == "\n";
+                is_newline = text_words[side].get_part(word_indices[side]) == "\n";
                 section_contents[side].push((!is_match, word_indices[side]));
                 word_indices[side] += 1;
                 if is_newline {
@@ -70,7 +71,7 @@ fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> 
         if is_match && !section_contains_match && !is_newline {
             if current_line_start[0] != 0 || current_line_start[1] != 0 {
                 let sides = [0, 1].map(|side| {
-                    highlighted_subsegments(&texts[side], &section_contents[side][0..current_line_start[side]])
+                    highlighted_subsegments(&text_words[side], &section_contents[side][0..current_line_start[side]])
                 });
                 result.push(Section { sides, equal: false });
                 for side in 0..2 {
@@ -83,7 +84,7 @@ fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> 
         section_contains_match |= is_match;
 
         if (is_match && is_newline) || is_last {
-            let sides = [0, 1].map(|side| highlighted_subsegments(&texts[side], &section_contents[side]));
+            let sides = [0, 1].map(|side| highlighted_subsegments(&text_words[side], &section_contents[side]));
             let equal = sides.iter().all(|side| side.highlight_ranges.is_empty());
             result.push(Section { sides, equal });
             section_contents = [vec![], vec![]];
@@ -94,14 +95,23 @@ fn make_sections<'a>(texts: &[PartitionedText<'a>; 2], alignment: &[DiffOp]) -> 
     result
 }
 
-pub(super) fn build_diff<'a>(texts: &[[PartitionedText<'a>; 2]], fragments: Vec<(AlignedFragment, bool)>) -> Diff {
+pub(super) fn build_diff<'a>(
+    texts_words: &[[PartitionedText<'a>; 2]],
+    fragments: Vec<(AlignedFragment, bool)>,
+) -> Diff {
     let mut sections = vec![];
     let mut sections_ranges_from_fragment: Vec<Range<usize>> = vec![];
 
     for (fragment, _is_main) in fragments.iter() {
         let parts = [
-            get_partitioned_subtext(&texts[fragment.file_ids[0]][0], fragment.starts[0]..fragment.ends[0]),
-            get_partitioned_subtext(&texts[fragment.file_ids[1]][1], fragment.starts[1]..fragment.ends[1]),
+            get_partitioned_subtext(
+                &texts_words[fragment.file_ids[0]][0],
+                fragment.starts[0]..fragment.ends[0],
+            ),
+            get_partitioned_subtext(
+                &texts_words[fragment.file_ids[1]][1],
+                fragment.starts[1]..fragment.ends[1],
+            ),
         ];
         let old_len = sections.len();
         sections.append(&mut make_sections(&parts, &fragment.alignment));
@@ -114,7 +124,7 @@ pub(super) fn build_diff<'a>(texts: &[[PartitionedText<'a>; 2]], fragments: Vec<
                                    sections: &mut Vec<Section>,
                                    file_ops: &mut Vec<(DiffOp, usize)>| {
         let mut parts: [PartitionedText; 2] = Default::default();
-        parts[side] = get_partitioned_subtext(&texts[file_id][side], word_range.clone());
+        parts[side] = get_partitioned_subtext(&texts_words[file_id][side], word_range.clone());
         let indel_op = [DiffOp::Delete, DiffOp::Insert][side];
         let indel_alignment = vec![indel_op; word_range.len()];
         let mut indel_sections = make_sections(&parts, &indel_alignment);
@@ -147,7 +157,7 @@ pub(super) fn build_diff<'a>(texts: &[[PartitionedText<'a>; 2]], fragments: Vec<
             }
         };
 
-    let mut fragment_orders = vec![[vec![], vec![]]; texts.len()];
+    let mut fragment_orders = vec![[vec![], vec![]]; texts_words.len()];
     for side in 0..2 {
         for (id, (fragment, _is_main)) in fragments.iter().enumerate() {
             let file_id = fragment.file_ids[side];
@@ -162,7 +172,7 @@ pub(super) fn build_diff<'a>(texts: &[[PartitionedText<'a>; 2]], fragments: Vec<
 
     let mut file_diffs = vec![];
 
-    for file_id in 0..texts.len() {
+    for file_id in 0..texts_words.len() {
         let mut file_ops = vec![];
         let mut word_indices = [0, 0];
         let mut fragment_order_indices = [0, 0];
@@ -196,7 +206,7 @@ pub(super) fn build_diff<'a>(texts: &[[PartitionedText<'a>; 2]], fragments: Vec<
                 let next_fragment_start = if fragment_order_indices[side] < fragment_order[side].len() {
                     fragments[fragment_order_side[fragment_order_indices[side]].1].0.starts[side]
                 } else {
-                    texts[file_id][side].word_count()
+                    texts_words[file_id][side].part_count()
                 };
                 if word_indices[side] < next_fragment_start {
                     make_unaligned_sections(

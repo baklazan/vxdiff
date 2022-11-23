@@ -6,36 +6,36 @@ use super::{
 pub mod greedy_seeds;
 pub mod naive_dp;
 
-fn slices_for_files(texts: &[[PartitionedText; 2]]) -> Vec<InputSliceBounds> {
+fn slices_for_files(text_words: &[[PartitionedText; 2]]) -> Vec<InputSliceBounds> {
     let mut result = vec![];
-    for (file_id, file_texts) in texts.iter().enumerate() {
+    for (file_id, file_text_words) in text_words.iter().enumerate() {
         result.push(InputSliceBounds {
             start: [0, 0],
             file_ids: [file_id, file_id],
             direction: DpDirection::Forward,
-            size: [0, 1].map(|side| file_texts[side].word_count()),
+            size: [0, 1].map(|side| file_text_words[side].part_count()),
         });
     }
     result
 }
 
 pub(super) fn main_sequence_fragments(
-    texts: &[[PartitionedText; 2]],
+    text_words: &[[PartitionedText; 2]],
     algorithm: MainSequenceAlgorithm,
 ) -> Vec<(AlignedFragment, bool)> {
-    let scoring = AffineWordScoring::new(texts);
+    let scoring = AffineWordScoring::new(text_words);
 
     let mut alignments = match algorithm {
-        MainSequenceAlgorithm::Naive => naive_dp::naive_dp_all_files(texts, &scoring),
-        MainSequenceAlgorithm::Seeds => greedy_seeds::greedy_seeds(texts, &scoring),
+        MainSequenceAlgorithm::Naive => naive_dp::naive_dp_all_files(text_words, &scoring),
+        MainSequenceAlgorithm::Seeds => greedy_seeds::greedy_seeds(text_words, &scoring),
     };
 
     let mut result: Vec<(AlignedFragment, bool)> = vec![];
-    for (file_id, file_texts) in texts.iter().enumerate() {
+    for (file_id, file_texts) in text_words.iter().enumerate() {
         result.push((
             AlignedFragment {
                 starts: [0, 0],
-                ends: [0, 1].map(|side| file_texts[side].word_count()),
+                ends: [0, 1].map(|side| file_texts[side].part_count()),
                 alignment: std::mem::take(&mut alignments[file_id]),
                 file_ids: [file_id, file_id],
             },

@@ -36,7 +36,7 @@ struct HashFunctionParams {
     pub factor: u64,
 }
 
-fn k_word_hashes(text: &PartitionedText, k: usize, f: &HashFunctionParams) -> Vec<u64> {
+fn k_word_hashes(text_words: &PartitionedText, k: usize, f: &HashFunctionParams) -> Vec<u64> {
     const BASE: u64 = 257;
 
     let mut base_powers = vec![1];
@@ -50,15 +50,15 @@ fn k_word_hashes(text: &PartitionedText, k: usize, f: &HashFunctionParams) -> Ve
     let mut prefix_values = vec![0];
     let mut hashes = vec![];
     let mut current_prefix_value = 0;
-    for i in 0..text.word_count() {
-        for &b in text.get_word(i).as_bytes() {
+    for i in 0..text_words.part_count() {
+        for &b in text_words.get_part(i).as_bytes() {
             current_prefix_value *= BASE;
             current_prefix_value += u64::from(b);
             current_prefix_value %= f.mod_p;
         }
         prefix_values.push(current_prefix_value);
         if i + 1 >= k {
-            let k_word_length = text.word_bounds[i + 1] - text.word_bounds[i + 1 - k];
+            let k_word_length = text_words.part_bounds[i + 1] - text_words.part_bounds[i + 1 - k];
             let value = (current_prefix_value + f.mod_p
                 - (prefix_values[i + 1 - k] * base_power(k_word_length)) % f.mod_p)
                 % f.mod_p;
@@ -68,7 +68,7 @@ fn k_word_hashes(text: &PartitionedText, k: usize, f: &HashFunctionParams) -> Ve
     hashes
 }
 
-pub(super) fn select_seeds(texts: &[[PartitionedText; 2]]) -> Vec<Seed> {
+pub(super) fn select_seeds(words: &[[PartitionedText; 2]]) -> Vec<Seed> {
     const K: usize = 10;
     const MOD_P: u64 = 1000000009;
     let mut rng = rand::thread_rng();
@@ -77,12 +77,12 @@ pub(super) fn select_seeds(texts: &[[PartitionedText; 2]]) -> Vec<Seed> {
 
     let mut hashes = vec![];
     let mut hashtable_size = 0;
-    for file_texts in texts {
+    for file_words in words {
         hashes.push([
-            k_word_hashes(&file_texts[0], K, &hash_function),
-            k_word_hashes(&file_texts[1], K, &hash_function),
+            k_word_hashes(&file_words[0], K, &hash_function),
+            k_word_hashes(&file_words[1], K, &hash_function),
         ]);
-        hashtable_size += file_texts[0].word_count();
+        hashtable_size += file_words[0].part_count();
     }
 
     if hashtable_size == 0 {
@@ -90,7 +90,7 @@ pub(super) fn select_seeds(texts: &[[PartitionedText; 2]]) -> Vec<Seed> {
     }
 
     let mut old_starts_by_hash = vec![vec![]; hashtable_size];
-    for file_id in 0..texts.len() {
+    for file_id in 0..words.len() {
         for (i, hash) in hashes[file_id][0].iter().enumerate() {
             old_starts_by_hash[usize::try_from(*hash).unwrap() % hashtable_size].push((i, file_id, *hash));
         }
@@ -98,7 +98,7 @@ pub(super) fn select_seeds(texts: &[[PartitionedText; 2]]) -> Vec<Seed> {
 
     let mut result = vec![];
 
-    for new_file_id in 0..texts.len() {
+    for new_file_id in 0..words.len() {
         let mut open_seed_starts: Vec<(usize, i64, [usize; 2])> = vec![];
         for (new_start, &hash) in hashes[new_file_id][1].iter().enumerate() {
             let mut new_open_seed_starts = vec![];
@@ -150,7 +150,7 @@ pub(super) fn select_seeds(texts: &[[PartitionedText; 2]]) -> Vec<Seed> {
         }
         for open_seed in open_seed_starts {
             let (old_file_id, _, seed_start) = open_seed;
-            let seed_length = texts[new_file_id][1].word_count() - seed_start[1];
+            let seed_length = words[new_file_id][1].part_count() - seed_start[1];
             result.push(Seed {
                 start: seed_start,
                 end: [seed_start[0] + seed_length, seed_start[1] + seed_length],

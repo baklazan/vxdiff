@@ -82,10 +82,10 @@ pub fn compute_score(alignment_scoring: &AlignmentSliceScoring) -> TScore {
 }
 
 pub(in crate::algorithm) fn naive_dp_all_files(
-    texts: &[[PartitionedText; 2]],
+    text_words: &[[PartitionedText; 2]],
     scoring: &dyn AlignmentScoringMethod,
 ) -> Vec<Vec<DiffOp>> {
-    slices_for_files(texts)
+    slices_for_files(text_words)
         .iter()
         .map(|&slice| naive_dp(&AlignmentSliceScoring { slice, scoring }))
         .collect()

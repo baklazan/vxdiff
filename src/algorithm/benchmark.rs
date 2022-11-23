@@ -20,7 +20,7 @@ impl<'a> PreprocessedTestcase<'a> {
 
         let partitioned_texts = [[0, 1].map(|side| PartitionedText {
             text: text_strings[side],
-            word_bounds: &bounds[side],
+            part_bounds: &bounds[side],
         })];
         let scoring = AlignmentScoring::new(&partitioned_texts);
 
@@ -37,14 +37,14 @@ type Algorithm = fn(&[[PartitionedText; 2]], &AlignmentScoring) -> Vec<Vec<DiffO
 fn get_algorithm(algorithm: MainSequenceAlgorithm) -> Algorithm {
     match algorithm {
         MainSequenceAlgorithm::Seeds => greedy_seeds::greedy_seeds,
-        MainSequenceAlgorithm::Naive => |texts, scoring| naive_dp::naive_dp_all_files(texts, scoring),
+        MainSequenceAlgorithm::Naive => |text_words, scoring| naive_dp::naive_dp_all_files(text_words, scoring),
     }
 }
 
 pub fn run_algorithm(input: &PreprocessedTestcase, algorithm: MainSequenceAlgorithm) -> f64 {
     let partitioned_texts = [[0, 1].map(|side| PartitionedText {
         text: &input.text_strings[side],
-        word_bounds: &input.bounds[side],
+        part_bounds: &input.bounds[side],
     })];
     let alignment = get_algorithm(algorithm)(&partitioned_texts, &input.scoring).remove(0);
     input.scoring.alignment_score(&alignment, [0, 0]).unwrap()
@@ -53,13 +53,13 @@ pub fn run_algorithm(input: &PreprocessedTestcase, algorithm: MainSequenceAlgori
 pub fn compute_optimal_score(input: &PreprocessedTestcase) -> f64 {
     let partitioned_texts = [0, 1].map(|side| PartitionedText {
         text: &input.text_strings[side],
-        word_bounds: &input.bounds[side],
+        part_bounds: &input.bounds[side],
     });
     let slice = InputSliceBounds {
         file_ids: [0, 0],
         start: [0, 0],
         direction: DpDirection::Forward,
-        size: [0, 1].map(|side| partitioned_texts[side].word_count()),
+        size: [0, 1].map(|side| partitioned_texts[side].part_count()),
     };
     naive_dp::compute_score(&AlignmentSliceScoring {
         slice,

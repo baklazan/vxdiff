@@ -3,7 +3,7 @@ use std::cell::Cell;
 use crate::algorithm::{DiffOp, PartitionedText};
 
 use super::{
-    information_values, internalize_words, AlignmentScoringMethod, DpDirection, DpSubstate,
+    information_values, internalize_parts, AlignmentScoringMethod, DpDirection, DpSubstate,
     FragmentBoundsScoringMethod, TScore,
 };
 
@@ -53,20 +53,20 @@ impl AffineWordScoring {
     const BASE_BOUND_SCORE: TScore = -1.0;
     const LINE_CONTENT_COEF: TScore = -0.8;
 
-    pub(in crate::algorithm) fn new(texts: &[[PartitionedText; 2]]) -> AffineWordScoring {
-        let information_values = information_values(texts);
+    pub(in crate::algorithm) fn new(text_words: &[[PartitionedText; 2]]) -> AffineWordScoring {
+        let information_values = information_values(text_words);
 
         let mut is_white = vec![];
         let mut line_splits_at = vec![];
         let mut bound_score = vec![];
         let mut nearest_line_split_forward = vec![];
         let mut nearest_line_split_backward = vec![];
-        for (file_id, file_texts) in texts.iter().enumerate() {
+        for (file_id, file_text_words) in text_words.iter().enumerate() {
             let mut file_is_white = [vec![], vec![]];
             let mut file_line_splits_at = [vec![true], vec![true]];
             let mut file_bound_score = [
-                vec![TScore::NEG_INFINITY; file_texts[0].word_count() + 1],
-                vec![TScore::NEG_INFINITY; file_texts[1].word_count() + 1],
+                vec![TScore::NEG_INFINITY; file_text_words[0].part_count() + 1],
+                vec![TScore::NEG_INFINITY; file_text_words[1].part_count() + 1],
             ];
             let mut file_nearest_split_forward = [vec![], vec![]];
             let mut file_nearest_split_backward = [vec![], vec![]];
@@ -74,8 +74,8 @@ impl AffineWordScoring {
                 let mut this_line_value = 0.0;
                 let mut last_line_value = 0.0;
                 let mut last_line_end = 0;
-                for i in 0..file_texts[side].word_count() {
-                    let word = file_texts[side].get_word(i);
+                for i in 0..file_text_words[side].part_count() {
+                    let word = file_text_words[side].get_part(i);
                     let mut white = true;
                     for c in word.chars() {
                         if !c.is_whitespace() {
@@ -85,7 +85,7 @@ impl AffineWordScoring {
                     file_is_white[side].push(white);
 
                     this_line_value += information_values[file_id][side][i];
-                    if word == "\n" || i + 1 >= file_texts[side].word_count() {
+                    if word == "\n" || i + 1 >= file_text_words[side].part_count() {
                         file_bound_score[side][last_line_end] = Self::BASE_BOUND_SCORE
                             + TScore::min(this_line_value, last_line_value) * Self::LINE_CONTENT_COEF;
                         last_line_value = this_line_value;
@@ -138,7 +138,7 @@ impl AffineWordScoring {
         AffineWordScoring {
             transition_matrix,
             transition_matrix_newline,
-            symbols: internalize_words(texts),
+            symbols: internalize_parts(text_words),
             information_values,
             is_white,
             line_splits_at,

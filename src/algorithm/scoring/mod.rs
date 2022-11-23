@@ -144,14 +144,14 @@ impl<'a> AlignmentSliceScoring<'a> {
     }
 }
 
-fn information_values(texts: &[[PartitionedText; 2]]) -> Vec<[Vec<TScore>; 2]> {
+fn information_values(text_parts: &[[PartitionedText; 2]]) -> Vec<[Vec<TScore>; 2]> {
     use std::collections::HashMap;
 
     let mut char_frequencies: HashMap<char, usize> = HashMap::new();
     let mut total_chars: usize = 0;
 
-    for file_texts in texts {
-        for side_text in file_texts {
+    for file_text_parts in text_parts {
+        for side_text in file_text_parts {
             for c in side_text.text.chars() {
                 char_frequencies.insert(c, char_frequencies.get(&c).unwrap_or(&0) + 1);
                 total_chars += 1;
@@ -160,11 +160,11 @@ fn information_values(texts: &[[PartitionedText; 2]]) -> Vec<[Vec<TScore>; 2]> {
     }
 
     let mut result = vec![];
-    for file_texts in texts {
+    for file_text_parts in text_parts {
         let mut file_values = [vec![], vec![]];
-        for (side, side_text) in file_texts.iter().enumerate() {
-            for i in 0..side_text.word_count() {
-                let word = side_text.get_word(i);
+        for (side, side_text) in file_text_parts.iter().enumerate() {
+            for i in 0..side_text.part_count() {
+                let word = side_text.get_part(i);
                 let mut score: f64 = 0.0;
                 for c in word.chars() {
                     let char_frequency = (*char_frequencies.get(&c).unwrap() as f64) / total_chars as f64;
@@ -178,13 +178,13 @@ fn information_values(texts: &[[PartitionedText; 2]]) -> Vec<[Vec<TScore>; 2]> {
     result
 }
 
-fn internalize_words(texts: &[[PartitionedText; 2]]) -> Vec<[Vec<string_interner::symbol::SymbolU32>; 2]> {
-    let mut symbols = vec![[vec![], vec![]]; texts.len()];
+fn internalize_parts(text_parts: &[[PartitionedText; 2]]) -> Vec<[Vec<string_interner::symbol::SymbolU32>; 2]> {
+    let mut symbols = vec![[vec![], vec![]]; text_parts.len()];
     let mut interner = StringInterner::default();
-    for (file_id, file_texts) in texts.iter().enumerate() {
-        for (side, side_text) in file_texts.iter().enumerate() {
-            for i in 0..side_text.word_count() {
-                let word = side_text.get_word(i);
+    for (file_id, file_text_parts) in text_parts.iter().enumerate() {
+        for (side, side_text) in file_text_parts.iter().enumerate() {
+            for i in 0..side_text.part_count() {
+                let word = side_text.get_part(i);
                 symbols[file_id][side].push(interner.get_or_intern(word));
             }
         }

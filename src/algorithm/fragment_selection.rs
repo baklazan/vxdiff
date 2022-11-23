@@ -57,11 +57,11 @@ fn remove_covered_parts(seed: Seed, covered: [&BTreeSet<(usize, usize)>; 2]) -> 
     result
 }
 
-pub(super) fn greedy_fragments(texts: &[[PartitionedText; 2]]) -> Vec<(AlignedFragment, bool)> {
-    let seeds = select_seeds(texts);
-    let scoring = AffineWordScoring::new(&texts);
+pub(super) fn greedy_fragments(text_words: &[[PartitionedText; 2]]) -> Vec<(AlignedFragment, bool)> {
+    let seeds = select_seeds(text_words);
+    let scoring = AffineWordScoring::new(&text_words);
     let mut prefix_scores = vec![];
-    for file_id in 0..texts.len() {
+    for file_id in 0..text_words.len() {
         let mut file_prefix_scores = vec![0.0];
         let mut score = 0.0;
         for value in scoring.information_values[file_id][0].iter() {
@@ -80,7 +80,7 @@ pub(super) fn greedy_fragments(texts: &[[PartitionedText; 2]]) -> Vec<(AlignedFr
         }
     }
 
-    let files_count = texts.len();
+    let files_count = text_words.len();
     let mut covered: Vec<[BTreeSet<(usize, usize)>; 2]> = vec![[BTreeSet::new(), BTreeSet::new()]; files_count];
     let mut main_sequence_indices: Vec<BTreeSet<(usize, usize)>> = vec![BTreeSet::new(); files_count];
     let mut result = vec![];
@@ -108,8 +108,8 @@ pub(super) fn greedy_fragments(texts: &[[PartitionedText; 2]]) -> Vec<(AlignedFr
         let seed = after_removal[0];
         let mut bounds_before = [0, 0];
         let mut bounds_after = [
-            texts[seed.file_ids[0]][0].word_count(),
-            texts[seed.file_ids[1]][1].word_count(),
+            text_words[seed.file_ids[0]][0].part_count(),
+            text_words[seed.file_ids[1]][1].part_count(),
         ];
         use std::ops::Bound;
         for side in 0..2 {
