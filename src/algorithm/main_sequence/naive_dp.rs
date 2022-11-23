@@ -1,8 +1,10 @@
 use crate::algorithm::{
     dp_substate_vec::DpStateVec,
-    scoring::{AlignmentSliceScoring, DpSubstate, TScore},
-    DiffOp,
+    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, DpSubstate, TScore},
+    DiffOp, PartitionedText,
 };
+
+use super::slices_for_files;
 
 fn compute_dp_matrix(alignment_scoring: &AlignmentSliceScoring, row_range: usize) -> Vec<DpStateVec> {
     let sizes = &alignment_scoring.slice.size;
@@ -81,4 +83,14 @@ pub fn compute_score(alignment_scoring: &AlignmentSliceScoring) -> TScore {
         }
     }
     result
+}
+
+pub(in crate::algorithm) fn naive_dp_all_files(
+    texts: &[[PartitionedText; 2]],
+    scoring: &dyn AlignmentScoringMethod,
+) -> Vec<Vec<DiffOp>> {
+    slices_for_files(texts)
+        .iter()
+        .map(|&slice| naive_dp(&AlignmentSliceScoring { slice, scoring }))
+        .collect()
 }

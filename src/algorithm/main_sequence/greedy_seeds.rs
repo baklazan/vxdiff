@@ -48,19 +48,20 @@ fn greedy_seeds_recursive(texts: &[[PartitionedText; 2]], prefix_scores: &[TScor
 }
 
 pub(in crate::algorithm) fn greedy_seeds(
-    texts: &[PartitionedText; 2],
+    texts: &[[PartitionedText; 2]],
     scoring: &AffineWordScoring,
-    file_ids: [usize; 2],
-) -> Vec<DiffOp> {
+) -> Vec<Vec<DiffOp>> {
     let mut result = vec![];
-
-    let mut prefix_scores = vec![0.0];
-    let mut score = 0.0;
-    for value in scoring.information_values[file_ids[0]][0].iter() {
-        score += value;
-        prefix_scores.push(score);
+    for (file_id, file_texts) in texts.iter().enumerate() {
+        let mut alignment = vec![];
+        let mut prefix_scores = vec![0.0];
+        let mut score = 0.0;
+        for value in scoring.information_values[file_id][0].iter() {
+            score += value;
+            prefix_scores.push(score);
+        }
+        greedy_seeds_recursive(&[file_texts.clone()], &prefix_scores[..], &mut alignment);
+        result.push(alignment);
     }
-
-    greedy_seeds_recursive(&[[texts[0].clone(), texts[1].clone()]], &prefix_scores[..], &mut result);
     result
 }

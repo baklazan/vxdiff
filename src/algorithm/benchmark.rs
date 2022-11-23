@@ -32,29 +32,21 @@ impl<'a> PreprocessedTestcase<'a> {
     }
 }
 
-type Algorithm = fn(&[PartitionedText; 2], &AlignmentScoring) -> Vec<DiffOp>;
+type Algorithm = fn(&[[PartitionedText; 2]], &AlignmentScoring) -> Vec<Vec<DiffOp>>;
 
 fn get_algorithm(algorithm: MainSequenceAlgorithm) -> Algorithm {
     match algorithm {
-        MainSequenceAlgorithm::Seeds => |texts, scoring| greedy_seeds::greedy_seeds(texts, scoring, [0, 0]),
-        MainSequenceAlgorithm::Naive => |texts, scoring| {
-            let slice = InputSliceBounds {
-                file_ids: [0, 0],
-                start: [0, 0],
-                direction: DpDirection::Forward,
-                size: [0, 1].map(|side| texts[side].word_count()),
-            };
-            naive_dp::naive_dp(&AlignmentSliceScoring { slice, scoring })
-        },
+        MainSequenceAlgorithm::Seeds => greedy_seeds::greedy_seeds,
+        MainSequenceAlgorithm::Naive => |texts, scoring| naive_dp::naive_dp_all_files(texts, scoring),
     }
 }
 
 pub fn run_algorithm(input: &PreprocessedTestcase, algorithm: MainSequenceAlgorithm) -> f64 {
-    let partitioned_texts = [0, 1].map(|side| PartitionedText {
+    let partitioned_texts = [[0, 1].map(|side| PartitionedText {
         text: &input.text_strings[side],
         word_bounds: &input.bounds[side],
-    });
-    let alignment = get_algorithm(algorithm)(&partitioned_texts, &input.scoring);
+    })];
+    let alignment = get_algorithm(algorithm)(&partitioned_texts, &input.scoring).remove(0);
     input.scoring.alignment_score(&alignment, [0, 0]).unwrap()
 }
 
