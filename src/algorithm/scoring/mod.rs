@@ -56,6 +56,7 @@ pub struct InputSliceBounds {
     pub file_ids: [usize; 2],
     pub start: [usize; 2],
     pub direction: DpDirection,
+    pub size: [usize; 2],
 }
 
 impl InputSliceBounds {

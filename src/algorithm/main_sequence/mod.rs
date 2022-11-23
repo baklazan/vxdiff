@@ -17,20 +17,20 @@ pub(super) fn main_sequence_fragments(
             start: [0, 0],
             file_ids: [file_id, file_id],
             direction: DpDirection::Forward,
+            size: [0, 1].map(|side| file_texts[side].word_count()),
         };
         let slice_scoring = AlignmentSliceScoring {
             slice,
             scoring: &scoring,
         };
-        let sizes = [0, 1].map(|side| file_texts[side].word_count());
         let alignment = match algorithm {
-            MainSequenceAlgorithm::Naive => naive_dp::naive_dp(&slice_scoring, sizes),
+            MainSequenceAlgorithm::Naive => naive_dp::naive_dp(&slice_scoring),
             MainSequenceAlgorithm::Seeds => greedy_seeds::greedy_seeds(file_texts, &scoring, [file_id, file_id]),
         };
         result.push((
             AlignedFragment {
                 starts: [0, 0],
-                ends: sizes,
+                ends: slice.size,
                 alignment,
                 file_ids: [file_id, file_id],
             },

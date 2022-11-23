@@ -4,11 +4,8 @@ use crate::algorithm::{
     DiffOp,
 };
 
-fn compute_dp_matrix(
-    alignment_scoring: &AlignmentSliceScoring,
-    sizes: [usize; 2],
-    row_range: usize,
-) -> Vec<DpStateVec> {
+fn compute_dp_matrix(alignment_scoring: &AlignmentSliceScoring, row_range: usize) -> Vec<DpStateVec> {
+    let sizes = &alignment_scoring.slice.size;
     let mut result = vec![DpStateVec::new(sizes[1] + 1, alignment_scoring.substates_count()); row_range];
 
     for old_index in 0..=sizes[0] {
@@ -39,8 +36,9 @@ fn compute_dp_matrix(
     result
 }
 
-pub fn naive_dp(alignment_scoring: &AlignmentSliceScoring, sizes: [usize; 2]) -> Vec<DiffOp> {
-    let matrix = compute_dp_matrix(alignment_scoring, sizes, sizes[0] + 1);
+pub fn naive_dp(alignment_scoring: &AlignmentSliceScoring) -> Vec<DiffOp> {
+    let sizes = alignment_scoring.slice.size;
+    let matrix = compute_dp_matrix(alignment_scoring, sizes[0] + 1);
 
     let mut best_substate = 0;
     let final_scores: Vec<TScore> = (0..alignment_scoring.substates_count())
@@ -67,8 +65,9 @@ pub fn naive_dp(alignment_scoring: &AlignmentSliceScoring, sizes: [usize; 2]) ->
     result
 }
 
-pub fn compute_score(alignment_scoring: &AlignmentSliceScoring, sizes: [usize; 2]) -> TScore {
-    let matrix = compute_dp_matrix(alignment_scoring, sizes, 2);
+pub fn compute_score(alignment_scoring: &AlignmentSliceScoring) -> TScore {
+    let matrix = compute_dp_matrix(alignment_scoring, 2);
+    let sizes = alignment_scoring.slice.size;
     let scores: Vec<TScore> = (0..alignment_scoring.substates_count())
         .map(|substate| {
             alignment_scoring.substate_score(&matrix[sizes[0] % 2][sizes[1]], substate, [sizes[0], sizes[1]])

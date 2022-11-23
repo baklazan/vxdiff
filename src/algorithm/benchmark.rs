@@ -38,13 +38,13 @@ fn get_algorithm(algorithm: MainSequenceAlgorithm) -> Algorithm {
     match algorithm {
         MainSequenceAlgorithm::Seeds => |texts, scoring| greedy_seeds::greedy_seeds(texts, scoring, [0, 0]),
         MainSequenceAlgorithm::Naive => |texts, scoring| {
-            let sizes = [0, 1].map(|side| texts[side].word_count());
             let slice = InputSliceBounds {
                 file_ids: [0, 0],
                 start: [0, 0],
                 direction: DpDirection::Forward,
+                size: [0, 1].map(|side| texts[side].word_count()),
             };
-            naive_dp::naive_dp(&AlignmentSliceScoring { slice, scoring }, sizes)
+            naive_dp::naive_dp(&AlignmentSliceScoring { slice, scoring })
         },
     }
 }
@@ -63,17 +63,14 @@ pub fn compute_optimal_score(input: &PreprocessedTestcase) -> f64 {
         text: &input.text_strings[side],
         word_bounds: &input.bounds[side],
     });
-    let sizes = [0, 1].map(|side| partitioned_texts[side].word_count());
     let slice = InputSliceBounds {
         file_ids: [0, 0],
         start: [0, 0],
         direction: DpDirection::Forward,
+        size: [0, 1].map(|side| partitioned_texts[side].word_count()),
     };
-    naive_dp::compute_score(
-        &AlignmentSliceScoring {
-            slice,
-            scoring: &input.scoring,
-        },
-        sizes,
-    )
+    naive_dp::compute_score(&AlignmentSliceScoring {
+        slice,
+        scoring: &input.scoring,
+    })
 }

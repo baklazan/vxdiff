@@ -8,9 +8,9 @@ use super::*;
 pub fn adaptive_dp<FragmentScoring: FragmentBoundsScoringMethod>(
     alignment_scoring: &AlignmentSliceScoring,
     bounds_scoring: &BoundsSliceScoring<FragmentScoring>,
-    bound: [usize; 2],
 ) -> (Vec<DiffOp>, [usize; 2]) {
     const BAND_SIZE_WORDS: usize = 100;
+    let size = &alignment_scoring.slice.size;
 
     let mut dp: Vec<DpStateVec> = vec![DpStateVec::new(1, alignment_scoring.substates_count())];
     alignment_scoring.set_starting_state(0.0, &mut dp[0][0]);
@@ -24,7 +24,7 @@ pub fn adaptive_dp<FragmentScoring: FragmentBoundsScoringMethod>(
 
     let skip_matching_lines = |position: [usize; 2]| -> [usize; 2] {
         let mut result = position;
-        while result[0] < bound[0] && result[1] < bound[1] {
+        while result[0] < size[0] && result[1] < size[1] {
             let next_bound = bounds_scoring.nearest_bound_point([result[0] + 1, result[1] + 1]);
             if next_bound[0] - result[0] != next_bound[1] - result[1] {
                 return result;
@@ -56,18 +56,18 @@ pub fn adaptive_dp<FragmentScoring: FragmentBoundsScoringMethod>(
         }
 
         let mut starting_new = 0;
-        if index_sum > bound[0] {
-            starting_new = index_sum - bound[0];
+        if index_sum > size[0] {
+            starting_new = index_sum - size[0];
         }
         if previous_best_new + 1 > starting_new + BAND_SIZE_WORDS / 2 {
             starting_new = previous_best_new + 1 - BAND_SIZE_WORDS / 2;
         }
-        let mut ending_new_inclusive = std::cmp::min(index_sum, bound[1]);
+        let mut ending_new_inclusive = std::cmp::min(index_sum, size[1]);
         ending_new_inclusive = std::cmp::min(ending_new_inclusive, previous_best_new + BAND_SIZE_WORDS / 2);
         (starting_new, ending_new_inclusive + 1)
     };
 
-    for index_sum in 1..=(bound[0] + bound[1]) {
+    for index_sum in 1..=(size[0] + size[1]) {
         let (starting_new, ending_new) = compute_diagonal_bounds(index_sum, best_new_in_previous_diag);
         diag_start_new.push(starting_new);
         let diag_length = ending_new - starting_new;
@@ -210,8 +210,9 @@ pub(super) fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScor
         file_ids: seed.file_ids,
         start: dp_backward_start,
         direction: DpDirection::Backward,
+        size: [0, 1].map(|side| dp_backward_start[side] - bounds_before[side]),
     };
-    let backward_max = [0, 1].map(|side| dp_backward_start[side] - bounds_before[side]);
+
     let alignment_scoring_backward = AlignmentSliceScoring {
         slice: backward_slice,
         scoring: alignment_scoring,
@@ -221,15 +222,15 @@ pub(super) fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScor
         scoring: bounds_scoring,
     };
     let (pre_seed_alignment, pre_seed_aligned_size) =
-        adaptive_dp(&alignment_scoring_backward, &bounds_scoring_backward, backward_max);
+        adaptive_dp(&alignment_scoring_backward, &bounds_scoring_backward);
     let fragment_start = [0, 1].map(|side| dp_backward_start[side] - pre_seed_aligned_size[side]);
 
     let forward_slice = InputSliceBounds {
         file_ids: seed.file_ids,
         start: dp_forward_start,
         direction: DpDirection::Forward,
+        size: [0, 1].map(|side| bounds_after[side] - dp_forward_start[side]),
     };
-    let forward_max = [0, 1].map(|side| bounds_after[side] - dp_forward_start[side]);
     let alignment_scoring_forward = AlignmentSliceScoring {
         slice: forward_slice,
         scoring: alignment_scoring,
@@ -239,7 +240,7 @@ pub(super) fn extend_seed<AlignmentScoring: AlignmentScoringMethod, FragmentScor
         scoring: bounds_scoring,
     };
     let (mut post_seed_alignment, post_seed_aligned_size) =
-        adaptive_dp(&alignment_scoring_forward, &bounds_scoring_forward, forward_max);
+        adaptive_dp(&alignment_scoring_forward, &bounds_scoring_forward);
     let fragment_end = [0, 1].map(|side| dp_forward_start[side] + post_seed_aligned_size[side]);
 
     if fragment_start[0] >= fragment_end[0] || fragment_start[1] >= fragment_end[1] {
