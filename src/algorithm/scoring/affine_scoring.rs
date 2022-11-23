@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use crate::algorithm::{DiffOp, PartitionedText};
 
 use super::{
@@ -253,8 +255,8 @@ impl AlignmentScoringMethod for AffineWordScoring {
 
     fn set_starting_state(&self, starting_score: TScore, state: &mut [DpSubstate]) {
         state.fill(DpSubstate {
-            score: starting_score,
-            previous_step: None,
+            score: Cell::from(starting_score),
+            previous_step: Cell::from(None),
         });
     }
 
@@ -263,7 +265,7 @@ impl AlignmentScoringMethod for AffineWordScoring {
         dp_position: [usize; 2],
         file_ids: [usize; 2],
         state_after_move: &[DpSubstate],
-        state: &mut [DpSubstate],
+        state: &[DpSubstate],
         step: DiffOp,
         direction: DpDirection,
     ) {
@@ -272,10 +274,10 @@ impl AlignmentScoringMethod for AffineWordScoring {
             DpDirection::Forward => [dp_position[0].wrapping_sub(1), dp_position[1].wrapping_sub(1)],
         };
 
-        let mut improve = |substate: usize, proposed: TScore, proposed_movement: &Option<(DiffOp, usize)>| {
-            if state[substate].score < proposed {
-                state[substate].score = proposed;
-                state[substate].previous_step = *proposed_movement;
+        let improve = |substate: usize, proposed: TScore, proposed_movement: &Option<(DiffOp, usize)>| {
+            if state[substate].score.get() < proposed {
+                state[substate].score.set(proposed);
+                state[substate].previous_step.set(*proposed_movement);
             }
         };
 
@@ -286,7 +288,7 @@ impl AlignmentScoringMethod for AffineWordScoring {
                 return;
             }
             let score_without_transition =
-                state_after_move[Self::MATCH].score + self.information_values[file_ids[0]][0][word_indices[0]];
+                state_after_move[Self::MATCH].score.get() + self.information_values[file_ids[0]][0][word_indices[0]];
             let movement = Some((DiffOp::Match, Self::MATCH));
             for to_state in [Self::MATCH, Self::GAP, Self::WHITE_GAP] {
                 improve(
@@ -297,7 +299,7 @@ impl AlignmentScoringMethod for AffineWordScoring {
                 );
             }
         } else {
-            let score_without_transition = state_after_move[Self::GAP].score;
+            let score_without_transition = state_after_move[Self::GAP].score.get();
             let movement = Some((step, Self::GAP));
             for to_state in [Self::MATCH, Self::GAP] {
                 improve(
@@ -310,7 +312,7 @@ impl AlignmentScoringMethod for AffineWordScoring {
             if step == DiffOp::Insert && self.is_white[file_ids[1]][1][word_indices[1]]
                 || step == DiffOp::Delete && self.is_white[file_ids[0]][0][word_indices[0]]
             {
-                let score_without_transition = state_after_move[Self::WHITE_GAP].score;
+                let score_without_transition = state_after_move[Self::WHITE_GAP].score.get();
                 let movement = Some((step, Self::WHITE_GAP));
                 for to_state in [Self::MATCH, Self::WHITE_GAP] {
                     improve(
@@ -351,14 +353,14 @@ impl AlignmentScoringMethod for AffineWordScoring {
         position: [usize; 2],
         direction: DpDirection,
     ) -> TScore {
-        if state[substate].previous_step.is_none() {
-            state[substate].score
+        if state[substate].previous_step.get().is_none() {
+            state[substate].score.get()
         } else {
-            state[substate].score
+            state[substate].score.get()
                 - self.transition_cost(
                     file_ids,
                     position,
-                    state[substate].previous_step.unwrap().1,
+                    state[substate].previous_step.get().unwrap().1,
                     substate,
                     direction,
                 )

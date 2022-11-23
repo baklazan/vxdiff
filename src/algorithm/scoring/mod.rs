@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use super::*;
 use string_interner::StringInterner;
 
@@ -6,8 +8,8 @@ pub mod affine_scoring;
 
 #[derive(Clone, Default)]
 pub struct DpSubstate {
-    pub score: TScore,
-    pub previous_step: Option<(DiffOp, usize)>,
+    pub score: Cell<TScore>,
+    pub previous_step: Cell<Option<(DiffOp, usize)>>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -26,7 +28,7 @@ pub trait AlignmentScoringMethod {
         word_indices: [usize; 2],
         file_ids: [usize; 2],
         state_before_step: &[DpSubstate],
-        state: &mut [DpSubstate],
+        state: &[DpSubstate],
         step: DiffOp,
         direction: DpDirection,
     );
@@ -101,7 +103,7 @@ impl<'a> AlignmentSliceScoring<'a> {
         &self,
         word_indices: [usize; 2],
         state_after_move: &[DpSubstate],
-        state: &mut [DpSubstate],
+        state: &[DpSubstate],
         step: DiffOp,
     ) {
         self.scoring.consider_step(

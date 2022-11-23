@@ -1,6 +1,6 @@
 use crate::algorithm::{
     dp_substate_vec::DpStateVec,
-    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, DpSubstate, TScore},
+    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, TScore},
     DiffOp, PartitionedText,
 };
 
@@ -18,16 +18,12 @@ fn compute_dp_matrix(alignment_scoring: &AlignmentSliceScoring, row_range: usize
                 TScore::NEG_INFINITY
             };
             alignment_scoring.set_starting_state(default_score, &mut result[old_index % row_range][new_index]);
-            let mut read_state = vec![DpSubstate::default(); alignment_scoring.substates_count()];
             for op in [DiffOp::Delete, DiffOp::Insert, DiffOp::Match] {
                 if old_index >= op.movement()[0] && new_index >= op.movement()[1] {
-                    read_state.clone_from_slice(
-                        &result[(old_index - op.movement()[0]) % row_range][new_index - op.movement()[1]],
-                    );
                     alignment_scoring.consider_step(
                         [old_index, new_index],
-                        &read_state,
-                        &mut result[old_index % row_range][new_index],
+                        &result[(old_index - op.movement()[0]) % row_range][new_index - op.movement()[1]],
+                        &result[old_index % row_range][new_index],
                         op,
                     )
                 }
@@ -56,7 +52,7 @@ pub fn naive_dp(alignment_scoring: &AlignmentSliceScoring) -> Vec<DiffOp> {
     let mut substate = best_substate;
     let mut indices = sizes;
     while indices[0] > 0 || indices[1] > 0 {
-        let (op, next_substate) = matrix[indices[0]][indices[1]][substate].previous_step.unwrap();
+        let (op, next_substate) = matrix[indices[0]][indices[1]][substate].previous_step.get().unwrap();
         substate = next_substate;
         result.push(op);
         for side in 0..2 {

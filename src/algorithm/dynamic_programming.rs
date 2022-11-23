@@ -101,13 +101,11 @@ pub fn adaptive_dp<FragmentScoring: FragmentBoundsScoringMethod>(
                 }
             }
 
-            let mut read_state = vec![DpSubstate::default(); alignment_scoring.substates_count()];
             for (sum_before, index_in_diag_before, op) in valid_steps {
-                read_state.clone_from_slice(&dp[sum_before][index_in_diag_before]);
                 alignment_scoring.consider_step(
                     [old_index, new_index],
-                    &read_state,
-                    &mut dp[index_sum][index_in_diag],
+                    &dp[sum_before][index_in_diag_before],
+                    &dp[index_sum][index_in_diag],
                     op,
                 );
             }
@@ -153,7 +151,7 @@ pub fn adaptive_dp<FragmentScoring: FragmentBoundsScoringMethod>(
     while old_index != 0 || new_index != 0 {
         let index_sum = old_index + new_index;
         let index_in_diag = new_index - diag_start_new[index_sum];
-        let movement = dp[index_sum][index_in_diag][substate].previous_step;
+        let movement = dp[index_sum][index_in_diag][substate].previous_step.get();
         assert!(movement.is_some());
         let (op, next_substate) = movement.unwrap();
         alignment.push(op);
