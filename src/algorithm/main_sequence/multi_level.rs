@@ -1,6 +1,6 @@
 use crate::algorithm::{
     partition::partition_into_lines,
-    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, simple::{SimpleScoring, zero_one_scoring::ZeroOneScoring} },
+    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, simple::{SimpleScoring, zero_one::ZeroOneScoring, zero_or_information::ZeroOrInformationScoring} },
     DiffOp, PartitionedText,
 };
 
@@ -119,7 +119,7 @@ pub(in crate::algorithm) fn lines_then_words(
         text_lines.push(file_text_lines);
     }
 
-    let line_scoring = SimpleScoring{ match_scoring: ZeroOneScoring::new(&text_lines) };
+    let line_scoring = SimpleScoring{ match_scoring: ZeroOrInformationScoring::new(&text_lines) };
 
     let word_slices = slices_for_files(text_words);
     let line_slices = slices_for_files(&text_lines);

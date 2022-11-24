@@ -2,7 +2,8 @@ use crate::algorithm::DiffOp;
 
 use super::{TScore, AlignmentScoringMethod, DpSubstate, DpDirection};
 
-pub mod zero_one_scoring;
+pub mod zero_one;
+pub mod zero_or_information;
 
 pub trait MatchScoring {
     fn score(&self, part_indices: [usize; 2], file_ids: [usize; 2]) -> TScore;
@@ -50,11 +51,7 @@ impl <Matcher: MatchScoring> AlignmentScoringMethod for SimpleScoring<Matcher> {
                     DpDirection::Backward => 0,
                 };
                 let part_indices = dp_position.map(|i| i - index_correction);
-                if self.is_match(part_indices, file_ids) {
-                    1.0
-                } else {
-                    0.0
-                }
+                self.match_scoring.score(part_indices, file_ids)
             }
         };
         let proposed_score = state_before_step[0].score.get() + step_score;
