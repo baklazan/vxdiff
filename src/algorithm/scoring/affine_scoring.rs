@@ -1,5 +1,3 @@
-use std::cell::Cell;
-
 use crate::algorithm::{DiffOp, PartitionedText};
 
 use super::{
@@ -251,13 +249,6 @@ impl AffineWordScoring {
 impl AlignmentScoringMethod for AffineWordScoring {
     fn substates_count(&self) -> usize {
         3
-    }
-
-    fn set_starting_state(&self, starting_score: TScore, state: &mut [DpSubstate]) {
-        state.fill(DpSubstate {
-            score: Cell::from(starting_score),
-            previous_step: Cell::from(None),
-        });
     }
 
     fn consider_step(

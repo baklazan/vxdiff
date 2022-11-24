@@ -5,6 +5,7 @@ use string_interner::StringInterner;
 
 pub type TScore = f64;
 pub mod affine_scoring;
+pub mod zero_one_scoring;
 
 #[derive(Clone, Default)]
 pub struct DpSubstate {
@@ -21,7 +22,12 @@ pub enum DpDirection {
 pub trait AlignmentScoringMethod {
     fn substates_count(&self) -> usize;
 
-    fn set_starting_state(&self, starting_score: TScore, state: &mut [DpSubstate]);
+    fn set_starting_state(&self, starting_score: TScore, state: &mut [DpSubstate]) {
+        state.fill(DpSubstate {
+            score: Cell::from(starting_score),
+            previous_step: Cell::from(None),
+        });
+    }
 
     fn consider_step(
         &self,
@@ -33,7 +39,7 @@ pub trait AlignmentScoringMethod {
         direction: DpDirection,
     );
 
-    fn is_match(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> bool;
+    fn is_match(&self, part_indices: [usize; 2], file_ids: [usize; 2]) -> bool;
 
     fn append_gaps(
         &self,
@@ -47,13 +53,15 @@ pub trait AlignmentScoringMethod {
         &self,
         state: &[DpSubstate],
         substate: usize,
-        file_ids: [usize; 2],
-        position: [usize; 2],
-        direction: DpDirection,
-    ) -> TScore;
+        _file_ids: [usize; 2],
+        _position: [usize; 2],
+        _direction: DpDirection,
+    ) -> TScore {
+        state[substate].score.get()
+    }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct InputSliceBounds {
     pub file_ids: [usize; 2],
     pub start: [usize; 2],
@@ -101,13 +109,13 @@ impl<'a> AlignmentSliceScoring<'a> {
 
     pub fn consider_step(
         &self,
-        word_indices: [usize; 2],
+        dp_position: [usize; 2],
         state_after_move: &[DpSubstate],
         state: &[DpSubstate],
         step: DiffOp,
     ) {
         self.scoring.consider_step(
-            self.slice.global_indices(word_indices),
+            self.slice.global_indices(dp_position),
             self.slice.file_ids,
             state_after_move,
             state,
@@ -116,9 +124,9 @@ impl<'a> AlignmentSliceScoring<'a> {
         )
     }
 
-    pub fn is_match(&self, word_indices: [usize; 2]) -> bool {
+    pub fn is_match(&self, part_indices: [usize; 2]) -> bool {
         self.scoring
-            .is_match(self.slice.global_indices(word_indices), self.slice.file_ids)
+            .is_match(self.slice.global_indices(part_indices), self.slice.file_ids)
     }
 
     pub fn append_gaps(&self, mut start_indices: [usize; 2], mut end_indices: [usize; 2], substate: usize) -> TScore {

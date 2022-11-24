@@ -22,6 +22,7 @@ pub enum DiffAlgorithm {
     Naive,
     MainSeeds,
     MovingSeeds,
+    LinesThenWords,
 }
 
 impl DiffAlgorithm {
@@ -32,6 +33,9 @@ impl DiffAlgorithm {
             }
             DiffAlgorithm::MainSeeds => {
                 vxdiff::algorithm::DiffAlgorithm::MainSequence(vxdiff::algorithm::MainSequenceAlgorithm::Seeds)
+            }
+            DiffAlgorithm::LinesThenWords => {
+                vxdiff::algorithm::DiffAlgorithm::MainSequence(vxdiff::algorithm::MainSequenceAlgorithm::LinesThenWords)
             }
             DiffAlgorithm::MovingSeeds => vxdiff::algorithm::DiffAlgorithm::MovingSeeds,
         }

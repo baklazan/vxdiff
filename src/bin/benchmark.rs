@@ -22,6 +22,7 @@ struct Testcase {
 pub enum AlgorithmType {
     Naive,
     Seeds,
+    LinesThenWords,
 }
 
 impl AlgorithmType {
@@ -29,6 +30,7 @@ impl AlgorithmType {
         match &self {
             AlgorithmType::Naive => MainSequenceAlgorithm::Naive,
             AlgorithmType::Seeds => MainSequenceAlgorithm::Seeds,
+            AlgorithmType::LinesThenWords => MainSequenceAlgorithm::LinesThenWords,
         }
     }
 }

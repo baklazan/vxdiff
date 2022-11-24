@@ -1,6 +1,6 @@
 use super::{
-    main_sequence::{greedy_seeds, naive_dp},
-    preprocess::partition_into_words,
+    main_sequence::{greedy_seeds, multi_level, naive_dp},
+    partition::partition_into_words,
     scoring::{AlignmentSliceScoring, DpDirection, InputSliceBounds},
     DiffOp, MainSequenceAlgorithm, PartitionedText,
 };
@@ -38,6 +38,9 @@ fn get_algorithm(algorithm: MainSequenceAlgorithm) -> Algorithm {
     match algorithm {
         MainSequenceAlgorithm::Seeds => greedy_seeds::greedy_seeds,
         MainSequenceAlgorithm::Naive => |text_words, scoring| naive_dp::naive_dp_all_files(text_words, scoring),
+        MainSequenceAlgorithm::LinesThenWords => {
+            |text_words, scoring| multi_level::lines_then_words(text_words, scoring)
+        }
     }
 }
 
