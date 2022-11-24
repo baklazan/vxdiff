@@ -5,7 +5,7 @@ use string_interner::StringInterner;
 
 pub type TScore = f64;
 pub mod affine_scoring;
-pub mod zero_one_scoring;
+pub mod simple;
 
 #[derive(Clone, Default)]
 pub struct DpSubstate {
