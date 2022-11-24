@@ -1,14 +1,15 @@
-use clap::{error::ErrorKind, CommandFactory as _, Parser, ValueEnum};
-use std::fs::read_to_string;
+use clap::{error::ErrorKind, ArgGroup, CommandFactory as _, Parser, ValueEnum};
 use std::io::stdout;
-use vxdiff::tui_terminal::{print_side_by_side_diff_plainly, run_in_terminal, run_tui};
 use vxdiff::{
     algorithm::compute_diff,
     basic_terminal::{print, print_side_by_side},
+    input::{read_as_git_pager, read_file_list, run_external_helper_for_git_diff, run_git_diff, ProgramInput},
+    tui_terminal::{print_side_by_side_diff_plainly, run_in_terminal, run_tui},
     validate::{print_errors, validate},
+    DynResult,
 };
 
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, ValueEnum, Debug)]
 enum OutputMode {
     Debug,
     Unified,
@@ -17,7 +18,7 @@ enum OutputMode {
     Tui,
 }
 
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, ValueEnum, Debug)]
 pub enum DiffAlgorithm {
     Naive,
     MainSeeds,
@@ -42,47 +43,60 @@ impl DiffAlgorithm {
     }
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(arg_required_else_help(true))]
+#[command(group(ArgGroup::new("input").required(true)))]
 struct Args {
     #[arg(short, long, default_value_t = OutputMode::Tui, value_enum)]
     mode: OutputMode,
     #[arg(short, long, default_value_t = DiffAlgorithm::MovingSeeds, value_enum)]
     algorithm: DiffAlgorithm,
-    #[arg(required = true, value_names = ["OLD1", "NEW1", "OLD2", "NEW2"])]
+    #[arg(group = "input", value_names = ["OLD1", "NEW1", "OLD2", "NEW2"])]
     files: Vec<String>,
+    #[arg(long, group = "input", value_name = "GIT DIFF ARGS", num_args = .., allow_hyphen_values = true)]
+    git: Option<Vec<String>>,
+    #[arg(long, group = "input")]
+    git_pager: bool,
+    #[arg(long, group = "input", value_name = "?", num_args = 1.., allow_hyphen_values = true, exclusive = true)]
+    git_external_diff: Vec<String>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn try_main() -> DynResult<()> {
     let args = Args::parse();
 
-    let mut file_input_storage = vec![];
-    let mut file_names_storage = vec![];
+    let input: ProgramInput;
 
-    if args.files.len() % 2 != 0 {
+    if let Some(git_diff_args) = &args.git {
+        run_git_diff(git_diff_args)?;
+        return Ok(());
+    }
+
+    if !args.git_external_diff.is_empty() {
+        run_external_helper_for_git_diff(&args.git_external_diff)?;
+        return Ok(());
+    }
+
+    if args.git_pager {
+        input = read_as_git_pager()?;
+    } else if args.files.len() % 2 != 0 {
         Args::command()
             .error(ErrorKind::TooFewValues, "File count must be even")
             .exit();
+    } else {
+        input = read_file_list(&args.files)?;
     }
 
-    for i in (0..args.files.len()).step_by(2) {
-        let old_name = &args.files[i];
-        let new_name = &args.files[i + 1];
-        let old = read_to_string(old_name)?;
-        let new = read_to_string(new_name)?;
-        file_input_storage.push([old, new]);
-        file_names_storage.push([old_name, new_name]);
+    if input.file_input.is_empty() {
+        eprintln!("The diff is empty.");
+        return Ok(());
     }
 
-    // TODO: array.each_ref() might help, but it's not in stable Rust yet.
-    let file_input: Vec<[&str; 2]> = file_input_storage
-        .iter()
-        .map(|&[ref old, ref new]| -> [&str; 2] { [old, new] })
-        .collect();
-    let file_names: Vec<[&str; 2]> = file_names_storage
-        .iter()
-        .map(|&[ref old, ref new]| -> [&str; 2] { [old, new] })
-        .collect();
+    fn borrow_array(arr: &[String; 2]) -> [&str; 2] {
+        // TODO: array.each_ref() might help, but it's not in stable Rust yet.
+        [&arr[0], &arr[1]]
+    }
+    let file_input: Vec<_> = input.file_input.iter().map(borrow_array).collect();
+    let file_names: Vec<_> = input.file_names.iter().map(borrow_array).collect();
 
     let diff = compute_diff(&file_input, args.algorithm.convert());
 
@@ -97,4 +111,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn main() {
+    // If main() itself returns Result, Rust prints the error with Debug, not Display.
+    // See `impl Termination for Result<T, E>` in src/std/process.rs.
+    // See also https://users.rust-lang.org/t/why-does-error-require-display-but-then-not-use-it/65273
+    // Another workaround would be to use `main_error`.
+    // Another workaround would be to use `anyhow` and return `anyhow::Error`.
+    if let Err(e) = try_main() {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
 }
