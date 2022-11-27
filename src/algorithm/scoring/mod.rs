@@ -1,7 +1,6 @@
 use std::cell::Cell;
 
 use super::*;
-use string_interner::StringInterner;
 
 pub type TScore = f64;
 pub mod affine_scoring;
@@ -91,6 +90,15 @@ impl InputSliceBounds {
     fn local_indices(&self, global_indices: [usize; 2]) -> [usize; 2] {
         [0, 1].map(|side| self.local_index(side, global_indices[side]))
     }
+
+    pub fn subslice(&self, start_local: [usize; 2], size: [usize; 2]) -> InputSliceBounds {
+        InputSliceBounds {
+            file_ids: self.file_ids,
+            start: self.global_indices(start_local),
+            size,
+            direction: self.direction,
+        }
+    }
 }
 
 pub struct AlignmentSliceScoring<'a> {
@@ -150,54 +158,6 @@ impl<'a> AlignmentSliceScoring<'a> {
             self.slice.direction,
         )
     }
-}
-
-fn information_values(text_parts: &[[PartitionedText; 2]]) -> Vec<[Vec<TScore>; 2]> {
-    use std::collections::HashMap;
-
-    let mut char_frequencies: HashMap<char, usize> = HashMap::new();
-    let mut total_chars: usize = 0;
-
-    for file_text_parts in text_parts {
-        for side_text in file_text_parts {
-            for c in side_text.text.chars() {
-                char_frequencies.insert(c, char_frequencies.get(&c).unwrap_or(&0) + 1);
-                total_chars += 1;
-            }
-        }
-    }
-
-    let mut result = vec![];
-    for file_text_parts in text_parts {
-        let mut file_values = [vec![], vec![]];
-        for (side, side_text) in file_text_parts.iter().enumerate() {
-            for i in 0..side_text.part_count() {
-                let word = side_text.get_part(i);
-                let mut score: f64 = 0.0;
-                for c in word.chars() {
-                    let char_frequency = (*char_frequencies.get(&c).unwrap() as f64) / total_chars as f64;
-                    score += -char_frequency.log2() / 5.0;
-                }
-                file_values[side].push(score);
-            }
-        }
-        result.push(file_values);
-    }
-    result
-}
-
-fn internalize_parts(text_parts: &[[PartitionedText; 2]]) -> Vec<[Vec<string_interner::symbol::SymbolU32>; 2]> {
-    let mut symbols = vec![[vec![], vec![]]; text_parts.len()];
-    let mut interner = StringInterner::default();
-    for (file_id, file_text_parts) in text_parts.iter().enumerate() {
-        for (side, side_text) in file_text_parts.iter().enumerate() {
-            for i in 0..side_text.part_count() {
-                let word = side_text.get_part(i);
-                symbols[file_id][side].push(interner.get_or_intern(word));
-            }
-        }
-    }
-    symbols
 }
 
 pub trait FragmentBoundsScoringMethod {

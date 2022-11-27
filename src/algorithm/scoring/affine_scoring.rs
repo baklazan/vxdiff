@@ -1,7 +1,7 @@
 use crate::algorithm::{DiffOp, PartitionedText};
 
 use super::{
-    information_values, internalize_parts, AlignmentScoringMethod, DpDirection, DpSubstate,
+    preprocess::information_values, preprocess::internalize_parts, AlignmentScoringMethod, DpDirection, DpSubstate,
     FragmentBoundsScoringMethod, TScore,
 };
 

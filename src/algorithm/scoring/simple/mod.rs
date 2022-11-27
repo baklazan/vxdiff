@@ -1,7 +1,8 @@
 use crate::algorithm::DiffOp;
 
-use super::{TScore, AlignmentScoringMethod, DpSubstate, DpDirection};
+use super::{AlignmentScoringMethod, DpDirection, DpSubstate, TScore};
 
+pub mod whitespace_aware;
 pub mod zero_one;
 pub mod zero_or_information;
 
@@ -11,18 +12,18 @@ pub trait MatchScoring {
 }
 
 pub struct SimpleScoring<Matcher: MatchScoring> {
-    pub match_scoring: Matcher
+    pub match_scoring: Matcher,
 }
 
-impl <Matcher: MatchScoring> AlignmentScoringMethod for SimpleScoring<Matcher> {
+impl<Matcher: MatchScoring> AlignmentScoringMethod for SimpleScoring<Matcher> {
     fn substates_count(&self) -> usize {
         1
     }
-    
+
     fn is_match(&self, part_indices: [usize; 2], file_ids: [usize; 2]) -> bool {
         self.match_scoring.is_match(part_indices, file_ids)
     }
-    
+
     fn append_gaps(
         &self,
         _file_ids: [usize; 2],

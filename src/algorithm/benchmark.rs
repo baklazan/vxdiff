@@ -1,6 +1,6 @@
 use super::{
     main_sequence::{greedy_seeds, multi_level, naive_dp},
-    partition::partition_into_words,
+    preprocess::partition_into_words,
     scoring::{AlignmentSliceScoring, DpDirection, InputSliceBounds},
     DiffOp, MainSequenceAlgorithm, PartitionedText,
 };

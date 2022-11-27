@@ -3,13 +3,13 @@ mod dp_substate_vec;
 mod dynamic_programming;
 mod fragment_selection;
 mod main_sequence;
-mod partition;
 mod postprocess;
+mod preprocess;
 mod scoring;
 mod seed_selection;
 
 use self::{
-    fragment_selection::greedy_fragments, main_sequence::main_sequence_fragments, partition::partition_into_words,
+    fragment_selection::greedy_fragments, main_sequence::main_sequence_fragments, preprocess::partition_into_words,
 };
 use std::ops::Range;
 

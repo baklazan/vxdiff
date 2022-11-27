@@ -1,6 +1,7 @@
 use super::MatchScoring;
 use crate::algorithm::{
-    scoring::{information_values, internalize_parts, TScore},
+    preprocess::{information_values, internalize_parts},
+    scoring::TScore,
     PartitionedText,
 };
 
@@ -10,6 +11,7 @@ pub struct ZeroOrInformationScoring {
 }
 
 impl ZeroOrInformationScoring {
+    #[allow(dead_code)]
     pub(in crate::algorithm) fn new(text_parts: &[[PartitionedText; 2]]) -> ZeroOrInformationScoring {
         ZeroOrInformationScoring {
             symbols: internalize_parts(text_parts),
