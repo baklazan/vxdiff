@@ -92,8 +92,15 @@ pub fn read_as_git_pager() -> DynResult<ProgramInput> {
     fn read_token(input: &mut impl std::io::BufRead) -> DynResult<Vec<u8>> {
         let mut buffer = vec![];
         input.read_until(0, &mut buffer)?;
-        assert!(!buffer.is_empty());
-        assert_eq!(buffer[buffer.len() - 1], 0);
+        if buffer.is_empty() {
+            return fail("unexpected EOF reading from git diff");
+        }
+        if buffer[buffer.len() - 1] != 0 {
+            return match std::str::from_utf8(&buffer) {
+                Ok(s) => fail(format!("unexpected output from git diff: {}", s.trim())),
+                Err(_) => fail(format!("unexpected output from git diff: {:?}", buffer)),
+            };
+        }
         buffer.pop();
         Ok(buffer)
     }
