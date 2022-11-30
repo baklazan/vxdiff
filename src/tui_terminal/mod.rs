@@ -561,7 +561,8 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[Range
                         offset_override_for_selection,
                         source: TextSource::Section(section_id),
                     });
-                    if !self.diff.file_sides[section_side.file_id][side].content.ends_with('\n') {
+                    let file_side = &self.diff.file_sides[section_side.file_id][side];
+                    if !file_side.content[section_side.byte_range.clone()].ends_with('\n') {
                         self = self.add_fabricated(style, side, "No newline at end of file".to_string());
                     }
                 }
