@@ -1,7 +1,7 @@
 use clap::{error::ErrorKind, ArgGroup, CommandFactory as _, Parser, ValueEnum};
 use std::io::stdout;
 use vxdiff::{
-    algorithm::compute_diff,
+    algorithm::{compute_diff, DiffAlgorithm, MainSequenceAlgorithm},
     basic_terminal::{print, print_side_by_side},
     input::{read_as_git_pager, read_file_list, run_external_helper_for_git_diff, run_git_diff, ProgramInput},
     tui_terminal::{print_side_by_side_diff_plainly, run_in_terminal, run_tui},
@@ -19,26 +19,20 @@ enum OutputMode {
 }
 
 #[derive(Clone, ValueEnum, Debug)]
-pub enum DiffAlgorithm {
+pub enum DiffAlgorithmArg {
     Naive,
     MainSeeds,
     MovingSeeds,
     LinesThenWords,
 }
 
-impl DiffAlgorithm {
-    pub fn convert(&self) -> vxdiff::algorithm::DiffAlgorithm {
+impl DiffAlgorithmArg {
+    pub fn convert(&self) -> DiffAlgorithm {
         match &self {
-            DiffAlgorithm::Naive => {
-                vxdiff::algorithm::DiffAlgorithm::MainSequence(vxdiff::algorithm::MainSequenceAlgorithm::Naive)
-            }
-            DiffAlgorithm::MainSeeds => {
-                vxdiff::algorithm::DiffAlgorithm::MainSequence(vxdiff::algorithm::MainSequenceAlgorithm::Seeds)
-            }
-            DiffAlgorithm::LinesThenWords => {
-                vxdiff::algorithm::DiffAlgorithm::MainSequence(vxdiff::algorithm::MainSequenceAlgorithm::LinesThenWords)
-            }
-            DiffAlgorithm::MovingSeeds => vxdiff::algorithm::DiffAlgorithm::MovingSeeds,
+            DiffAlgorithmArg::Naive => DiffAlgorithm::MainSequence(MainSequenceAlgorithm::Naive),
+            DiffAlgorithmArg::MainSeeds => DiffAlgorithm::MainSequence(MainSequenceAlgorithm::Seeds),
+            DiffAlgorithmArg::LinesThenWords => DiffAlgorithm::MainSequence(MainSequenceAlgorithm::LinesThenWords),
+            DiffAlgorithmArg::MovingSeeds => DiffAlgorithm::MovingSeeds,
         }
     }
 }
@@ -49,8 +43,8 @@ impl DiffAlgorithm {
 struct Args {
     #[arg(short, long, default_value_t = OutputMode::Tui, value_enum)]
     mode: OutputMode,
-    #[arg(short, long, default_value_t = DiffAlgorithm::MovingSeeds, value_enum)]
-    algorithm: DiffAlgorithm,
+    #[arg(short, long, default_value_t = DiffAlgorithmArg::MovingSeeds, value_enum)]
+    algorithm: DiffAlgorithmArg,
     #[arg(group = "input", value_names = ["OLD1", "NEW1", "OLD2", "NEW2"])]
     files: Vec<String>,
     #[arg(long, group = "input", value_name = "GIT DIFF ARGS", num_args = .., allow_hyphen_values = true)]
