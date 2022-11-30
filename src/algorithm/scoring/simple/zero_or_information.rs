@@ -18,6 +18,14 @@ impl ZeroOrInformationScoring {
             information_values: information_values(text_parts),
         }
     }
+
+    pub fn range_information_value(&self, file_id: usize, side: usize, from: usize, to: usize) -> TScore {
+        let mut result = 0.0;
+        for i in from..to {
+            result += self.information_values[file_id][side][i];
+        }
+        result
+    }
 }
 
 impl MatchScoring for ZeroOrInformationScoring {

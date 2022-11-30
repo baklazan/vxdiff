@@ -2,6 +2,7 @@ pub mod benchmark;
 mod dp_substate_vec;
 mod dynamic_programming;
 mod fragment_selection;
+pub mod line_samples;
 mod main_sequence;
 mod postprocess;
 mod preprocess;
