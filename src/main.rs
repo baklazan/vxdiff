@@ -60,10 +60,7 @@ fn try_main() -> DynResult<()> {
 
     if let Some(git_diff_args) = &args.git {
         let current_exe = std::env::current_exe()?;
-        // WTF
-        let current_exe = current_exe
-            .to_str()
-            .ok_or_else(|| Box::<dyn std::error::Error>::from("current_exe is not unicode"))?;
+        let current_exe = current_exe.to_str().ok_or("current_exe is not unicode")?;
         // unwrap() is OK because none of our enum variants use #[value(skip)].
         let mode = args.mode.to_possible_value().unwrap();
         let algorithm = args.algorithm.to_possible_value().unwrap();

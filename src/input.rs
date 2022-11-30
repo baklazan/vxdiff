@@ -8,11 +8,6 @@ pub struct ProgramInput {
     pub file_names: Vec<[String; 2]>,
 }
 
-fn fail<T, S: Into<String>>(message: S) -> DynResult<T> {
-    // TODO: Maybe just use `anyhow` and `bail!()`.
-    Err(Box::from(message.into()))
-}
-
 // WTF
 fn concat<'a, A: AsRef<str>, B: AsRef<str>>(a: &'a [A], b: &'a [B]) -> impl Iterator<Item = &'a str> {
     a.iter().map(AsRef::as_ref).chain(b.iter().map(AsRef::as_ref))
@@ -32,7 +27,7 @@ pub fn run_git_diff(current_exe: &str, git_diff_args: &[String], pager_args: &[&
     if exit_status.success() {
         Ok(())
     } else {
-        fail(format!("running git diff failed: {exit_status}"))
+        Err(format!("running git diff failed: {exit_status}"))?
     }
 }
 
@@ -41,24 +36,24 @@ pub fn run_external_helper_for_git_diff(args: &[String]) -> DynResult<()> {
     // to the pager.'s stdin. We don't have a good error reporting channel. >:(
 
     let Ok(path_counter) = std::env::var("GIT_DIFF_PATH_COUNTER") else {
-            return fail("Missing env var GIT_DIFF_PATH_COUNTER. This should be run by git diff, not directly.");
+            return Err("Missing env var GIT_DIFF_PATH_COUNTER. This should be run by git diff, not directly.")?;
         };
     let path_counter: usize = path_counter.parse()?;
 
     let Ok(path_total) = std::env::var("GIT_DIFF_PATH_TOTAL") else {
-            return fail("Missing env var GIT_DIFF_PATH_TOTAL. This should be run by git diff, not directly.");
+            return Err("Missing env var GIT_DIFF_PATH_TOTAL. This should be run by git diff, not directly.")?;
         };
     let path_total: usize = path_total.parse()?;
 
     let n = args.len();
     if n != 1 && n != 7 && n != 9 {
-        return fail(format!(
+        return Err(format!(
             "Unexpected number of GIT_EXTERNAL_DIFF arguments received from git: {n}"
-        ));
+        ))?;
     }
 
     if atty::is(atty::Stream::Stdout) {
-        return fail("stdout is a tty (maybe git isn't properly configured to run 'vxdiff --git-pager')");
+        return Err("stdout is a tty (maybe git isn't properly configured to run 'vxdiff --git-pager')")?;
     }
 
     print!("{path_counter}\0{path_total}\0{n}\0");
@@ -70,14 +65,14 @@ pub fn run_external_helper_for_git_diff(args: &[String]) -> DynResult<()> {
             let mut taken = f.take(size);
             let copied = std::io::copy(&mut taken, &mut std::io::stdout())?;
             if copied != size {
-                return fail(format!(
+                return Err(format!(
                     "file '{arg}' is shorter than expected (got EOF after {copied} bytes out of {size})"
-                ));
+                ))?;
             }
             if taken.into_inner().read(&mut [0])? != 0 {
-                return fail(format!(
+                return Err(format!(
                     "file '{arg}' is longer than expected (can still read after {size} bytes)"
-                ));
+                ))?;
             }
             print!("\0");
         } else {
@@ -93,12 +88,12 @@ pub fn read_as_git_pager() -> DynResult<ProgramInput> {
         let mut buffer = vec![];
         input.read_until(0, &mut buffer)?;
         if buffer.is_empty() {
-            return fail("unexpected EOF reading from git diff");
+            return Err("unexpected EOF reading from git diff")?;
         }
         if buffer[buffer.len() - 1] != 0 {
             return match std::str::from_utf8(&buffer) {
-                Ok(s) => fail(format!("unexpected output from git diff: {}", s.trim())),
-                Err(_) => fail(format!("unexpected output from git diff: {:?}", buffer)),
+                Ok(s) => Err(format!("unexpected output from git diff: {}", s.trim()))?,
+                Err(_) => Err(format!("unexpected output from git diff: {:?}", buffer))?,
             };
         }
         buffer.pop();
@@ -129,14 +124,14 @@ pub fn read_as_git_pager() -> DynResult<ProgramInput> {
     loop {
         let got_counter = read_number(&mut stdin)?;
         if counter != got_counter {
-            return fail(format!("Expected counter {counter}, but got {got_counter}"));
+            return Err(format!("Expected counter {counter}, but got {got_counter}"))?;
         }
 
         let got_total = read_number(&mut stdin)?;
         if counter == 1 {
             total = got_total;
         } else if total != got_total {
-            return fail(format!("Reported total changed from {total} to {got_total}"));
+            return Err(format!("Reported total changed from {total} to {got_total}"))?;
         }
 
         let n = read_number(&mut stdin)?;
