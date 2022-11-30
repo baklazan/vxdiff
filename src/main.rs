@@ -64,10 +64,17 @@ struct Args {
 fn try_main() -> DynResult<()> {
     let args = Args::parse();
 
-    let input: ProgramInput;
-
     if let Some(git_diff_args) = &args.git {
-        run_git_diff(git_diff_args)?;
+        let current_exe = std::env::current_exe()?;
+        // WTF
+        let current_exe = current_exe
+            .to_str()
+            .ok_or_else(|| Box::<dyn std::error::Error>::from("current_exe is not unicode"))?;
+        // unwrap() is OK because none of our enum variants use #[value(skip)].
+        let mode = args.mode.to_possible_value().unwrap();
+        let algorithm = args.algorithm.to_possible_value().unwrap();
+        let pager_args = ["--mode", mode.get_name(), "--algorithm", algorithm.get_name()];
+        run_git_diff(current_exe, git_diff_args, &pager_args)?;
         return Ok(());
     }
 
@@ -75,6 +82,8 @@ fn try_main() -> DynResult<()> {
         run_external_helper_for_git_diff(&args.git_external_diff)?;
         return Ok(());
     }
+
+    let input: ProgramInput;
 
     if args.git_pager {
         input = read_as_git_pager()?;

@@ -13,8 +13,27 @@ fn fail<T, S: Into<String>>(message: S) -> DynResult<T> {
     Err(Box::from(message.into()))
 }
 
-pub fn run_git_diff(args: &[String]) -> DynResult<()> {
-    todo!() // TODO
+// WTF
+fn concat<'a, A: AsRef<str>, B: AsRef<str>>(a: &'a [A], b: &'a [B]) -> impl Iterator<Item = &'a str> {
+    a.iter().map(AsRef::as_ref).chain(b.iter().map(AsRef::as_ref))
+}
+
+pub fn run_git_diff(current_exe: &str, git_diff_args: &[String], pager_args: &[&str]) -> DynResult<()> {
+    let args = concat(&["diff"], git_diff_args);
+    let git_external_diff = shell_words::join([current_exe, "--git-external-diff"]);
+    let git_pager = shell_words::join(concat(&[current_exe, "--git-pager"], pager_args));
+    // TODO: std::process::ExitStatus::exit_ok() is unstable
+    let exit_status = std::process::Command::new("git")
+        .args(args)
+        .env("GIT_EXTERNAL_DIFF", git_external_diff)
+        .env("GIT_PAGER", git_pager)
+        .spawn()?
+        .wait()?;
+    if exit_status.success() {
+        Ok(())
+    } else {
+        fail(format!("running git diff failed: {exit_status}"))
+    }
 }
 
 pub fn run_external_helper_for_git_diff(args: &[String]) -> DynResult<()> {
