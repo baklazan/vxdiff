@@ -2,10 +2,13 @@ use crate::algorithm::{
     dp_substate_vec::DpStateVec,
     preprocess::partition_into_lines,
     scoring::{
-        simple::{whitespace_aware::WhitespaceAwareScoring, SimpleScoring},
+        simple::{
+            k_gram_sampling::KGramSamplingScoring, whitespace_ignoring::WhitespaceIgnoringScoring,
+            zero_one::ZeroOneScoring, zero_or_information::ZeroOrInformationScoring, SimpleScoring,
+        },
         AlignmentScoringMethod, AlignmentSliceScoring, TScore,
     },
-    DiffOp, PartitionedText,
+    DiffOp, LineScoringStrategy, PartitionedText,
 };
 
 use super::slices_for_files;
@@ -322,6 +325,7 @@ fn partition_correspondence(coarse: &[usize], fine: &[usize]) -> Vec<usize> {
 pub(in crate::algorithm) fn lines_then_words(
     text_words: &[[PartitionedText; 2]],
     word_scoring: &dyn AlignmentScoringMethod,
+    line_scoring_strategy: LineScoringStrategy,
 ) -> Vec<Vec<DiffOp>> {
     let mut line_bounds = vec![];
     for file_text_words in text_words {
@@ -337,8 +341,19 @@ pub(in crate::algorithm) fn lines_then_words(
         text_lines.push(file_text_lines);
     }
 
-    let line_scoring = SimpleScoring {
-        match_scoring: WhitespaceAwareScoring::new(&text_lines),
+    let line_scoring: Box<dyn AlignmentScoringMethod> = match line_scoring_strategy {
+        LineScoringStrategy::ZeroOne => Box::new(SimpleScoring {
+            match_scoring: ZeroOneScoring::new(&text_lines),
+        }),
+        LineScoringStrategy::ZeroInformation => Box::new(SimpleScoring {
+            match_scoring: ZeroOrInformationScoring::new(&text_lines),
+        }),
+        LineScoringStrategy::WhitespaceIgnoring => Box::new(SimpleScoring {
+            match_scoring: WhitespaceIgnoringScoring::new(&text_lines),
+        }),
+        LineScoringStrategy::KGram => Box::new(SimpleScoring {
+            match_scoring: KGramSamplingScoring::new(&text_lines),
+        }),
     };
 
     let word_slices = slices_for_files(text_words);
@@ -351,13 +366,13 @@ pub(in crate::algorithm) fn lines_then_words(
                 slice: word_slices[file_id],
                 scoring: word_scoring,
             },
-            max_bruteforced_width: 500,
+            max_bruteforced_width: 200,
             part_bounds_finer: [0, 1].map(|side| Vec::from(text_words[file_id][side].part_bounds)),
         };
         let line_level = AlgorithmLevel {
             scoring: AlignmentSliceScoring {
                 slice: line_slices[file_id],
-                scoring: &line_scoring,
+                scoring: line_scoring.as_ref(),
             },
             max_bruteforced_width: usize::MAX,
             part_bounds_finer: [0, 1].map(|side| {

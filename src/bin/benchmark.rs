@@ -4,11 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use regex::Regex;
 use vxdiff::algorithm::{
     benchmark::{compute_optimal_score, run_algorithm, PreprocessedTestcase},
-    MainSequenceAlgorithm,
+    LineScoringStrategy, MainSequenceAlgorithm,
 };
 
 #[derive(Debug)]
@@ -18,11 +18,30 @@ struct Testcase {
     score: PathBuf,
 }
 
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Clone, Debug)]
+pub enum LineScoring {
+    ZeroOne,
+    ZeroInformation,
+    WhitespaceIgnoring,
+    KGram,
+}
+
+impl LineScoring {
+    pub fn convert(&self) -> LineScoringStrategy {
+        match &self {
+            LineScoring::ZeroOne => LineScoringStrategy::ZeroOne,
+            LineScoring::ZeroInformation => LineScoringStrategy::ZeroInformation,
+            LineScoring::WhitespaceIgnoring => LineScoringStrategy::WhitespaceIgnoring,
+            LineScoring::KGram => LineScoringStrategy::KGram,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum AlgorithmType {
     Naive,
     Seeds,
-    LinesThenWords,
+    LinesThenWords(LineScoring),
 }
 
 impl AlgorithmType {
@@ -30,7 +49,35 @@ impl AlgorithmType {
         match &self {
             AlgorithmType::Naive => MainSequenceAlgorithm::Naive,
             AlgorithmType::Seeds => MainSequenceAlgorithm::Seeds,
-            AlgorithmType::LinesThenWords => MainSequenceAlgorithm::LinesThenWords,
+            AlgorithmType::LinesThenWords(line_scoring) => {
+                MainSequenceAlgorithm::LinesThenWords(line_scoring.convert())
+            }
+        }
+    }
+
+    pub fn parse(arg: &str) -> Result<Self, String> {
+        let words: Vec<&str> = arg.split(".").collect();
+        match words[0] {
+            "naive" => Ok(AlgorithmType::Naive),
+            "seeds" => Ok(AlgorithmType::Seeds),
+            "lines-then-words" => {
+                if words.len() < 2 {
+                    return Err(String::from("Lines-then-words needs a line scoring subargument {zero-one, zero-information, whitespace-ignoring, k-gram}"));
+                }
+                let line_scoring = match words[1] {
+                    "zero-one" => LineScoring::ZeroOne,
+                    "zero-information" => LineScoring::ZeroInformation,
+                    "whitespace-ignoring" => LineScoring::WhitespaceIgnoring,
+                    "k-gram" => LineScoring::KGram,
+                    _ => {
+                        return Err(String::from(
+                            "Unknown line scoring method {zero-one, zero-information, whitespace-ignoring, k-gram}",
+                        ))
+                    }
+                };
+                Ok(AlgorithmType::LinesThenWords(line_scoring))
+            }
+            _ => Err(String::from("Unknown algorithm {naive, seeds, lines-then-words}")),
         }
     }
 }
@@ -42,7 +89,7 @@ struct Args {
     #[arg(short, long, default_value_t = String::from(""))]
     filter: String,
 
-    #[arg(value_enum)]
+    #[arg(value_parser = AlgorithmType::parse)]
     algorithms: Vec<AlgorithmType>,
 }
 

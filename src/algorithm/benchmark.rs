@@ -32,14 +32,16 @@ impl<'a> PreprocessedTestcase<'a> {
     }
 }
 
-type Algorithm = fn(&[[PartitionedText; 2]], &AlignmentScoring) -> Vec<Vec<DiffOp>>;
+type Algorithm = Box<dyn Fn(&[[PartitionedText; 2]], &AlignmentScoring) -> Vec<Vec<DiffOp>>>;
 
 fn get_algorithm(algorithm: MainSequenceAlgorithm) -> Algorithm {
     match algorithm {
-        MainSequenceAlgorithm::Seeds => greedy_seeds::greedy_seeds,
-        MainSequenceAlgorithm::Naive => |text_words, scoring| naive_dp::naive_dp_all_files(text_words, scoring),
-        MainSequenceAlgorithm::LinesThenWords => {
-            |text_words, scoring| multi_level::lines_then_words(text_words, scoring)
+        MainSequenceAlgorithm::Seeds => Box::new(greedy_seeds::greedy_seeds),
+        MainSequenceAlgorithm::Naive => {
+            Box::new(|text_words, scoring| naive_dp::naive_dp_all_files(text_words, scoring))
+        }
+        MainSequenceAlgorithm::LinesThenWords(line_scoring) => {
+            Box::new(move |text_words, scoring| multi_level::lines_then_words(text_words, scoring, line_scoring))
         }
     }
 }

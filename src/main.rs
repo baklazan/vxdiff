@@ -1,7 +1,7 @@
 use clap::{error::ErrorKind, ArgGroup, CommandFactory as _, Parser, ValueEnum};
 use std::io::stdout;
 use vxdiff::{
-    algorithm::{compute_diff, DiffAlgorithm, MainSequenceAlgorithm},
+    algorithm::{compute_diff, DiffAlgorithm, LineScoringStrategy, MainSequenceAlgorithm},
     basic_terminal::{print, print_side_by_side},
     input::{
         read_as_git_pager, read_by_running_git_diff_raw, read_file_list, run_external_helper_for_git_diff,
@@ -34,7 +34,9 @@ impl DiffAlgorithmArg {
         match &self {
             DiffAlgorithmArg::Naive => DiffAlgorithm::MainSequence(MainSequenceAlgorithm::Naive),
             DiffAlgorithmArg::MainSeeds => DiffAlgorithm::MainSequence(MainSequenceAlgorithm::Seeds),
-            DiffAlgorithmArg::LinesThenWords => DiffAlgorithm::MainSequence(MainSequenceAlgorithm::LinesThenWords),
+            DiffAlgorithmArg::LinesThenWords => {
+                DiffAlgorithm::MainSequence(MainSequenceAlgorithm::LinesThenWords(LineScoringStrategy::KGram))
+            }
             DiffAlgorithmArg::MovingSeeds => DiffAlgorithm::MovingSeeds,
         }
     }

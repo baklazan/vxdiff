@@ -61,7 +61,15 @@ pub enum DiffAlgorithm {
 pub enum MainSequenceAlgorithm {
     Naive,
     Seeds,
-    LinesThenWords,
+    LinesThenWords(LineScoringStrategy),
+}
+
+#[derive(Clone, Copy)]
+pub enum LineScoringStrategy {
+    ZeroOne,
+    ZeroInformation,
+    WhitespaceIgnoring,
+    KGram,
 }
 
 pub fn compute_diff(files: &[[&str; 2]], algorithm: DiffAlgorithm) -> Diff {

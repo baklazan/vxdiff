@@ -6,7 +6,7 @@ use crate::algorithm::{
 
 use super::MatchScoring;
 
-pub struct WhitespaceAwareScoring {
+pub struct WhitespaceIgnoringScoring {
     full_symbols: Vec<[Vec<string_interner::symbol::SymbolU32>; 2]>,
     non_white_symbols: Vec<[Vec<string_interner::symbol::SymbolU32>; 2]>,
     full_values: Vec<[Vec<TScore>; 2]>,
@@ -44,8 +44,9 @@ fn remove_whitespace(text_parts: &[[PartitionedText; 2]]) -> FilteredInput {
     FilteredInput { texts, part_bounds }
 }
 
-impl WhitespaceAwareScoring {
-    pub(in crate::algorithm) fn new(text_parts: &[[PartitionedText; 2]]) -> WhitespaceAwareScoring {
+impl WhitespaceIgnoringScoring {
+    #[allow(dead_code)]
+    pub(in crate::algorithm) fn new(text_parts: &[[PartitionedText; 2]]) -> WhitespaceIgnoringScoring {
         let non_white_input = remove_whitespace(text_parts);
         let mut non_white_parts = vec![];
         for file_id in 0..text_parts.len() {
@@ -57,7 +58,7 @@ impl WhitespaceAwareScoring {
 
         let frequencies = CharFrequencyCounter::collect_from_texts(text_parts);
 
-        WhitespaceAwareScoring {
+        WhitespaceIgnoringScoring {
             full_symbols: internalize_parts(text_parts),
             non_white_symbols: internalize_parts(&non_white_parts),
             full_values: part_values(text_parts, &frequencies),
@@ -66,7 +67,7 @@ impl WhitespaceAwareScoring {
     }
 }
 
-impl MatchScoring for WhitespaceAwareScoring {
+impl MatchScoring for WhitespaceIgnoringScoring {
     fn is_match(&self, part_indices: [usize; 2], file_ids: [usize; 2]) -> bool {
         self.full_symbols[file_ids[0]][0][part_indices[0]] == self.full_symbols[file_ids[1]][1][part_indices[1]]
     }

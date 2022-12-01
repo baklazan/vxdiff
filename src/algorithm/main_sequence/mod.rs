@@ -29,7 +29,9 @@ pub(super) fn main_sequence_fragments(
     let mut alignments = match algorithm {
         MainSequenceAlgorithm::Naive => naive_dp::naive_dp_all_files(text_words, &scoring),
         MainSequenceAlgorithm::Seeds => greedy_seeds::greedy_seeds(text_words, &scoring),
-        MainSequenceAlgorithm::LinesThenWords => multi_level::lines_then_words(text_words, &scoring),
+        MainSequenceAlgorithm::LinesThenWords(line_scoring) => {
+            multi_level::lines_then_words(text_words, &scoring, line_scoring)
+        }
     };
 
     let mut result: Vec<(AlignedFragment, bool)> = vec![];

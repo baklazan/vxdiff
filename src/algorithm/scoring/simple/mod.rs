@@ -2,7 +2,8 @@ use crate::algorithm::DiffOp;
 
 use super::{AlignmentScoringMethod, DpDirection, DpSubstate, TScore};
 
-pub mod whitespace_aware;
+pub mod k_gram_sampling;
+pub mod whitespace_ignoring;
 pub mod zero_one;
 pub mod zero_or_information;
 
