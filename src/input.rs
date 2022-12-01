@@ -1,5 +1,4 @@
 use crate::DynResult;
-use std::fs::read_to_string;
 use std::io::{BufRead as _, Read as _};
 
 #[derive(Default)]
@@ -137,20 +136,19 @@ pub fn read_as_git_pager() -> DynResult<ProgramInput> {
         let n = read_number(&mut stdin)?;
         assert!(n == 1 || n == 7 || n == 9);
 
-        // TODO: Lossy or just fail? Also below.
         let old_name = String::from_utf8_lossy(&read_token(&mut stdin)?).into_owned();
         if n == 1 {
             eprintln!("'{old_name}' is unmerged");
         } else {
             let old_size = read_number(&mut stdin)?;
-            let old_content = String::from_utf8(read_exact(&mut stdin, old_size)?)?;
+            let old_content = String::from_utf8_lossy(&read_exact(&mut stdin, old_size)?).into_owned();
             assert!(read_exact(&mut stdin, 1)? == vec![0]);
 
             let _old_oid = read_token(&mut stdin)?; // TODO: use it
             let _old_mode = read_token(&mut stdin)?;
 
             let new_size = read_number(&mut stdin)?;
-            let new_content = String::from_utf8(read_exact(&mut stdin, new_size)?)?;
+            let new_content = String::from_utf8_lossy(&read_exact(&mut stdin, new_size)?).into_owned();
             assert!(read_exact(&mut stdin, 1)? == vec![0]);
 
             let _new_oid = read_token(&mut stdin)?; // TODO: use it
@@ -184,12 +182,12 @@ pub fn read_file_list(files: &[String]) -> DynResult<ProgramInput> {
     let mut result = ProgramInput::default();
 
     for i in (0..files.len()).step_by(2) {
-        let old_name = &files[i];
-        let new_name = &files[i + 1];
-        let old = read_to_string(old_name)?;
-        let new = read_to_string(new_name)?;
-        result.file_input.push([old, new]);
-        result.file_names.push([old_name.clone(), new_name.clone()]);
+        let old_name = files[i].clone();
+        let new_name = files[i + 1].clone();
+        let old_content = String::from_utf8_lossy(&std::fs::read(&old_name)?).into_owned();
+        let new_content = String::from_utf8_lossy(&std::fs::read(&new_name)?).into_owned();
+        result.file_input.push([old_content, new_content]);
+        result.file_names.push([old_name, new_name]);
     }
 
     Ok(result)
