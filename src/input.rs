@@ -1,5 +1,10 @@
 use crate::DynResult;
-use std::io::{BufRead as _, Read as _};
+use std::ffi::OsStr;
+use std::io::{BufRead, BufReader, Read, Write as _};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 #[derive(Default)]
 pub struct ProgramInput {
@@ -12,22 +17,213 @@ fn concat<'a, A: AsRef<str>, B: AsRef<str>>(a: &'a [A], b: &'a [B]) -> impl Iter
     a.iter().map(AsRef::as_ref).chain(b.iter().map(AsRef::as_ref))
 }
 
+fn read_token(input: &mut impl BufRead) -> DynResult<Vec<u8>> {
+    let mut buffer = vec![];
+    input.read_until(0, &mut buffer)?;
+    if buffer.is_empty() {
+        return Err("unexpected EOF reading from git diff")?;
+    }
+    if buffer[buffer.len() - 1] != 0 {
+        return match std::str::from_utf8(&buffer) {
+            Ok(s) => Err(format!("unexpected output from git diff: {}", s.trim()))?,
+            Err(_) => Err(format!("unexpected output from git diff: {:?}", buffer))?,
+        };
+    }
+    buffer.pop();
+    Ok(buffer)
+}
+
+fn read_exact(input: &mut impl Read, size: usize) -> DynResult<Vec<u8>> {
+    let mut buffer = vec![0; size];
+    input.read_exact(&mut buffer)?;
+    Ok(buffer)
+}
+
+fn read_number(input: &mut impl BufRead) -> DynResult<usize> {
+    Ok(std::str::from_utf8(&read_token(input)?)?.parse()?)
+}
+
+fn join_path(parent: &[u8], child: &[u8]) -> DynResult<PathBuf> {
+    #[cfg(unix)]
+    {
+        return Ok([OsStr::from_bytes(parent), OsStr::from_bytes(child)].iter().collect());
+    }
+    #[cfg(windows)]
+    {
+        // Vxdiff was not tested on Windows. This code is a best effort guess.
+        // Git for Windows always prints paths with UTF-8, right?
+        // The result of `git rev-parse --show-toplevel` is a normal Windows path Rust will
+        // understand, starting with a drive letter, right?
+        let parent = String::from_utf8(parent)?;
+        let child = String::from_utf8(child)?;
+        return Ok([parent, child].iter().collect());
+    }
+    #[allow(unreachable_code)]
+    {
+        unimplemented!()
+    }
+}
+
 pub fn run_git_diff(current_exe: &str, git_diff_args: &[String], pager_args: &[&str]) -> DynResult<()> {
     let args = concat(&["diff"], git_diff_args);
     let git_external_diff = shell_words::join([current_exe, "--git-external-diff"]);
     let git_pager = shell_words::join(concat(&[current_exe, "--git-pager"], pager_args));
-    // TODO: std::process::ExitStatus::exit_ok() is unstable
-    let exit_status = std::process::Command::new("git")
+    let exit_status = Command::new("git")
         .args(args)
         .env("GIT_EXTERNAL_DIFF", git_external_diff)
         .env("GIT_PAGER", git_pager)
-        .spawn()?
-        .wait()?;
+        .status()?;
+    // TODO: std::process::ExitStatus::exit_ok() is unstable
     if exit_status.success() {
         Ok(())
     } else {
         Err(format!("running git diff failed: {exit_status}"))?
     }
+}
+
+fn get_working_tree_root() -> DynResult<Vec<u8>> {
+    let std::process::Output {
+        status,
+        mut stdout,
+        stderr: _,
+    } = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .stderr(Stdio::inherit())
+        .output()?;
+    // TODO: std::process::ExitStatus::exit_ok() is unstable
+    if !status.success() {
+        return Err(format!("running git rev-parse --show-toplevel failed: {status}"))?;
+    }
+    match stdout.pop() {
+        Some(b'\n') => {}
+        Some(_) => return Err("git rev-parse --show-toplevel output doesn't end with a newline")?,
+        None => return Err("git rev-parse --show-toplevel printed nothing (bare Git repo?)")?,
+    }
+    Ok(stdout)
+}
+
+pub fn read_by_running_git_diff_raw(git_diff_args: &[String]) -> DynResult<ProgramInput> {
+    let mut working_tree_root = None;
+
+    let diff_args = concat(&["diff", "--raw", "--no-abbrev", "-z"], git_diff_args);
+    let mut diff_child = Command::new("git").args(diff_args).stdout(Stdio::piped()).spawn()?;
+    let mut diff_stdout = BufReader::new(diff_child.stdout.take().unwrap());
+
+    let mut cat_child = Command::new("git")
+        .args(["cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let mut cat_stdin = cat_child.stdin.take().unwrap();
+    let mut cat_stdout = BufReader::new(cat_child.stdout.take().unwrap());
+
+    let mut result = ProgramInput::default();
+
+    while !diff_stdout.fill_buf()?.is_empty() {
+        let metadata = read_token(&mut diff_stdout)?;
+        let metadata = std::str::from_utf8(&metadata)?;
+        if !metadata.starts_with(':') {
+            return Err(format!("unexpected output from git diff: {metadata}"))?;
+        }
+        if metadata.starts_with("::") {
+            return Err("combined diff formats ('-c' and '--cc') are not supported")?;
+        }
+        let parts: Vec<_> = metadata[1..].split(' ').collect();
+        if parts.len() != 5 {
+            return Err(format!("unexpected output from git diff: {metadata}"))?;
+        }
+        // TODO: use them
+        let [old_mode, new_mode, old_oid, new_oid, status] = [parts[0], parts[1], parts[2], parts[3], parts[4]];
+
+        let old_name_raw = read_token(&mut diff_stdout)?;
+        let old_name_lossy = String::from_utf8_lossy(&old_name_raw).into_owned();
+
+        let new_name_raw;
+        let new_name_lossy;
+        if status.starts_with('R') || status.starts_with('C') {
+            new_name_raw = read_token(&mut diff_stdout)?;
+            new_name_lossy = String::from_utf8_lossy(&new_name_raw).into_owned();
+        } else {
+            new_name_raw = old_name_raw.clone();
+            new_name_lossy = old_name_lossy.clone();
+        }
+
+        if status.starts_with('U') {
+            eprintln!("'{old_name_lossy}' is unmerged");
+            continue;
+        }
+
+        let mut read = |mode: &str, oid: &str, name_raw: &[u8]| -> DynResult<String> {
+            // TODO: deal with uncommon modes (symlinks, submodules)
+            if mode == "040000" {
+                return Err("unexpected directory in git diff --raw output")?;
+            }
+
+            let content;
+            if oid.chars().all(|c| c == '0') {
+                let working_tree_root = match working_tree_root {
+                    Some(ref working_tree_root) => working_tree_root,
+                    None => working_tree_root.insert(get_working_tree_root()?),
+                };
+                let path = join_path(working_tree_root, name_raw)?;
+                content = std::fs::read(&path)?;
+            } else {
+                cat_stdin.write_all(format!("{oid}\n").as_bytes())?;
+
+                let mut line = String::new();
+                cat_stdout.read_line(&mut line)?;
+                let Some(line) = line.strip_suffix('\n') else {
+                    return Err("unexpected EOF reading from git cat-file --batch")?;
+                };
+
+                let parts: Vec<_> = line.split(' ').collect();
+                if parts.len() != 3 || parts[0] != oid || parts[1] != "blob" {
+                    return Err(format!(
+                        "unexpected output from git cat-file: for query '{oid}' got '{line}'"
+                    ))?;
+                }
+
+                let size: usize = parts[2].parse()?;
+
+                content = read_exact(&mut cat_stdout, size)?;
+                assert!(read_exact(&mut cat_stdout, 1)? == vec![b'\n']);
+            }
+
+            let content = String::from_utf8_lossy(&content).into_owned();
+
+            Ok(content)
+        };
+        let old_content = if status == "A" {
+            assert!(old_oid.chars().all(|c| c == '0'));
+            String::new()
+        } else {
+            read(old_mode, old_oid, &old_name_raw)?
+        };
+        let new_content = if status == "D" {
+            assert!(new_oid.chars().all(|c| c == '0'));
+            String::new()
+        } else {
+            read(new_mode, new_oid, &new_name_raw)?
+        };
+
+        result.file_input.push([old_content, new_content]);
+        result.file_names.push([old_name_lossy, new_name_lossy]);
+    }
+
+    let diff_status = diff_child.wait()?;
+    // TODO: std::process::ExitStatus::exit_ok() is unstable
+    if !diff_status.success() {
+        return Err(format!("running git diff failed: {diff_status}"))?;
+    }
+
+    std::mem::drop(cat_stdin);
+    let cat_status = cat_child.wait()?;
+    // TODO: std::process::ExitStatus::exit_ok() is unstable
+    if !cat_status.success() {
+        Err(format!("running git cat-file failed: {cat_status}"))?
+    }
+
+    Ok(result)
 }
 
 pub fn run_external_helper_for_git_diff(args: &[String]) -> DynResult<()> {
@@ -83,32 +279,6 @@ pub fn run_external_helper_for_git_diff(args: &[String]) -> DynResult<()> {
 }
 
 pub fn read_as_git_pager() -> DynResult<ProgramInput> {
-    fn read_token(input: &mut impl std::io::BufRead) -> DynResult<Vec<u8>> {
-        let mut buffer = vec![];
-        input.read_until(0, &mut buffer)?;
-        if buffer.is_empty() {
-            return Err("unexpected EOF reading from git diff")?;
-        }
-        if buffer[buffer.len() - 1] != 0 {
-            return match std::str::from_utf8(&buffer) {
-                Ok(s) => Err(format!("unexpected output from git diff: {}", s.trim()))?,
-                Err(_) => Err(format!("unexpected output from git diff: {:?}", buffer))?,
-            };
-        }
-        buffer.pop();
-        Ok(buffer)
-    }
-
-    fn read_exact(input: &mut impl std::io::Read, size: usize) -> DynResult<Vec<u8>> {
-        let mut buffer = vec![0; size];
-        input.read_exact(&mut buffer)?;
-        Ok(buffer)
-    }
-
-    fn read_number(input: &mut impl std::io::BufRead) -> DynResult<usize> {
-        Ok(std::str::from_utf8(&read_token(input)?)?.parse()?)
-    }
-
     let stdin = std::io::stdin();
     let mut stdin = stdin.lock();
 

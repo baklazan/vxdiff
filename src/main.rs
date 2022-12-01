@@ -3,7 +3,10 @@ use std::io::stdout;
 use vxdiff::{
     algorithm::{compute_diff, DiffAlgorithm, MainSequenceAlgorithm},
     basic_terminal::{print, print_side_by_side},
-    input::{read_as_git_pager, read_file_list, run_external_helper_for_git_diff, run_git_diff, ProgramInput},
+    input::{
+        read_as_git_pager, read_by_running_git_diff_raw, read_file_list, run_external_helper_for_git_diff,
+        run_git_diff, ProgramInput,
+    },
     tui_terminal::{print_side_by_side_diff_plainly, run_in_terminal, run_tui},
     validate::{print_errors, validate},
     DynResult,
@@ -49,6 +52,8 @@ struct Args {
     files: Vec<String>,
     #[arg(long, group = "input", value_name = "GIT DIFF ARGS", num_args = .., allow_hyphen_values = true)]
     git: Option<Vec<String>>,
+    #[arg(long, group = "input", value_name = "GIT DIFF ARGS", num_args = .., allow_hyphen_values = true)]
+    git_old: Option<Vec<String>>,
     #[arg(long, group = "input")]
     git_pager: bool,
     #[arg(long, group = "input", value_name = "?", num_args = 1.., allow_hyphen_values = true, exclusive = true)]
@@ -58,7 +63,7 @@ struct Args {
 fn try_main() -> DynResult<()> {
     let args = Args::parse();
 
-    if let Some(git_diff_args) = &args.git {
+    if let Some(git_diff_args) = &args.git_old {
         let current_exe = std::env::current_exe()?;
         let current_exe = current_exe.to_str().ok_or("current_exe is not unicode")?;
         // unwrap() is OK because none of our enum variants use #[value(skip)].
@@ -76,7 +81,9 @@ fn try_main() -> DynResult<()> {
 
     let input: ProgramInput;
 
-    if args.git_pager {
+    if let Some(git_diff_args) = &args.git {
+        input = read_by_running_git_diff_raw(git_diff_args)?;
+    } else if args.git_pager {
         input = read_as_git_pager()?;
     } else if args.files.len() % 2 != 0 {
         Args::command()
