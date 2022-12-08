@@ -43,7 +43,7 @@ impl DiffAlgorithmArg {
     }
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(arg_required_else_help(true))]
 #[command(group(ArgGroup::new("input").required(true)))]
 struct Args {

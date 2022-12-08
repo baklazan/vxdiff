@@ -1,7 +1,7 @@
 use clap::{Args, ValueEnum};
 use serde::Deserialize;
 use std::path::PathBuf;
-use tui::style::{Color, Modifier, Style};
+use tui::style::Color;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Deserialize)]
 pub enum ClipboardMechanism {
@@ -17,7 +17,32 @@ pub enum ClipboardMechanism {
     None,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Copy, Default, Deserialize)]
+pub struct Style {
+    pub fg: Option<Color>,
+    pub bg: Option<Color>,
+    pub bold: Option<bool>,
+    pub underlined: Option<bool>,
+    pub dim: Option<bool>,
+    pub italic: Option<bool>,
+    pub crossed_out: Option<bool>,
+}
+
+impl Style {
+    pub fn patch(self, other: Style) -> Style {
+        Style {
+            fg: other.fg.or(self.fg),
+            bg: other.bg.or(self.bg),
+            bold: other.bold.or(self.bold),
+            underlined: other.underlined.or(self.underlined),
+            dim: other.dim.or(self.dim),
+            italic: other.italic.or(self.italic),
+            crossed_out: other.crossed_out.or(self.crossed_out),
+        }
+    }
+}
+
+#[derive(Deserialize)]
 pub struct Theme {
     pub cursor: Style,
     pub line_numbers_default: Style,
@@ -37,30 +62,38 @@ pub struct Theme {
     pub highlight_phantom_old: Style,
     pub highlight_phantom_new: Style,
     pub fabricated_symbol: Style,
+    pub search_highlight: Style,
+    pub select_highlight: Style,
+}
+
+macro_rules! style {
+    ( $( $field:ident = $value:expr ),* ) => { Style { $( $field: Some($value), )* ..Style::default() } }
 }
 
 #[allow(dead_code)]
 fn default_theme() -> Theme {
-    let highlight = Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let highlight = style!(bold = true, underlined = true);
     Theme {
-        cursor: Style::default().fg(Color::White).bg(Color::Blue),
-        line_numbers_default: Style::default(),
-        line_numbers_phantom: Style::default().fg(Color::Cyan),
-        text_equal: Style::default(),
-        text_padding: Style::default().fg(Color::DarkGray),
-        text_change_old: Style::default().fg(Color::Red),
-        text_change_new: Style::default().fg(Color::Green),
-        text_move_old: Style::default().fg(Color::Yellow),
-        text_move_new: Style::default().fg(Color::Yellow),
-        text_phantom_old: Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-        text_phantom_new: Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+        cursor: style!(fg = Color::White, bg = Color::Blue),
+        line_numbers_default: style!(),
+        line_numbers_phantom: style!(fg = Color::Cyan),
+        text_equal: style!(),
+        text_padding: style!(fg = Color::DarkGray),
+        text_change_old: style!(fg = Color::Red),
+        text_change_new: style!(fg = Color::Green),
+        text_move_old: style!(fg = Color::Yellow),
+        text_move_new: style!(fg = Color::Yellow),
+        text_phantom_old: style!(fg = Color::Cyan, dim = true),
+        text_phantom_new: style!(fg = Color::Cyan, dim = true),
         highlight_change_old: highlight,
         highlight_change_new: highlight,
         highlight_move_old: highlight,
         highlight_move_new: highlight,
         highlight_phantom_old: highlight,
         highlight_phantom_new: highlight,
-        fabricated_symbol: Style::default().bg(Color::Cyan),
+        fabricated_symbol: style!(bg = Color::Cyan),
+        search_highlight: style!(fg = Color::Black, bg = Color::Yellow),
+        select_highlight: style!(fg = Color::Black, bg = Color::White),
     }
 }
 
@@ -72,26 +105,27 @@ fn new_theme() -> Theme {
     let darkest_green = Color::Indexed(22); // #005F00
     let darkest_yellow = Color::Indexed(58); // #5F5F00
     let darkest_cyan = Color::Indexed(23); // #005F5F
-    let highlight = Style::default().add_modifier(Modifier::BOLD);
     Theme {
-        cursor: Style::default().fg(Color::White).bg(Color::Blue),
-        line_numbers_default: Style::default(),
-        line_numbers_phantom: Style::default().fg(Color::Cyan),
-        text_equal: Style::default().fg(white).bg(black),
-        text_padding: Style::default().fg(Color::DarkGray).bg(Color::Indexed(238)),
-        text_change_old: Style::default().fg(white).bg(darkest_red),
-        text_change_new: Style::default().fg(white).bg(darkest_green),
-        text_move_old: Style::default().fg(white).bg(darkest_yellow),
-        text_move_new: Style::default().fg(white).bg(darkest_yellow),
-        text_phantom_old: Style::default().fg(white).bg(darkest_cyan).add_modifier(Modifier::DIM),
-        text_phantom_new: Style::default().fg(white).bg(darkest_cyan).add_modifier(Modifier::DIM),
-        highlight_change_old: highlight.bg(Color::Indexed(88)),
-        highlight_change_new: highlight.bg(Color::Indexed(28)),
-        highlight_move_old: highlight.bg(Color::Indexed(100)),
-        highlight_move_new: highlight.bg(Color::Indexed(100)),
-        highlight_phantom_old: highlight.bg(Color::Indexed(30)),
-        highlight_phantom_new: highlight.bg(Color::Indexed(30)),
-        fabricated_symbol: highlight.fg(Color::Cyan),
+        cursor: style!(fg = Color::White, bg = Color::Blue),
+        line_numbers_default: style!(),
+        line_numbers_phantom: style!(fg = Color::Cyan),
+        text_equal: style!(fg = white, bg = black),
+        text_padding: style!(fg = Color::DarkGray, bg = Color::Indexed(238)),
+        text_change_old: style!(fg = white, bg = darkest_red),
+        text_change_new: style!(fg = white, bg = darkest_green),
+        text_move_old: style!(fg = white, bg = darkest_yellow),
+        text_move_new: style!(fg = white, bg = darkest_yellow),
+        text_phantom_old: style!(fg = white, bg = darkest_cyan, dim = true),
+        text_phantom_new: style!(fg = white, bg = darkest_cyan, dim = true),
+        highlight_change_old: style!(bg = Color::Indexed(88), bold = true),
+        highlight_change_new: style!(bg = Color::Indexed(28), bold = true),
+        highlight_move_old: style!(bg = Color::Indexed(100), bold = true),
+        highlight_move_new: style!(bg = Color::Indexed(100), bold = true),
+        highlight_phantom_old: style!(bg = Color::Indexed(30), bold = true),
+        highlight_phantom_new: style!(bg = Color::Indexed(30), bold = true),
+        fabricated_symbol: style!(fg = Color::Cyan, bold = true),
+        search_highlight: style!(fg = Color::Black, bg = Color::Yellow),
+        select_highlight: style!(fg = Color::Black, bg = Color::White),
     }
 }
 
@@ -118,7 +152,7 @@ macro_rules! config_structs {
             $( pub $name: $typ, )*
         }
 
-        #[derive(Args, Debug, Deserialize)]
+        #[derive(Args, Deserialize)]
         pub struct ConfigOpt {
             $( $( #[$aattr] )* #[serde(skip)] pub $aname: bool, )*
             $( $( #[$attr] )* pub $name: Option<$typ>, )*

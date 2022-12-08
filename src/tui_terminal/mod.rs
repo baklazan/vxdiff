@@ -5,7 +5,7 @@ mod range_map;
 mod text_input;
 
 use super::algorithm::{Diff, DiffOp, FileDiff, Section};
-use super::config::{Config, SearchCaseSensitivity};
+use super::config::{Config, SearchCaseSensitivity, Style};
 use clipboard::copy_to_clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use gui_layout::gui_layout;
@@ -20,7 +20,7 @@ use std::ops::{DerefMut as _, Range};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use text_input::TextInput;
-use tui::style::{Color, Modifier, Style};
+use tui::style::{Color, Modifier};
 
 fn vec_of<T>(length: usize, func: impl Fn() -> T) -> Vec<T> {
     (0..length).map(|_| func()).collect()
@@ -1072,6 +1072,33 @@ fn is_search_case_sensitive(sensitivity: SearchCaseSensitivity, pattern: &str) -
     }
 }
 
+fn tui_style(style: Style) -> tui::style::Style {
+    let mut modifier = Modifier::empty();
+    modifier.set(Modifier::BOLD, style.bold.unwrap_or(false));
+    modifier.set(Modifier::UNDERLINED, style.underlined.unwrap_or(false));
+    modifier.set(Modifier::DIM, style.dim.unwrap_or(false));
+    modifier.set(Modifier::ITALIC, style.italic.unwrap_or(false));
+    modifier.set(Modifier::CROSSED_OUT, style.crossed_out.unwrap_or(false));
+    tui::style::Style {
+        fg: style.fg,
+        bg: style.bg,
+        add_modifier: modifier,
+        sub_modifier: Modifier::empty(),
+    }
+}
+
+fn usto16(number: usize) -> u16 {
+    u16::try_from(number).unwrap()
+}
+
+fn u16tos(number: u16) -> usize {
+    usize::try_from(number).unwrap()
+}
+
+fn buffer_write(buffer: &mut tui::buffer::Buffer, x: usize, y: usize, string: impl AsRef<str>, style: Style) {
+    buffer.set_string(usto16(x), usto16(y), string, tui_style(style));
+}
+
 impl<'a> State<'a> {
     fn tree_view(&self) -> TreeView {
         TreeView {
@@ -1623,7 +1650,7 @@ impl<'a> State<'a> {
                     _ => theme.line_numbers_default,
                 };
                 let screen_x = line_number_screen_x - line_number_str.len();
-                buffer.set_string(usto16(screen_x), usto16(screen_y), line_number_str, line_number_style);
+                buffer_write(buffer, screen_x, screen_y, line_number_str, line_number_style);
             }
             TextSource::Fabricated(..) => file_id_for_rendering = None,
         }
@@ -1720,18 +1747,14 @@ impl<'a> State<'a> {
                     style = style.patch(theme.fabricated_symbol);
                 }
                 if search_highlight {
-                    // TODO: Make it configurable too.
-                    style = style.fg(Color::Black).bg(Color::Yellow);
+                    style = style.patch(theme.search_highlight);
                 }
                 if selected {
-                    // TODO: Fix this and make it configurable too.
-                    if style.fg == None || style.fg == Some(Color::Reset) {
-                        style = style.fg(Color::Black);
-                    }
-                    style = style.bg(Color::White);
+                    // TODO: Do some magic color blending.
+                    style = style.patch(theme.select_highlight);
                 }
                 cell.symbol = egc;
-                cell.set_style(style);
+                cell.set_style(tui_style(style));
             }
             *buffer.get_mut(usto16(screen_x), usto16(screen_y)) = cell;
         }
@@ -1756,7 +1779,7 @@ impl<'a> State<'a> {
         };
         for y in 0..real_scroll_height {
             if pos == self.cursor_pos {
-                buffer.set_string(usto16(xcursor.start), usto16(y), ">", self.config.theme.cursor);
+                buffer_write(buffer, xcursor.start, y, ">", self.config.theme.cursor);
             }
             let parent_node = self.tree.node(pos.parent);
             let tree_view = self.tree_view();
@@ -1774,12 +1797,7 @@ impl<'a> State<'a> {
                             &mut rendered,
                         );
                     }
-                    buffer.set_string(
-                        usto16(xsep.start),
-                        usto16(y),
-                        tui::symbols::line::VERTICAL,
-                        Default::default(),
-                    );
+                    buffer_write(buffer, xsep.start, y, tui::symbols::line::VERTICAL, Style::default());
                 }
                 &UILine::FileHeaderLine(file_id) => {
                     let file_header_nid = pos.parent;
@@ -1789,27 +1807,27 @@ impl<'a> State<'a> {
                         2 => true,
                         _ => panic!("unexpected node.visible of FileHeaderLine's parent"),
                     };
-                    buffer.set_string(
-                        1,
-                        usto16(y),
-                        format!(
-                            "{} vs {} (press z to {})",
-                            self.diff.file_sides[file_id][0].filename,
-                            self.diff.file_sides[file_id][1].filename,
-                            if is_open { "close" } else { "open" }
-                        ),
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(if is_open { Color::Green } else { Color::Red }),
+                    let string = format!(
+                        "{} vs {} (press z to {})",
+                        self.diff.file_sides[file_id][0].filename,
+                        self.diff.file_sides[file_id][1].filename,
+                        if is_open { "close" } else { "open" }
                     );
+                    let style = Style {
+                        fg: Some(Color::Black),
+                        bg: Some(if is_open { Color::Green } else { Color::Red }),
+                        ..Style::default()
+                    };
+                    buffer_write(buffer, 1, y, string, style);
                 }
                 UILine::ExpanderLine(hidden_count) => {
-                    buffer.set_string(
-                        1,
-                        usto16(y),
-                        format!("...{} hidden lines... (press x/c to expand)", hidden_count),
-                        Style::default().fg(Color::Black).bg(Color::White),
-                    );
+                    let string = format!("...{} hidden lines... (press x/c to expand)", hidden_count);
+                    let style = Style {
+                        fg: Some(Color::Black),
+                        bg: Some(Color::White),
+                        ..Style::default()
+                    };
+                    buffer_write(buffer, 1, y, string, style);
                 }
             });
             if let Some(next) = tree_view.next_leaf(pos, Next) {
@@ -1822,7 +1840,7 @@ impl<'a> State<'a> {
         match self.mode {
             GuiMode::Default => {}
             GuiMode::Jump { ref mut input } => {
-                let y = usto16(self.scroll_height - 1);
+                let y = self.scroll_height - 1;
                 let text = "Go to line: ";
                 let text_left = "L=left";
                 let text_right = "R=right";
@@ -1835,20 +1853,21 @@ impl<'a> State<'a> {
                     Some(text_right.len()),
                 ];
                 let [text_pos, input_pos, _, left_pos, _, right_pos] = gui_layout(constraints, 0..term_width);
-                buffer.set_string(usto16(text_pos.start), y, text, Style::default());
+                buffer_write(buffer, text_pos.start, y, text, Style::default());
                 let input_area = tui::layout::Rect {
                     x: usto16(input_pos.start),
-                    y,
+                    y: usto16(y),
                     width: usto16(input_pos.end - input_pos.start),
                     height: 1,
                 };
                 input.render(input_area, buffer, &mut rendered.terminal_cursor);
-                let styles = [
-                    Style::default().add_modifier(Modifier::BOLD),
-                    Style::default().add_modifier(Modifier::CROSSED_OUT),
-                ];
-                buffer.set_string(usto16(left_pos.start), y, text_left, styles[self.focused_side]);
-                buffer.set_string(usto16(right_pos.start), y, text_right, styles[1 - self.focused_side]);
+                let style = |active| Style {
+                    bold: Some(active),
+                    crossed_out: Some(!active),
+                    ..Style::default()
+                };
+                buffer_write(buffer, left_pos.start, y, text_left, style(self.focused_side == 0));
+                buffer_write(buffer, right_pos.start, y, text_right, style(self.focused_side == 1));
             }
             GuiMode::Search {
                 ref mut input,
@@ -1857,7 +1876,7 @@ impl<'a> State<'a> {
                 regexp,
                 ..
             } => {
-                let y = usto16(self.scroll_height - 1);
+                let y = self.scroll_height - 1;
                 let prefix_text = match direction {
                     Next => "/",
                     Prev => "?",
@@ -1873,21 +1892,22 @@ impl<'a> State<'a> {
                     Some(case_text.len()),
                 ];
                 let [prefix_pos, input_pos, _, regex_pos, _, case_pos] = gui_layout(constraints, 0..term_width);
-                buffer.set_string(usto16(prefix_pos.start), y, prefix_text, Style::default());
+                buffer_write(buffer, prefix_pos.start, y, prefix_text, Style::default());
                 let input_area = tui::layout::Rect {
                     x: usto16(input_pos.start),
-                    y,
+                    y: usto16(y),
                     width: usto16(input_pos.end - input_pos.start),
                     height: 1,
                 };
                 input.render(input_area, buffer, &mut rendered.terminal_cursor);
-                let style = |enabled| match enabled {
-                    false => Style::default().add_modifier(Modifier::CROSSED_OUT),
-                    true => Style::default().add_modifier(Modifier::BOLD),
+                let style = |active| Style {
+                    bold: Some(active),
+                    crossed_out: Some(!active),
+                    ..Style::default()
                 };
                 let case_sensitive = is_search_case_sensitive(case_sensitivity, input.get_content());
-                buffer.set_string(usto16(regex_pos.start), y, regex_text, style(regexp));
-                buffer.set_string(usto16(case_pos.start), y, case_text, style(case_sensitive));
+                buffer_write(buffer, regex_pos.start, y, regex_text, style(regexp));
+                buffer_write(buffer, case_pos.start, y, case_text, style(case_sensitive));
             }
         }
 
@@ -1910,13 +1930,6 @@ where
 }
 
 type TheTerminal = tui::terminal::Terminal<tui::backend::CrosstermBackend<io::Stdout>>;
-
-fn usto16(number: usize) -> u16 {
-    u16::try_from(number).unwrap()
-}
-fn u16tos(number: u16) -> usize {
-    usize::try_from(number).unwrap()
-}
 
 pub fn run_tui(
     diff: &Diff,
