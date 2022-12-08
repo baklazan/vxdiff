@@ -3,6 +3,7 @@ use std::io::stdout;
 use vxdiff::{
     algorithm::{compute_diff, DiffAlgorithm, LineScoringStrategy, MainSequenceAlgorithm},
     basic_terminal::{print, print_side_by_side},
+    config::{Config, ConfigOpt},
     input::{
         read_as_git_pager, read_by_running_git_diff_raw, read_file_list, run_external_helper_for_git_diff,
         run_git_diff, ProgramInput,
@@ -48,18 +49,27 @@ impl DiffAlgorithmArg {
 struct Args {
     #[arg(short, long, default_value_t = OutputMode::Tui, value_enum)]
     mode: OutputMode,
+
     #[arg(short, long, default_value_t = DiffAlgorithmArg::MovingSeeds, value_enum)]
     algorithm: DiffAlgorithmArg,
+
     #[arg(group = "input", value_names = ["OLD1", "NEW1", "OLD2", "NEW2"])]
     files: Vec<String>,
+
     #[arg(long, group = "input", value_name = "GIT DIFF ARGS", num_args = .., allow_hyphen_values = true)]
     git: Option<Vec<String>>,
+
     #[arg(long, group = "input", value_name = "GIT DIFF ARGS", num_args = .., allow_hyphen_values = true)]
     git_old: Option<Vec<String>>,
+
     #[arg(long, group = "input")]
     git_pager: bool,
+
     #[arg(long, group = "input", value_name = "?", num_args = 1.., allow_hyphen_values = true, exclusive = true)]
     git_external_diff: Vec<String>,
+
+    #[command(flatten)]
+    config: ConfigOpt,
 }
 
 fn try_main() -> DynResult<()> {
@@ -80,6 +90,20 @@ fn try_main() -> DynResult<()> {
         run_external_helper_for_git_diff(&args.git_external_diff)?;
         return Ok(());
     }
+
+    let mut config = Config::default();
+
+    let config_file_default = || dirs::config_dir().map(|c| c.join("vxdiff").join("config.toml"));
+    let config_file = args.config.config_file.clone().or_else(config_file_default);
+    if let Some(config_file) = config_file {
+        match std::fs::read(config_file) {
+            Ok(b) => config = config.update(toml::from_slice(&b)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e)?,
+        }
+    }
+
+    config = config.update(args.config);
 
     let input: ProgramInput;
 
@@ -115,8 +139,10 @@ fn try_main() -> DynResult<()> {
         OutputMode::Debug => println!("{diff:#?}"),
         OutputMode::Unified => print(&diff, &file_input, &mut stdout())?,
         OutputMode::Side => print_side_by_side(&diff, &file_input, &mut stdout())?,
-        OutputMode::TuiPlain => print_side_by_side_diff_plainly(&diff, &file_input, &file_names, &mut stdout())?,
-        OutputMode::Tui => run_in_terminal(|terminal| run_tui(&diff, &file_input, &file_names, terminal))?,
+        OutputMode::TuiPlain => {
+            print_side_by_side_diff_plainly(&diff, config, &file_input, &file_names, &mut stdout())?
+        }
+        OutputMode::Tui => run_in_terminal(|terminal| run_tui(&diff, config, &file_input, &file_names, terminal))?,
     }
 
     Ok(())

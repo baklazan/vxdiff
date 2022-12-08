@@ -1,5 +1,6 @@
 pub mod algorithm;
 pub mod basic_terminal;
+pub mod config;
 pub mod input;
 pub mod tui_terminal;
 pub mod validate;

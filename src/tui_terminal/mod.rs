@@ -5,7 +5,8 @@ mod range_map;
 mod text_input;
 
 use super::algorithm::{Diff, DiffOp, FileDiff, Section};
-use clipboard::{copy_to_clipboard, ClipboardMechanism};
+use super::config::{Config, SearchCaseSensitivity};
+use clipboard::copy_to_clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use gui_layout::gui_layout;
 use line_layout::{layout_line, LineCell, LineLayout};
@@ -23,120 +24,6 @@ use tui::style::{Color, Modifier, Style};
 
 fn vec_of<T>(length: usize, func: impl Fn() -> T) -> Vec<T> {
     (0..length).map(|_| func()).collect()
-}
-
-struct Theme {
-    cursor: Style,
-    line_numbers_default: Style,
-    line_numbers_phantom: Style,
-    text_equal: Style,
-    text_padding: Style,
-    text_change_old: Style,
-    text_change_new: Style,
-    text_move_old: Style,
-    text_move_new: Style,
-    text_phantom_old: Style,
-    text_phantom_new: Style,
-    highlight_change_old: Style,
-    highlight_change_new: Style,
-    highlight_move_old: Style,
-    highlight_move_new: Style,
-    highlight_phantom_old: Style,
-    highlight_phantom_new: Style,
-    fabricated_symbol: Style,
-}
-
-#[allow(dead_code)]
-fn default_theme() -> Theme {
-    let highlight = Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    Theme {
-        cursor: Style::default().fg(Color::White).bg(Color::Blue),
-        line_numbers_default: Style::default(),
-        line_numbers_phantom: Style::default().fg(Color::Cyan),
-        text_equal: Style::default(),
-        text_padding: Style::default().fg(Color::DarkGray),
-        text_change_old: Style::default().fg(Color::Red),
-        text_change_new: Style::default().fg(Color::Green),
-        text_move_old: Style::default().fg(Color::Yellow),
-        text_move_new: Style::default().fg(Color::Yellow),
-        text_phantom_old: Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-        text_phantom_new: Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-        highlight_change_old: highlight,
-        highlight_change_new: highlight,
-        highlight_move_old: highlight,
-        highlight_move_new: highlight,
-        highlight_phantom_old: highlight,
-        highlight_phantom_new: highlight,
-        fabricated_symbol: Style::default().bg(Color::Cyan),
-    }
-}
-
-#[allow(dead_code)]
-fn new_theme() -> Theme {
-    let black = Color::Indexed(16); // #000000
-    let white = Color::Indexed(253); // #DADADA
-    let darkest_red = Color::Indexed(52); // #5F0000
-    let darkest_green = Color::Indexed(22); // #005F00
-    let darkest_yellow = Color::Indexed(58); // #5F5F00
-    let darkest_cyan = Color::Indexed(23); // #005F5F
-    let highlight = Style::default().add_modifier(Modifier::BOLD);
-    Theme {
-        cursor: Style::default().fg(Color::White).bg(Color::Blue),
-        line_numbers_default: Style::default(),
-        line_numbers_phantom: Style::default().fg(Color::Cyan),
-        text_equal: Style::default().fg(white).bg(black),
-        text_padding: Style::default().fg(Color::DarkGray).bg(Color::Indexed(238)),
-        text_change_old: Style::default().fg(white).bg(darkest_red),
-        text_change_new: Style::default().fg(white).bg(darkest_green),
-        text_move_old: Style::default().fg(white).bg(darkest_yellow),
-        text_move_new: Style::default().fg(white).bg(darkest_yellow),
-        text_phantom_old: Style::default().fg(white).bg(darkest_cyan).add_modifier(Modifier::DIM),
-        text_phantom_new: Style::default().fg(white).bg(darkest_cyan).add_modifier(Modifier::DIM),
-        highlight_change_old: highlight.bg(Color::Indexed(88)),
-        highlight_change_new: highlight.bg(Color::Indexed(28)),
-        highlight_move_old: highlight.bg(Color::Indexed(100)),
-        highlight_move_new: highlight.bg(Color::Indexed(100)),
-        highlight_phantom_old: highlight.bg(Color::Indexed(30)),
-        highlight_phantom_new: highlight.bg(Color::Indexed(30)),
-        fabricated_symbol: highlight.fg(Color::Cyan),
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SearchCaseSensitivity {
-    CaseSensitive,
-    CaseInsensitive,
-    DependsOnPattern,
-}
-
-struct Config {
-    context_lines: usize,
-    mouse_wheel_scroll_lines: usize,
-    phantom_rendering: bool,
-    highlight_newlines: bool,
-    theme: Theme,
-    clipboard_mechanism: ClipboardMechanism,
-    search_incremental: bool,
-    search_default_case_sensitivity: SearchCaseSensitivity,
-    search_default_regexp: bool,
-}
-
-fn default_config() -> Config {
-    Config {
-        context_lines: 3,
-        mouse_wheel_scroll_lines: 3,
-        phantom_rendering: true,
-        highlight_newlines: false,
-        theme: new_theme(),
-        clipboard_mechanism: if std::env::var_os("VXDIFF_EXTCOPY").is_some() {
-            ClipboardMechanism::ExternalHelper
-        } else {
-            ClipboardMechanism::Terminal
-        },
-        search_incremental: true,
-        search_default_case_sensitivity: SearchCaseSensitivity::DependsOnPattern,
-        search_default_regexp: true,
-    }
 }
 
 struct ExtendedDiffSectionSide<'a> {
@@ -1018,12 +905,12 @@ fn print_plainly(tree_view: &TreeView, nid: Nid, output: &mut impl io::Write) ->
 
 pub fn print_side_by_side_diff_plainly(
     diff: &Diff,
+    config: Config,
     file_input: &[[&str; 2]],
     file_names: &[[&str; 2]],
     output: &mut impl io::Write,
 ) -> TheResult {
     let diff = make_extended_diff(diff, file_input, file_names);
-    let config = default_config();
     let mut tree = build_initial_tree(&config, &diff).0;
 
     // Gotta expand the file headers in order to see any content.
@@ -2033,6 +1920,7 @@ fn u16tos(number: u16) -> usize {
 
 pub fn run_tui(
     diff: &Diff,
+    config: Config,
     file_input: &[[&str; 2]],
     file_names: &[[&str; 2]],
     terminal: &mut TheTerminal,
@@ -2040,8 +1928,6 @@ pub fn run_tui(
     let diff = make_extended_diff(diff, file_input, file_names);
 
     let mut state = {
-        let config = default_config();
-
         // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
         let line_number_width = diff
             .file_sides

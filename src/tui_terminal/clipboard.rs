@@ -1,19 +1,7 @@
+use crate::config::ClipboardMechanism;
 use std::io::{self, Write as _};
 
-pub(super) enum ClipboardMechanism {
-    /// Copy to clipboard using the OSC 52 escape sequence.
-    /// Needs support from the terminal.
-    /// See also: https://github.com/zyedidia/micro/blob/master/runtime/help/copypaste.md
-    Terminal,
-
-    /// Copy to clipboard by running a helper such as xclip, xsel or pbcopy.
-    ExternalHelper,
-
-    /// Don't copy to system clipboard.
-    None,
-}
-
-pub(super) fn copy_to_clipboard(mechanism: &ClipboardMechanism, text: &str) -> Result<(), io::Error> {
+pub fn copy_to_clipboard(mechanism: &ClipboardMechanism, text: &str) -> Result<(), io::Error> {
     match mechanism {
         ClipboardMechanism::Terminal => {
             // https://terminalguide.namepad.de/seq/osc-52/

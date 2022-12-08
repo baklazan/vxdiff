@@ -8,15 +8,18 @@ edition = "2021"
 [dependencies]
 atty = "*"
 base64 = "*"
-clap = {version = "*", features = ['derive']}
+clap = { version = "*", features = ["derive"] }
 console = "*"
 crossterm = "*"
+dirs = "*"
 float-ord = "*"
 memchr = "*"
 rand = "*"
 regex = "*"
+serde = { version = "*", features = ["derive"] }
 shell-words = "*"
 string-interner = "*"
-tui = "*"
+toml = "*"
+tui = { version = "*", features = ["serde"] }
 unicode-segmentation = "*"
 unicode-width = "*"
