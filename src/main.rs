@@ -28,6 +28,7 @@ pub enum DiffAlgorithmArg {
     MainSeeds,
     MovingSeeds,
     LinesThenWords,
+    MainThenMoved,
 }
 
 impl DiffAlgorithmArg {
@@ -39,6 +40,9 @@ impl DiffAlgorithmArg {
                 DiffAlgorithm::MainSequence(MainSequenceAlgorithm::LinesThenWords(LineScoringStrategy::KGram))
             }
             DiffAlgorithmArg::MovingSeeds => DiffAlgorithm::MovingSeeds,
+            DiffAlgorithmArg::MainThenMoved => {
+                DiffAlgorithm::MainThenMoved(MainSequenceAlgorithm::LinesThenWords(LineScoringStrategy::KGram))
+            }
         }
     }
 }

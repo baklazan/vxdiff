@@ -95,10 +95,7 @@ fn make_sections<'a>(text_words: &[PartitionedText<'a>; 2], alignment: &[DiffOp]
     result
 }
 
-pub(super) fn build_diff<'a>(
-    texts_words: &[[PartitionedText<'a>; 2]],
-    fragments: Vec<(AlignedFragment, bool)>,
-) -> Diff {
+pub(super) fn build_diff(texts_words: &[[PartitionedText; 2]], fragments: Vec<(AlignedFragment, bool)>) -> Diff {
     let mut sections = vec![];
     let mut sections_ranges_from_fragment: Vec<Range<usize>> = vec![];
 
