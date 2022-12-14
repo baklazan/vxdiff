@@ -155,10 +155,10 @@ enum UILine {
     ExpanderLine(usize),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Nid(usize);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LeafPosition {
     parent: Nid,
     line_index: usize,
@@ -1277,6 +1277,8 @@ impl<'a> State<'a> {
         for file_id in 0..self.diff.files.len() {
             for side in 0..2 {
                 for (range, ()) in self.visible_byte_sets[file_id][side].ranges() {
+                    let subcontent = &self.diff.file_sides[file_id][side].content[range.clone()];
+
                     let mut process_match = |start: usize, end: usize| {
                         if start != end {
                             let highlights = &mut self.search_highlights[file_id][side];
@@ -1286,18 +1288,34 @@ impl<'a> State<'a> {
                                 highlights.push(start..end);
                             }
                         }
+                        let offset = if start == range.end {
+                            // Deal with patterns like "^" or "$" which can match an empty string
+                            // at the end of `subcontent`. This offset technically belongs to the
+                            // following expander line's Nid, or at EOF, to no Nid.
+                            //
+                            // For normal cases where subcontent ends with a newline, just ignore
+                            // the match. E.g. regex "$" also matches before the newline anyway.
+                            // Otherwise, go back one character. So regex "$" can jump to the end
+                            // of the last line, even if it's wrapped and has no newline.
+                            //
+                            // I don't care about "\A" and "\z" as long as they don't panic.
+                            if subcontent.ends_with('\n') {
+                                return;
+                            }
+                            start - subcontent.chars().next_back().unwrap().len_utf8()
+                        } else {
+                            start
+                        };
                         let my_match = SearchMatch {
                             file_id,
-                            offset: start,
-                            parent: self.byte_to_nid_maps[file_id][side].get(start).unwrap(),
+                            offset,
+                            parent: self.byte_to_nid_maps[file_id][side].get(offset).unwrap(),
                         };
                         match self.search_matches[side].last() {
                             Some(last_match) if *last_match == my_match => {}
                             _ => self.search_matches[side].push(my_match),
                         }
                     };
-
-                    let subcontent = &self.diff.file_sides[file_id][side].content[range.clone()];
 
                     match matcher {
                         Matcher::Regex(ref regex) => {

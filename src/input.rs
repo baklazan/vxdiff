@@ -351,9 +351,9 @@ pub fn read_file_list(files: &[String]) -> DynResult<ProgramInput> {
 
     let mut result = ProgramInput::default();
 
-    for i in (0..files.len()).step_by(2) {
-        let old_name = files[i].clone();
-        let new_name = files[i + 1].clone();
+    for chunk in files.chunks_exact(2) {
+        let old_name = chunk[0].clone();
+        let new_name = chunk[1].clone();
         let old_content = String::from_utf8_lossy(&std::fs::read(&old_name)?).into_owned();
         let new_content = String::from_utf8_lossy(&std::fs::read(&new_name)?).into_owned();
         result.file_input.push([old_content, new_content]);

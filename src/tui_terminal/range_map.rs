@@ -8,6 +8,7 @@ use std::ops::Range;
 /// - set a contiguous range of keys to the same value
 /// - erase a contiguous range of keys
 /// - iterate over contiguous ranges of keys that have the same value
+#[derive(Debug)]
 pub struct RangeMap<T> {
     /// Invariant: first entry's value is Some.
     /// Invariant: last entry's value is None.
