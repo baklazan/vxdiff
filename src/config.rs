@@ -64,6 +64,8 @@ pub struct Theme {
     pub fabricated_symbol: Style,
     pub search_highlight: Style,
     pub select_highlight: Style,
+    pub button: Style,
+    pub button_hint: Style,
 }
 
 macro_rules! style {
@@ -94,6 +96,8 @@ fn default_theme() -> Theme {
         fabricated_symbol: style!(bg = Color::Cyan),
         search_highlight: style!(fg = Color::Black, bg = Color::Yellow),
         select_highlight: style!(fg = Color::Black, bg = Color::White),
+        button: style!(fg = Color::Black, bg = Color::White),
+        button_hint: style!(fg = Color::White, bg = Color::Blue, bold = true),
     }
 }
 
@@ -126,6 +130,8 @@ fn new_theme() -> Theme {
         fabricated_symbol: style!(fg = Color::Cyan, bold = true),
         search_highlight: style!(fg = Color::Black, bg = Color::Yellow),
         select_highlight: style!(fg = Color::Black, bg = Color::White),
+        button: style!(fg = black, bg = Color::Indexed(195)), // #D7FFFF
+        button_hint: style!(fg = black, bg = Color::Indexed(123), bold = true), // #87FFFF
     }
 }
 
@@ -205,6 +211,9 @@ config_structs! {
     #[config_opt(arg(long, require_equals = true, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL", group = "search_default_regexp_group"))]
     pub search_default_regexp: bool,
 
+    #[config_opt(arg(long, value_name = "CHARS"))]
+    pub button_hint_chars: String,
+
     #[config_alias(phantom_rendering = false)]
     #[config_opt(arg(long, group = "phantom_rendering_group"))]
     pub no_phantom_rendering: bool,
@@ -238,6 +247,7 @@ impl Default for Config {
             search_incremental: true,
             search_default_case_sensitivity: SearchCaseSensitivity::DependsOnPattern,
             search_default_regexp: true,
+            button_hint_chars: "1234567890qwertyuiopasdfghjklzxcvbnm".to_owned(),
         }
     }
 }

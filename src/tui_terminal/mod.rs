@@ -14,6 +14,7 @@ use range_map::RangeMap;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io::{self, Write as _};
 use std::ops::{DerefMut as _, Range};
@@ -21,6 +22,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use text_input::TextInput;
 use tui::style::{Color, Modifier};
+use unicode_width::UnicodeWidthStr as _;
 
 fn vec_of<T>(length: usize, func: impl Fn() -> T) -> Vec<T> {
     (0..length).map(|_| func()).collect()
@@ -155,7 +157,7 @@ enum UILine {
     ExpanderLine(usize),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Nid(usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -960,10 +962,17 @@ enum MouseCell {
     Text { file_id: usize, side: usize, offset: usize },
 }
 
+#[derive(Clone)]
+struct ButtonInfo {
+    id: (Nid, usize),
+    func: Rc<dyn Fn(&mut State)>,
+}
+
 struct RenderedInfo {
     mouse_cells: Vec<Vec<MouseCell>>,
     mouse_pseudocell_after: Vec<[MouseCell; 2]>,
     terminal_cursor: Option<(u16, u16)>,
+    button_hints: Vec<Option<ButtonInfo>>,
 }
 
 struct SelectionState {
@@ -1027,6 +1036,8 @@ struct State<'a> {
     search_highlights: Vec<[Vec<Range<usize>>; 2]>,
     mode: GuiMode,
     focused_side: usize,
+    button_hint_chars: Vec<char>,
+    reverse_button_hint_chars: HashMap<char, usize>,
 }
 
 fn update_selection_position(selection: &mut SelectionState, rendered: &RenderedInfo, x: usize, y: usize) {
@@ -1123,6 +1134,24 @@ impl<'a> State<'a> {
         self.fix_scroll_invariants(true);
     }
 
+    fn toggle_open_file(&mut self, file_header_nid: Nid) {
+        let &Node::FileHeaderLine(file_id) = self.tree.node(file_header_nid) else { return };
+        let file_nid = self.tree.parent(file_header_nid).unwrap();
+        let file_branch_node = self.tree.node_mut(file_nid).as_branch_mut();
+        file_branch_node.visible.end = match file_branch_node.visible.end {
+            1 => 2,
+            2 => 1,
+            _ => panic!("logic error: bad file_branch_node.visible.end"),
+        };
+        if get_file_id_from_tree_ancestors(&self.tree, self.cursor_pos.parent) == Some(file_id) {
+            self.cursor_pos = LeafPosition {
+                parent: file_header_nid,
+                line_index: 0,
+            };
+        }
+        self.fix_scroll_invariants(false);
+    }
+
     fn expand_sibling(&mut self, expander: Nid, count: usize, dir: Direction) {
         let branch_nid = self.tree.sibling(expander, dir).unwrap();
         let branch_node = self.tree.node_mut(branch_nid).as_branch_mut();
@@ -1150,21 +1179,20 @@ impl<'a> State<'a> {
         }
     }
 
-    fn expand_expander(&mut self, expander: Nid, count: usize, dir: Direction) {
-        let hidden_count = match self.tree.node(expander) {
+    fn expand_expander(&mut self, mut expander: LeafPosition, count: usize, dir: Direction) {
+        let expander_nid = expander.parent;
+        let hidden_count = match self.tree.node(expander_nid) {
             Node::ExpanderLine(hidden_count) => *hidden_count,
             _ => return,
         };
-        let cursor_distance = self.tree_view().leaf_distance(self.scroll_pos, self.cursor_pos);
+        assert!(self.tree.compare_leaves(self.scroll_pos, expander) != Ordering::Greater);
+        let expander_distance = self.tree_view().leaf_distance(self.scroll_pos, expander);
         if hidden_count >= count + 2 {
-            *self.tree.node_mut(expander) = Node::ExpanderLine(hidden_count - count);
-            self.expand_sibling(expander, count, dir);
+            *self.tree.node_mut(expander_nid) = Node::ExpanderLine(hidden_count - count);
+            self.expand_sibling(expander_nid, count, dir);
         } else {
-            self.expand_sibling(expander, hidden_count, Next);
-            let this_leaf = LeafPosition {
-                parent: expander,
-                line_index: 0,
-            };
+            self.expand_sibling(expander_nid, hidden_count, Next);
+            let this_leaf = expander;
             let next_leaf = self.tree_view().next_leaf(this_leaf, Next).unwrap();
             if self.scroll_pos == this_leaf {
                 self.scroll_pos = next_leaf;
@@ -1172,9 +1200,11 @@ impl<'a> State<'a> {
             if self.cursor_pos == this_leaf {
                 self.cursor_pos = next_leaf;
             }
-            *self.tree.node_mut(expander) = Node::ExpanderLine(0);
+            *self.tree.node_mut(expander_nid) = Node::ExpanderLine(0);
+            expander = next_leaf;
         }
-        self.scroll_pos = self.move_pos(self.cursor_pos, cursor_distance, Prev);
+        self.scroll_pos = self.move_pos(expander, expander_distance, Prev);
+        self.fix_scroll_invariants(false);
         self.perform_search();
     }
 
@@ -1416,7 +1446,18 @@ impl<'a> State<'a> {
         };
     }
 
-    fn handle_key_event(&mut self, event: KeyEvent) -> Result<EventResult, Box<dyn Error>> {
+    fn handle_key_event(&mut self, event: KeyEvent, rendered: &RenderedInfo) -> Result<EventResult, Box<dyn Error>> {
+        if event.modifiers.contains(KeyModifiers::ALT) {
+            if let KeyCode::Char(c) = event.code {
+                if let Some(&hint) = self.reverse_button_hint_chars.get(&c.to_ascii_uppercase()) {
+                    if let Some(button) = rendered.button_hints[hint].as_ref() {
+                        (button.func)(self);
+                        return Ok(EventResult::Nothing);
+                    }
+                }
+            }
+            return Ok(EventResult::Bell);
+        }
         match event.code {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(EventResult::Quit),
             KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => return Ok(EventResult::Quit),
@@ -1427,22 +1468,11 @@ impl<'a> State<'a> {
             KeyCode::Char('w') | KeyCode::Char('k') => self.move_cursor_by(1, Prev),
             KeyCode::Char('s') | KeyCode::Char('j') => self.move_cursor_by(1, Next),
             // TODO: temporary key assignment for 'z', 'x', 'c'
-            KeyCode::Char('z') => {
-                if let Node::FileHeaderLine(_) = self.tree.node(self.cursor_pos.parent) {
-                    let file_nid = self.tree.parent(self.cursor_pos.parent).unwrap();
-                    let file_branch_node = self.tree.node_mut(file_nid).as_branch_mut();
-                    file_branch_node.visible.end = match file_branch_node.visible.end {
-                        1 => 2,
-                        2 => 1,
-                        _ => panic!("logic error: bad file_branch_node.visible.end"),
-                    };
-                    self.fix_scroll_invariants(false);
-                }
-            }
+            KeyCode::Char('z') => self.toggle_open_file(self.cursor_pos.parent),
             // TODO: configurable number of lines
             // TODO: if at beginning xor end (zero context lines on one side), don't show that button
-            KeyCode::Char('x') => self.expand_expander(self.cursor_pos.parent, 3, Prev),
-            KeyCode::Char('c') => self.expand_expander(self.cursor_pos.parent, 3, Next),
+            KeyCode::Char('x') => self.expand_expander(self.cursor_pos, 3, Prev),
+            KeyCode::Char('c') => self.expand_expander(self.cursor_pos, 3, Next),
             KeyCode::Char('p') if event.modifiers.contains(KeyModifiers::CONTROL) => panic!("intentional panic"),
             KeyCode::F(3) if event.modifiers.contains(KeyModifiers::SHIFT) => self.go_to_next_result(1, Prev),
             KeyCode::F(3) => self.go_to_next_result(1, Next),
@@ -1510,7 +1540,7 @@ impl<'a> State<'a> {
     fn handle_event(&mut self, event: Event, rendered: &RenderedInfo) -> Result<EventResult, Box<dyn Error>> {
         match self.mode {
             GuiMode::Default => match event {
-                Event::Key(e) => self.handle_key_event(e),
+                Event::Key(e) => self.handle_key_event(e, rendered),
                 Event::Mouse(e) => self.handle_mouse_event(e, rendered),
                 _ => Ok(EventResult::Nothing),
             },
@@ -1778,7 +1808,13 @@ impl<'a> State<'a> {
         }
     }
 
-    fn render(&mut self, term_width: usize, term_height: usize, buffer: &mut tui::buffer::Buffer) -> RenderedInfo {
+    fn render(
+        &mut self,
+        term_width: usize,
+        term_height: usize,
+        old_rendered: Option<&RenderedInfo>,
+        buffer: &mut tui::buffer::Buffer,
+    ) -> RenderedInfo {
         let layout = main_gui_layout(term_width, self.line_number_width);
         self.resize(compute_wrap_width(&layout), term_height);
         let [xcursor, xnuml, _, xmainl, _, xsep, _, xmainr, _, xnumr] = layout;
@@ -1787,7 +1823,11 @@ impl<'a> State<'a> {
             mouse_cells: vec![vec![MouseCell::Inert; term_width]; term_height],
             mouse_pseudocell_after: vec![[MouseCell::Inert, MouseCell::Inert]; term_height],
             terminal_cursor: None,
+            button_hints: vec![None; self.button_hint_chars.len()],
         };
+
+        type ButtonDef = ((Nid, usize), Range<usize>, usize, String, Rc<dyn Fn(&mut State)>);
+        let mut buttons: Vec<ButtonDef> = vec![];
 
         let mut pos = self.scroll_pos;
         let real_scroll_height = match self.mode {
@@ -1801,8 +1841,8 @@ impl<'a> State<'a> {
             }
             let parent_node = self.tree.node(pos.parent);
             let tree_view = self.tree_view();
-            tree_view.with_ui_lines(parent_node, |lines| match &lines[pos.line_index] {
-                UILine::Sides(sides) => {
+            tree_view.with_ui_lines(parent_node, |lines| match lines[pos.line_index] {
+                UILine::Sides(ref sides) => {
                     for side in 0..2 {
                         self.render_half_line(
                             pos,
@@ -1817,7 +1857,7 @@ impl<'a> State<'a> {
                     }
                     buffer_write(buffer, xsep.start, y, tui::symbols::line::VERTICAL, Style::default());
                 }
-                &UILine::FileHeaderLine(file_id) => {
+                UILine::FileHeaderLine(file_id) => {
                     let file_header_nid = pos.parent;
                     let file_nid = self.tree.parent(file_header_nid).unwrap();
                     let is_open = match self.tree.node(file_nid).as_branch().visible.end {
@@ -1837,21 +1877,73 @@ impl<'a> State<'a> {
                         ..Style::default()
                     };
                     buffer_write(buffer, 1, y, string, style);
+                    let button_text = if is_open { "Close".to_owned() } else { "Open".to_owned() };
+                    let button_pos = (term_width - 1 - button_text.width() - 4)..(term_width - 1);
+                    let button_fn = Rc::new(move |s: &mut State| s.toggle_open_file(pos.parent));
+                    buttons.push(((pos.parent, 0), button_pos, y, button_text, button_fn));
                 }
                 UILine::ExpanderLine(hidden_count) => {
-                    let string = format!("...{} hidden lines... (press x/c to expand)", hidden_count);
-                    let style = Style {
-                        fg: Some(Color::Black),
-                        bg: Some(Color::White),
-                        ..Style::default()
-                    };
-                    buffer_write(buffer, 1, y, string, style);
+                    let hline = tui::symbols::line::HORIZONTAL.repeat(term_width - 1);
+                    buffer_write(buffer, 1, y, hline, Style::default());
+                    let up_text = "+3↑".to_owned();
+                    let all_text = format!("Expand {hidden_count} matching lines");
+                    let down_text = "+3↓".to_owned();
+                    let constraints = [
+                        Some(1),
+                        None,
+                        Some(up_text.width() + 4),
+                        Some(1),
+                        Some(all_text.width() + 4),
+                        Some(1),
+                        Some(down_text.width() + 4),
+                        None,
+                    ];
+                    let [_, _, up_pos, _, all_pos, _, down_pos, _] = gui_layout(constraints, 0..term_width);
+                    let up_fn = Rc::new(move |s: &mut State| s.expand_expander(pos, 3, Prev));
+                    let all_fn = Rc::new(move |s: &mut State| s.expand_expander(pos, hidden_count, Next));
+                    let down_fn = Rc::new(move |s: &mut State| s.expand_expander(pos, 3, Next));
+                    buttons.push(((pos.parent, 0), up_pos, y, up_text, up_fn));
+                    buttons.push(((pos.parent, 1), all_pos, y, all_text, all_fn));
+                    buttons.push(((pos.parent, 2), down_pos, y, down_text, down_fn));
                 }
             });
             if let Some(next) = tree_view.next_leaf(pos, Next) {
                 pos = next;
             } else {
                 break;
+            }
+        }
+
+        let mut old_button_hints: HashMap<(Nid, usize), usize> = HashMap::new();
+        if let Some(old_rendered) = old_rendered {
+            for (hint, button) in old_rendered.button_hints.iter().enumerate() {
+                if let Some(button) = button {
+                    old_button_hints.insert(button.id, hint);
+                }
+            }
+        }
+
+        let mut unused_hints: HashSet<usize> = (0..self.button_hint_chars.len()).collect();
+        for (id, ..) in &buttons {
+            if let Some(hint) = old_button_hints.get(id) {
+                unused_hints.remove(hint);
+            }
+        }
+
+        let mut unused_hints: Vec<usize> = unused_hints.into_iter().collect();
+        unused_hints.sort();
+        unused_hints.reverse();
+
+        for (id, x_range, y, text, func) in buttons {
+            let theme = &self.config.theme;
+            buffer_write(buffer, x_range.start, y, format!("   {text} "), theme.button);
+            if let Some(hint) = old_button_hints.get(&id).cloned().or_else(|| unused_hints.pop()) {
+                let hint_char = self.button_hint_chars[hint];
+                buffer_write(buffer, x_range.start + 1, y, format!("{hint_char}"), theme.button_hint);
+                rendered.button_hints[hint] = Some(ButtonInfo { id, func: func.clone() });
+            }
+            for x in x_range {
+                rendered.mouse_cells[y][x] = MouseCell::Button(func.clone());
             }
         }
 
@@ -1958,6 +2050,22 @@ pub fn run_tui(
 ) -> TheResult {
     let diff = make_extended_diff(diff, file_input, file_names);
 
+    let button_hint_chars: Vec<char> = {
+        let mut seen = HashSet::new();
+        (config.button_hint_chars)
+            .chars()
+            .map(|c| c.to_ascii_uppercase())
+            .filter(|&c| seen.insert(c))
+            .collect()
+    };
+
+    let reverse_button_hint_chars: HashMap<char, usize> = button_hint_chars
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(n, c)| (c, n))
+        .collect();
+
     let mut state = {
         // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
         let line_number_width = diff
@@ -1997,6 +2105,8 @@ pub fn run_tui(
             search_highlights: Default::default(),
             mode: GuiMode::Default,
             focused_side: 1,
+            button_hint_chars,
+            reverse_button_hint_chars,
         }
     };
 
@@ -2017,12 +2127,12 @@ pub fn run_tui(
         }
     }
 
-    loop {
-        let mut rendered = None;
+    let mut rendered = None;
 
+    loop {
         terminal.draw(|frame| {
             let render = |size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
-                rendered = Some(state.render(u16tos(size.width), u16tos(size.height), buffer));
+                rendered = Some(state.render(u16tos(size.width), u16tos(size.height), rendered.as_ref(), buffer));
             };
 
             frame.render_widget(WidgetWrapper(render), frame.size());
@@ -2032,10 +2142,10 @@ pub fn run_tui(
             }
         })?;
 
-        let rendered = rendered.unwrap();
+        let rendered_ref = rendered.as_ref().unwrap();
 
         loop {
-            match state.handle_event(crossterm::event::read()?, &rendered)? {
+            match state.handle_event(crossterm::event::read()?, rendered_ref)? {
                 EventResult::Nothing => {}
                 EventResult::Bell => write!(terminal.backend_mut(), "\x07")?,
                 EventResult::Quit => return Ok(()),
