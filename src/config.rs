@@ -211,6 +211,9 @@ config_structs! {
     #[config_opt(arg(long, require_equals = true, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL", group = "search_default_regexp_group"))]
     pub search_default_regexp: bool,
 
+    #[config_opt(arg(long, require_equals = true, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL", group = "open_all_files_group"))]
+    pub open_all_files: bool,
+
     #[config_opt(arg(long, value_name = "CHARS"))]
     pub button_hint_chars: String,
 
@@ -226,13 +229,17 @@ config_structs! {
     #[config_opt(arg(long, group = "search_incremental_group"))]
     pub no_search_incremental: bool,
 
+    #[config_alias(search_default_case_sensitivity = SearchCaseSensitivity::CaseInsensitive)]
+    #[config_opt(arg(short = 'I', long, group = "search_default_case_sensitivity_group"))]
+    pub search_default_case_insensitive: bool,
+
     #[config_alias(search_default_regexp = false)]
     #[config_opt(arg(long, group = "search_default_regexp_group"))]
     pub no_search_default_regexp: bool,
 
-    #[config_alias(search_default_case_sensitivity = SearchCaseSensitivity::CaseInsensitive)]
-    #[config_opt(arg(short = 'I', long, group = "search_default_case_sensitivity_group"))]
-    pub search_default_case_insensitive: bool,
+    #[config_alias(open_all_files = false)]
+    #[config_opt(arg(long, group = "open_all_files_group"))]
+    pub no_open_all_files: bool,
 }
 
 impl Default for Config {
@@ -247,6 +254,7 @@ impl Default for Config {
             search_incremental: true,
             search_default_case_sensitivity: SearchCaseSensitivity::DependsOnPattern,
             search_default_regexp: true,
+            open_all_files: true,
             button_hint_chars: "1234567890qwertyuiopasdfghjklzxcvbnm".to_owned(),
         }
     }

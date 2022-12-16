@@ -610,7 +610,8 @@ fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[Range
         let file_nid = tree.add_child(tree.root, Node::new_branch());
         tree.add_child(file_nid, Node::FileHeaderLine(file_id));
         let file_content_nid = tree.add_child(file_nid, Node::new_branch());
-        tree.node_mut(file_nid).as_branch_mut().visible = 0..1;
+        let is_open = config.open_all_files || diff.files.len() == 1;
+        tree.node_mut(file_nid).as_branch_mut().visible = if is_open { 0..2 } else { 0..1 };
 
         let mut b = FileBuilder {
             diff,
@@ -907,23 +908,16 @@ fn print_plainly(tree_view: &TreeView, nid: Nid, output: &mut impl io::Write) ->
 
 pub fn print_side_by_side_diff_plainly(
     diff: &Diff,
-    config: Config,
+    mut config: Config,
     file_input: &[[&str; 2]],
     file_names: &[[&str; 2]],
     output: &mut impl io::Write,
 ) -> TheResult {
-    let diff = make_extended_diff(diff, file_input, file_names);
-    let mut tree = build_initial_tree(&config, &diff).0;
-
     // Gotta expand the file headers in order to see any content.
-    let mut child_option_nid = tree.bordering_child(tree.root, First);
-    while let Some(child_nid) = child_option_nid {
-        let child_branch_node = tree.node_mut(child_nid).as_branch_mut();
-        assert!(child_branch_node.visible == (0..1));
-        assert!(child_branch_node.children.len() == 2);
-        child_branch_node.visible = 0..2;
-        child_option_nid = tree.sibling(child_nid, Next);
-    }
+    config.open_all_files = true;
+
+    let diff = make_extended_diff(diff, file_input, file_names);
+    let (tree, _, _) = build_initial_tree(&config, &diff);
 
     let tree_view = TreeView {
         tree: &tree,
