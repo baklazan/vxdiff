@@ -1464,6 +1464,16 @@ impl<'a> State<'a> {
             KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_by(self.scroll_height, Next),
             KeyCode::Char('w') | KeyCode::Char('k') => self.move_cursor_by(1, Prev),
             KeyCode::Char('s') | KeyCode::Char('j') => self.move_cursor_by(1, Next),
+            KeyCode::Home => {
+                self.scroll_pos = self.tree_view().bordering_leaf_under(self.tree.root, First).unwrap();
+                self.cursor_pos = self.scroll_pos;
+                self.fix_scroll_invariants(false);
+            }
+            KeyCode::End => {
+                self.scroll_pos = self.tree_view().bordering_leaf_under(self.tree.root, Last).unwrap();
+                self.cursor_pos = self.scroll_pos;
+                self.fix_scroll_invariants(false);
+            }
             // TODO: temporary key assignment for 'z', 'x', 'c'
             KeyCode::Char('z') if self.config.show_cursor => self.toggle_open_file(self.cursor_pos.parent),
             // TODO: configurable number of lines
