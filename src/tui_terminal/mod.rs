@@ -932,10 +932,10 @@ fn compute_wrap_width(layout: &[Range<usize>; 10]) -> usize {
     layout[3].end - layout[3].start
 }
 
-fn main_gui_layout(terminal_width: usize, line_number_width: usize) -> [Range<usize>; 10] {
+fn main_gui_layout(terminal_width: usize, line_number_width: usize, show_cursor: bool) -> [Range<usize>; 10] {
     // TODO: Configurable wrap_width behavior (e.g. fixed 80, multiples of 10, fluid)
     let constraints = [
-        Some(1),
+        Some(if show_cursor { 1 } else { 0 }),
         Some(line_number_width),
         Some(1),
         None,
@@ -1124,6 +1124,9 @@ impl<'a> State<'a> {
     }
 
     fn move_cursor_by(&mut self, offset: usize, dir: Direction) {
+        if !self.config.show_cursor {
+            return;
+        }
         self.cursor_pos = self.move_pos(self.cursor_pos, offset, dir);
         self.fix_scroll_invariants(true);
     }
@@ -1462,11 +1465,11 @@ impl<'a> State<'a> {
             KeyCode::Char('w') | KeyCode::Char('k') => self.move_cursor_by(1, Prev),
             KeyCode::Char('s') | KeyCode::Char('j') => self.move_cursor_by(1, Next),
             // TODO: temporary key assignment for 'z', 'x', 'c'
-            KeyCode::Char('z') => self.toggle_open_file(self.cursor_pos.parent),
+            KeyCode::Char('z') if self.config.show_cursor => self.toggle_open_file(self.cursor_pos.parent),
             // TODO: configurable number of lines
             // TODO: if at beginning xor end (zero context lines on one side), don't show that button
-            KeyCode::Char('x') => self.expand_expander(self.cursor_pos, 3, Prev),
-            KeyCode::Char('c') => self.expand_expander(self.cursor_pos, 3, Next),
+            KeyCode::Char('x') if self.config.show_cursor => self.expand_expander(self.cursor_pos, 3, Prev),
+            KeyCode::Char('c') if self.config.show_cursor => self.expand_expander(self.cursor_pos, 3, Next),
             KeyCode::Char('p') if event.modifiers.contains(KeyModifiers::CONTROL) => panic!("intentional panic"),
             KeyCode::F(3) if event.modifiers.contains(KeyModifiers::SHIFT) => self.go_to_next_result(1, Prev),
             KeyCode::F(3) => self.go_to_next_result(1, Next),
@@ -1809,7 +1812,7 @@ impl<'a> State<'a> {
         old_rendered: Option<&RenderedInfo>,
         buffer: &mut tui::buffer::Buffer,
     ) -> RenderedInfo {
-        let layout = main_gui_layout(term_width, self.line_number_width);
+        let layout = main_gui_layout(term_width, self.line_number_width, self.config.show_cursor);
         self.resize(compute_wrap_width(&layout), term_height);
         let [xcursor, xnuml, _, xmainl, _, xsep, _, xmainr, _, xnumr] = layout;
 
@@ -1830,7 +1833,7 @@ impl<'a> State<'a> {
             GuiMode::Search { .. } => self.scroll_height - 1,
         };
         for y in 0..real_scroll_height {
-            if pos == self.cursor_pos {
+            if pos == self.cursor_pos && self.config.show_cursor {
                 buffer_write(buffer, xcursor.start, y, ">", self.config.theme.cursor);
             }
             let parent_node = self.tree.node(pos.parent);
@@ -2074,7 +2077,11 @@ pub fn run_tui(
 
         let (initial_tree, visible_byte_sets, byte_to_nid_maps) = build_initial_tree(&config, &diff);
         let size = terminal.size()?;
-        let initial_wrap_width = compute_wrap_width(&main_gui_layout(u16tos(size.width), line_number_width));
+        let initial_wrap_width = compute_wrap_width(&main_gui_layout(
+            u16tos(size.width),
+            line_number_width,
+            config.show_cursor,
+        ));
         let initial_scroll = TreeView {
             tree: &initial_tree,
             diff: &diff,

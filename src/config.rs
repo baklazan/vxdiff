@@ -214,6 +214,9 @@ config_structs! {
     #[config_opt(arg(long, require_equals = true, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL", group = "open_all_files_group"))]
     pub open_all_files: bool,
 
+    #[config_opt(arg(long, require_equals = true, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL", group = "show_cursor_group"))]
+    pub show_cursor: bool,
+
     #[config_opt(arg(long, value_name = "CHARS"))]
     pub button_hint_chars: String,
 
@@ -240,6 +243,10 @@ config_structs! {
     #[config_alias(open_all_files = false)]
     #[config_opt(arg(long, group = "open_all_files_group"))]
     pub no_open_all_files: bool,
+
+    #[config_alias(show_cursor = false)]
+    #[config_opt(arg(long, group = "show_cursor_group"))]
+    pub hide_cursor: bool,
 }
 
 impl Default for Config {
@@ -255,6 +262,7 @@ impl Default for Config {
             search_default_case_sensitivity: SearchCaseSensitivity::DependsOnPattern,
             search_default_regexp: true,
             open_all_files: true,
+            show_cursor: true,
             button_hint_chars: "1234567890qwertyuiopasdfghjklzxcvbnm".to_owned(),
         }
     }
