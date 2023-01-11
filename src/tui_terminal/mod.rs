@@ -1883,20 +1883,22 @@ impl<'a> State<'a> {
                         bg: Some(if is_open { Color::Green } else { Color::Red }),
                         ..Style::default()
                     };
-                    buffer_write(buffer, 1, y, string, style);
+                    let x = if self.config.show_cursor { 1 } else { 0 };
+                    buffer_write(buffer, x, y, string, style);
                     let button_text = if is_open { "Close".to_owned() } else { "Open".to_owned() };
                     let button_pos = (term_width - 1 - button_text.width() - 4)..(term_width - 1);
                     let button_fn = Rc::new(move |s: &mut State| s.toggle_open_file(pos.parent));
                     buttons.push(((pos.parent, 0), button_pos, y, button_text, button_fn));
                 }
                 UILine::ExpanderLine(hidden_count) => {
-                    let hline = tui::symbols::line::HORIZONTAL.repeat(term_width - 1);
-                    buffer_write(buffer, 1, y, hline, Style::default());
+                    let x = if self.config.show_cursor { 1 } else { 0 };
+                    let hline = tui::symbols::line::HORIZONTAL.repeat(term_width - x);
+                    buffer_write(buffer, x, y, hline, Style::default());
                     let up_text = "+3↑".to_owned();
                     let all_text = format!("Expand {hidden_count} matching lines");
                     let down_text = "+3↓".to_owned();
                     let constraints = [
-                        Some(1),
+                        Some(x),
                         None,
                         Some(up_text.width() + 4),
                         Some(1),
