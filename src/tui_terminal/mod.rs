@@ -5,7 +5,7 @@ mod range_map;
 mod text_input;
 
 use super::algorithm::{Diff, DiffOp, FileDiff, Section};
-use super::config::{Config, SearchCaseSensitivity, Style};
+use super::config::{Config, DiffStyles, SearchCaseSensitivity, Style};
 use clipboard::copy_to_clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use gui_layout::gui_layout;
@@ -928,23 +928,21 @@ pub fn print_side_by_side_diff_plainly(
     print_plainly(&tree_view, tree.root, output)
 }
 
-fn compute_wrap_width(layout: &[Range<usize>; 10]) -> usize {
-    layout[3].end - layout[3].start
+fn compute_wrap_width(layout: &[Range<usize>; 6]) -> usize {
+    layout[2].len()
 }
 
-fn main_gui_layout(terminal_width: usize, line_number_width: usize, show_cursor: bool) -> [Range<usize>; 10] {
+fn main_gui_layout(terminal_width: usize, line_number_width: usize, show_cursor: bool) -> [Range<usize>; 6] {
     // TODO: Configurable wrap_width behavior (e.g. fixed 80, multiples of 10, fluid)
+    let cursor_width = if show_cursor { 1 } else { 0 };
+    let separator_width = if (terminal_width - cursor_width) % 2 == 0 { 2 } else { 3 };
     let constraints = [
-        Some(if show_cursor { 1 } else { 0 }),
-        Some(line_number_width),
-        Some(1),
+        Some(cursor_width),
+        Some(line_number_width + 1),
         None,
-        Some(1),
-        Some(1),
-        Some(1),
+        Some(separator_width),
         None,
-        Some(1),
-        Some(line_number_width),
+        Some(1 + line_number_width),
     ];
     gui_layout(constraints, 0..terminal_width)
 }
@@ -1680,13 +1678,28 @@ impl<'a> State<'a> {
         sides: &[WrappedHalfLine; 2],
         side: usize,
         content_screen_x: usize,
-        line_number_screen_x: usize,
+        line_number_screen_x: Range<usize>,
+        line_number_pad_right: usize,
         screen_y: usize,
         buffer: &mut tui::buffer::Buffer,
         rendered: &mut RenderedInfo,
     ) {
         let theme = &self.config.theme;
         let whl = &sides[side];
+
+        let pick_style = |ds: &DiffStyles| match (whl.style, side != 0) {
+            (HalfLineStyle::Equal, _) => ds.equal,
+            (HalfLineStyle::Padding, _) => ds.padding,
+            (HalfLineStyle::Change, false) => ds.change_old,
+            (HalfLineStyle::Change, true) => ds.change_new,
+            (HalfLineStyle::Move, false) => ds.move_old,
+            (HalfLineStyle::Move, true) => ds.move_new,
+            (HalfLineStyle::Phantom, false) => ds.phantom_old,
+            (HalfLineStyle::Phantom, true) => ds.phantom_new,
+        };
+
+        let line_number_str;
+        let line_number_style = pick_style(&theme.line_numbers);
         let file_id_for_rendering: Option<usize>;
 
         match whl.source {
@@ -1696,19 +1709,32 @@ impl<'a> State<'a> {
 
                 let file_side = &self.diff.file_sides[file_id][side];
                 let line_number = file_side.byte_offset_to_line_number(whl.offset);
-                let mut line_number_str = line_number.to_string();
                 if whl.offset != file_side.line_offsets[line_number] {
-                    line_number_str = "+".repeat(line_number_str.len());
+                    line_number_str = "+".repeat(line_number.to_string().len());
+                } else {
+                    line_number_str = line_number.to_string();
                 }
-                let line_number_style = match whl.style {
-                    HalfLineStyle::Phantom => theme.line_numbers_phantom,
-                    _ => theme.line_numbers_default,
-                };
-                let screen_x = line_number_screen_x - line_number_str.len();
-                buffer_write(buffer, screen_x, screen_y, line_number_str, line_number_style);
             }
-            TextSource::Fabricated(..) => file_id_for_rendering = None,
+            TextSource::Fabricated(..) => {
+                line_number_str = "".to_string();
+                file_id_for_rendering = None;
+            }
         }
+
+        buffer_write(
+            buffer,
+            line_number_screen_x.start,
+            screen_y,
+            " ".repeat(line_number_screen_x.len()),
+            line_number_style,
+        );
+        buffer_write(
+            buffer,
+            line_number_screen_x.end - line_number_pad_right - line_number_str.len(),
+            screen_y,
+            line_number_str,
+            line_number_style,
+        );
 
         let layout = layout_diff_line(
             self.diff,
@@ -1775,28 +1801,9 @@ impl<'a> State<'a> {
             // because Buffer::diff skips over it.
             let mut cell = tui::buffer::Cell::default();
             if !egc.is_empty() {
-                let mut style = Style::default();
-                style = style.patch(match (whl.style, side != 0) {
-                    (HalfLineStyle::Equal, _) => theme.text_equal,
-                    (HalfLineStyle::Padding, _) => theme.text_padding,
-                    (HalfLineStyle::Change, false) => theme.text_change_old,
-                    (HalfLineStyle::Change, true) => theme.text_change_new,
-                    (HalfLineStyle::Move, false) => theme.text_move_old,
-                    (HalfLineStyle::Move, true) => theme.text_move_new,
-                    (HalfLineStyle::Phantom, false) => theme.text_phantom_old,
-                    (HalfLineStyle::Phantom, true) => theme.text_phantom_new,
-                });
+                let mut style = pick_style(&theme.text);
                 if highlight {
-                    style = style.patch(match (whl.style, side != 0) {
-                        (HalfLineStyle::Equal, _) => Style::default(),
-                        (HalfLineStyle::Padding, _) => Style::default(),
-                        (HalfLineStyle::Change, false) => theme.highlight_change_old,
-                        (HalfLineStyle::Change, true) => theme.highlight_change_new,
-                        (HalfLineStyle::Move, false) => theme.highlight_move_old,
-                        (HalfLineStyle::Move, true) => theme.highlight_move_new,
-                        (HalfLineStyle::Phantom, false) => theme.highlight_phantom_old,
-                        (HalfLineStyle::Phantom, true) => theme.highlight_phantom_new,
-                    });
+                    style = style.patch(pick_style(&theme.highlight));
                 }
                 if fabricated_symbol {
                     style = style.patch(theme.fabricated_symbol);
@@ -1824,7 +1831,7 @@ impl<'a> State<'a> {
     ) -> RenderedInfo {
         let layout = main_gui_layout(term_width, self.line_number_width, self.config.show_cursor);
         self.resize(compute_wrap_width(&layout), term_height);
-        let [xcursor, xnuml, _, xmainl, _, xsep, _, xmainr, _, xnumr] = layout;
+        let [xcursor, xnuml, xmainl, xsep, xmainr, xnumr] = layout;
 
         let mut rendered = RenderedInfo {
             mouse_cells: vec![vec![MouseCell::Inert; term_width]; term_height],
@@ -1856,13 +1863,15 @@ impl<'a> State<'a> {
                             sides,
                             side,
                             [xmainl.start, xmainr.start][side],
-                            [xnuml.end, xnumr.end][side],
+                            [&xnuml, &xnumr][side].clone(),
+                            [1, 0][side],
                             y,
                             buffer,
                             &mut rendered,
                         );
                     }
-                    buffer_write(buffer, xsep.start, y, tui::symbols::line::VERTICAL, Style::default());
+                    let sep = if xsep.len() == 2 { "▕▏" } else { " ┃ " };
+                    buffer_write(buffer, xsep.start, y, sep, self.config.theme.middle_separator);
                 }
                 UILine::FileHeaderLine(file_id) => {
                     let file_header_nid = pos.parent;
@@ -1892,8 +1901,8 @@ impl<'a> State<'a> {
                 }
                 UILine::ExpanderLine(hidden_count) => {
                     let x = if self.config.show_cursor { 1 } else { 0 };
-                    let hline = tui::symbols::line::HORIZONTAL.repeat(term_width - x);
-                    buffer_write(buffer, x, y, hline, Style::default());
+                    let hline = tui::symbols::line::DOUBLE_HORIZONTAL.repeat(term_width - x);
+                    buffer_write(buffer, x, y, hline, self.config.theme.expander);
                     let up_text = "+3↑".to_owned();
                     let all_text = format!("Expand {hidden_count} matching lines");
                     let down_text = "+3↓".to_owned();
@@ -1976,7 +1985,7 @@ impl<'a> State<'a> {
                 let input_area = tui::layout::Rect {
                     x: usto16(input_pos.start),
                     y: usto16(y),
-                    width: usto16(input_pos.end - input_pos.start),
+                    width: usto16(input_pos.len()),
                     height: 1,
                 };
                 input.render(input_area, buffer, &mut rendered.terminal_cursor);
@@ -2015,7 +2024,7 @@ impl<'a> State<'a> {
                 let input_area = tui::layout::Rect {
                     x: usto16(input_pos.start),
                     y: usto16(y),
-                    width: usto16(input_pos.end - input_pos.start),
+                    width: usto16(input_pos.len()),
                     height: 1,
                 };
                 input.render(input_area, buffer, &mut rendered.terminal_cursor);

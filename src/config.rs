@@ -43,27 +43,28 @@ impl Style {
 }
 
 #[derive(Deserialize)]
+pub struct DiffStyles {
+    pub equal: Style,
+    pub padding: Style,
+    pub change_old: Style,
+    pub change_new: Style,
+    pub move_old: Style,
+    pub move_new: Style,
+    pub phantom_old: Style,
+    pub phantom_new: Style,
+}
+
+#[derive(Deserialize)]
 pub struct Theme {
     pub cursor: Style,
-    pub line_numbers_default: Style,
-    pub line_numbers_phantom: Style,
-    pub text_equal: Style,
-    pub text_padding: Style,
-    pub text_change_old: Style,
-    pub text_change_new: Style,
-    pub text_move_old: Style,
-    pub text_move_new: Style,
-    pub text_phantom_old: Style,
-    pub text_phantom_new: Style,
-    pub highlight_change_old: Style,
-    pub highlight_change_new: Style,
-    pub highlight_move_old: Style,
-    pub highlight_move_new: Style,
-    pub highlight_phantom_old: Style,
-    pub highlight_phantom_new: Style,
+    pub line_numbers: DiffStyles,
+    pub text: DiffStyles,
+    pub highlight: DiffStyles,
     pub fabricated_symbol: Style,
     pub search_highlight: Style,
     pub select_highlight: Style,
+    pub middle_separator: Style,
+    pub expander: Style,
     pub button: Style,
     pub button_hint: Style,
 }
@@ -77,25 +78,41 @@ fn default_theme() -> Theme {
     let highlight = style!(bold = true, underlined = true);
     Theme {
         cursor: style!(fg = Color::White, bg = Color::Blue),
-        line_numbers_default: style!(),
-        line_numbers_phantom: style!(fg = Color::Cyan),
-        text_equal: style!(),
-        text_padding: style!(fg = Color::DarkGray),
-        text_change_old: style!(fg = Color::Red),
-        text_change_new: style!(fg = Color::Green),
-        text_move_old: style!(fg = Color::Yellow),
-        text_move_new: style!(fg = Color::Yellow),
-        text_phantom_old: style!(fg = Color::Cyan, dim = true),
-        text_phantom_new: style!(fg = Color::Cyan, dim = true),
-        highlight_change_old: highlight,
-        highlight_change_new: highlight,
-        highlight_move_old: highlight,
-        highlight_move_new: highlight,
-        highlight_phantom_old: highlight,
-        highlight_phantom_new: highlight,
+        line_numbers: DiffStyles {
+            equal: style!(),
+            padding: style!(),
+            change_old: style!(),
+            change_new: style!(),
+            move_old: style!(),
+            move_new: style!(),
+            phantom_old: style!(fg = Color::Cyan),
+            phantom_new: style!(fg = Color::Cyan),
+        },
+        text: DiffStyles {
+            equal: style!(),
+            padding: style!(fg = Color::DarkGray),
+            change_old: style!(fg = Color::Red),
+            change_new: style!(fg = Color::Green),
+            move_old: style!(fg = Color::Yellow),
+            move_new: style!(fg = Color::Yellow),
+            phantom_old: style!(fg = Color::Cyan, dim = true),
+            phantom_new: style!(fg = Color::Cyan, dim = true),
+        },
+        highlight: DiffStyles {
+            equal: highlight,
+            padding: highlight,
+            change_old: highlight,
+            change_new: highlight,
+            move_old: highlight,
+            move_new: highlight,
+            phantom_old: highlight,
+            phantom_new: highlight,
+        },
         fabricated_symbol: style!(bg = Color::Cyan),
         search_highlight: style!(fg = Color::Black, bg = Color::Yellow),
         select_highlight: style!(fg = Color::Black, bg = Color::White),
+        middle_separator: style!(),
+        expander: style!(),
         button: style!(fg = Color::Black, bg = Color::White),
         button_hint: style!(fg = Color::White, bg = Color::Blue, bold = true),
     }
@@ -111,27 +128,91 @@ fn new_theme() -> Theme {
     let darkest_cyan = Color::Indexed(23); // #005F5F
     Theme {
         cursor: style!(fg = Color::White, bg = Color::Blue),
-        line_numbers_default: style!(),
-        line_numbers_phantom: style!(fg = Color::Cyan),
-        text_equal: style!(fg = white, bg = black),
-        text_padding: style!(fg = Color::DarkGray, bg = Color::Indexed(238)),
-        text_change_old: style!(fg = white, bg = darkest_red),
-        text_change_new: style!(fg = white, bg = darkest_green),
-        text_move_old: style!(fg = white, bg = darkest_yellow),
-        text_move_new: style!(fg = white, bg = darkest_yellow),
-        text_phantom_old: style!(fg = white, bg = darkest_cyan, dim = true),
-        text_phantom_new: style!(fg = white, bg = darkest_cyan, dim = true),
-        highlight_change_old: style!(bg = Color::Indexed(88), bold = true),
-        highlight_change_new: style!(bg = Color::Indexed(28), bold = true),
-        highlight_move_old: style!(bg = Color::Indexed(100), bold = true),
-        highlight_move_new: style!(bg = Color::Indexed(100), bold = true),
-        highlight_phantom_old: style!(bg = Color::Indexed(30), bold = true, dim = false),
-        highlight_phantom_new: style!(bg = Color::Indexed(30), bold = true, dim = false),
+        line_numbers: DiffStyles {
+            equal: style!(),
+            padding: style!(),
+            change_old: style!(),
+            change_new: style!(),
+            move_old: style!(),
+            move_new: style!(),
+            phantom_old: style!(fg = Color::Cyan),
+            phantom_new: style!(fg = Color::Cyan),
+        },
+        text: DiffStyles {
+            equal: style!(fg = white, bg = black),
+            padding: style!(fg = Color::DarkGray, bg = Color::Indexed(238)),
+            change_old: style!(fg = white, bg = darkest_red),
+            change_new: style!(fg = white, bg = darkest_green),
+            move_old: style!(fg = white, bg = darkest_yellow),
+            move_new: style!(fg = white, bg = darkest_yellow),
+            phantom_old: style!(fg = white, bg = darkest_cyan, dim = true),
+            phantom_new: style!(fg = white, bg = darkest_cyan, dim = true),
+        },
+        highlight: DiffStyles {
+            equal: style!(),
+            padding: style!(),
+            change_old: style!(bg = Color::Indexed(88), bold = true),
+            change_new: style!(bg = Color::Indexed(28), bold = true),
+            move_old: style!(bg = Color::Indexed(100), bold = true),
+            move_new: style!(bg = Color::Indexed(100), bold = true),
+            phantom_old: style!(bg = Color::Indexed(30), bold = true, dim = false),
+            phantom_new: style!(bg = Color::Indexed(30), bold = true, dim = false),
+        },
         fabricated_symbol: style!(fg = Color::Cyan, bold = true),
         search_highlight: style!(fg = Color::Black, bg = Color::Yellow),
         select_highlight: style!(fg = Color::Black, bg = Color::White),
+        middle_separator: style!(),
+        expander: style!(),
         button: style!(fg = black, bg = Color::Indexed(195)), // #D7FFFF
         button_hint: style!(fg = black, bg = Color::Indexed(123), bold = true), // #87FFFF
+    }
+}
+
+#[allow(dead_code)]
+fn light_theme() -> Theme {
+    Theme {
+        cursor: style!(fg = Color::Blue),
+        line_numbers: DiffStyles {
+            equal: style!(fg = Color::Rgb(95, 99, 104), bg = Color::Rgb(248, 249, 250)),
+            padding: style!(fg = Color::Rgb(95, 99, 104), bg = Color::Rgb(248, 249, 250)),
+            change_old: style!(fg = Color::Rgb(95, 99, 104), bg = Color::Rgb(248, 249, 250)),
+            change_new: style!(fg = Color::Rgb(95, 99, 104), bg = Color::Rgb(248, 249, 250)),
+            move_old: style!(fg = Color::Rgb(95, 99, 104), bg = Color::Rgb(248, 249, 250)),
+            move_new: style!(fg = Color::Rgb(95, 99, 104), bg = Color::Rgb(248, 249, 250)),
+            // TODO
+            phantom_old: style!(fg = Color::Cyan),
+            phantom_new: style!(fg = Color::Cyan),
+        },
+        text: DiffStyles {
+            equal: style!(fg = Color::Rgb(32, 33, 36), bg = Color::Rgb(255, 255, 255)),
+            // TODO text_padding fg
+            padding: style!(fg = Color::Gray, bg = Color::Rgb(248, 249, 250)),
+            change_old: style!(fg = Color::Rgb(32, 33, 36), bg = Color::Rgb(255, 235, 238)),
+            change_new: style!(fg = Color::Rgb(32, 33, 36), bg = Color::Rgb(216, 254, 216)),
+            // TODO
+            move_old: style!(fg = Color::Yellow),
+            move_new: style!(fg = Color::Yellow),
+            phantom_old: style!(fg = Color::Cyan, dim = true),
+            phantom_new: style!(fg = Color::Cyan, dim = true),
+        },
+        highlight: DiffStyles {
+            equal: style!(),
+            padding: style!(),
+            change_old: style!(bg = Color::Rgb(255, 205, 210)),
+            change_new: style!(bg = Color::Rgb(170, 242, 170)),
+            // TODO
+            move_old: style!(bg = Color::Indexed(100), bold = true),
+            move_new: style!(bg = Color::Indexed(100), bold = true),
+            phantom_old: style!(bg = Color::Indexed(30), bold = true, dim = false),
+            phantom_new: style!(bg = Color::Indexed(30), bold = true, dim = false),
+        },
+        fabricated_symbol: style!(fg = Color::Cyan, bold = true),
+        search_highlight: style!(fg = Color::Black, bg = Color::Yellow),
+        select_highlight: style!(fg = Color::Black, bg = Color::White),
+        middle_separator: style!(fg = Color::Rgb(140, 140, 180), bg = Color::Rgb(248, 249, 250)),
+        expander: style!(fg = Color::Rgb(200, 200, 200), bg = Color::Rgb(248, 249, 250)),
+        button: style!(fg = Color::Indexed(16), bg = Color::Indexed(195)), // #D7FFFF
+        button_hint: style!(fg = Color::Indexed(16), bg = Color::Indexed(123), bold = true), // #87FFFF
     }
 }
 
@@ -256,7 +337,7 @@ impl Default for Config {
             mouse_wheel_scroll_lines: 3,
             phantom_rendering: true,
             highlight_newlines: false,
-            theme: new_theme(),
+            theme: light_theme(),
             clipboard_mechanism: ClipboardMechanism::Terminal,
             search_incremental: true,
             search_default_case_sensitivity: SearchCaseSensitivity::DependsOnPattern,
