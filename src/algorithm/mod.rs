@@ -8,6 +8,7 @@ mod postprocess;
 mod preprocess;
 mod scoring;
 mod seed_selection;
+mod suffix_array;
 
 use self::{
     fragment_selection::greedy_fragments,
@@ -110,6 +111,7 @@ pub fn compute_diff(files: &[[&str; 2]], algorithm: DiffAlgorithm) -> Diff {
 }
 
 struct AlignedFragment {
+    // TODO: refactor, use LineIndex (instead of word index stored in usize)
     starts: [usize; 2],
     ends: [usize; 2],
     file_ids: [usize; 2],

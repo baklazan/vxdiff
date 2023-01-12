@@ -1,13 +1,52 @@
+use std::ops::{Range, RangeInclusive};
+
 use super::{main_sequence::main_sequence_fragments, AlignedFragment, DiffOp, MainSequenceAlgorithm, PartitionedText};
 use index_vec::{index_vec, IndexVec};
+
+mod moved_cores;
+
+const MIN_LINES_IN_CORE: usize = 3;
+
+trait UsizeConvertible {
+    fn from_usize(val: usize) -> Self;
+    fn to_usize(&self) -> usize;
+}
+
+macro_rules! extend_index_type {
+    (
+        $type:ident
+    ) => {
+        impl UsizeConvertible for $type {
+            fn from_usize(val: usize) -> Self {
+                Self::new(val)
+            }
+
+            fn to_usize(&self) -> usize {
+                self.raw()
+            }
+        }
+    };
+}
 
 index_vec::define_index_type! {
     struct LineIndex = usize;
 }
+extend_index_type!(LineIndex);
+
 index_vec::define_index_type! {
     struct WordIndex = usize;
 }
+extend_index_type!(WordIndex);
 
+fn range_iter<Index: UsizeConvertible>(range: Range<Index>) -> impl Iterator<Item = Index> {
+    (range.start.to_usize()..range.end.to_usize()).map(Index::from_usize)
+}
+
+fn range_incl_iter<Index: UsizeConvertible>(range: RangeInclusive<Index>) -> impl Iterator<Item = Index> {
+    (range.start().to_usize()..=range.end().to_usize()).map(Index::from_usize)
+}
+
+#[derive(Debug)]
 struct Core {
     file_ids: [usize; 2],
     start: [LineIndex; 2],
@@ -17,8 +56,6 @@ struct Core {
     aligned_end: [WordIndex; 2],
     word_alignment: Vec<DiffOp>,
 }
-
-#[allow(dead_code)]
 struct Hole {
     file_id: usize,
     start: LineIndex,
@@ -140,7 +177,6 @@ fn filter_long_matches(
             }
             end_i -= 1;
         }
-        const MIN_LINES_IN_CORE: usize = 5;
         if end_i > start_i
             && end_lines[0] - start_lines[0] >= MIN_LINES_IN_CORE
             && end_lines[1] - start_lines[1] >= MIN_LINES_IN_CORE
@@ -178,49 +214,143 @@ fn filter_long_matches(
     (cores, holes)
 }
 
-fn find_moved_cores(_holes: &[Vec<Hole>; 2]) -> Vec<Core> {
-    vec![]
-}
-
 fn extend_cores(
     main_cores: Vec<Core>,
-    _moved_cores: Vec<Core>,
+    mut moved_cores: Vec<Core>,
     line_to_word_index: &[[IndexVec<LineIndex, WordIndex>; 2]],
 ) -> Vec<(AlignedFragment, bool)> {
-    main_cores
-        .into_iter()
-        .map(|mut core| {
-            let core_start_word_indices =
-                [0, 1].map(|side| line_to_word_index[core.file_ids[side]][side][core.start[side]].raw());
+    let mut cores = main_cores;
+    let mut is_main = vec![true; cores.len()];
+    cores.append(&mut moved_cores);
+    is_main.resize(cores.len(), false);
 
-            let mut alignment = vec![];
-            for (side, op) in [(0, DiffOp::Delete), (1, DiffOp::Insert)] {
-                for _ in core_start_word_indices[side]..core.aligned_start[side].raw() {
-                    alignment.push(op);
+    // add virtual zero-length cores at the start and at the end of each file
+    for (file_id, file_line_to_word) in line_to_word_index.iter().enumerate() {
+        cores.push(Core {
+            file_ids: [file_id, file_id],
+            start: [LineIndex::new(0); 2],
+            end: [LineIndex::new(0); 2],
+            aligned_start: [WordIndex::new(0); 2],
+            aligned_end: [WordIndex::new(0); 2],
+            word_alignment: vec![],
+        });
+        is_main.push(true);
+        let end_lines = [0, 1].map(|side| file_line_to_word[side].last_idx());
+        let end_words = [0, 1].map(|side| *file_line_to_word[side].last().unwrap());
+        cores.push(Core {
+            file_ids: [file_id, file_id],
+            start: end_lines,
+            end: end_lines,
+            aligned_start: end_words,
+            aligned_end: end_words,
+            word_alignment: vec![],
+        });
+        is_main.push(true);
+    }
+
+    println!("{} cores", cores.len());
+
+    let mut previous_core: Vec<[Option<usize>; 2]> = vec![[None; 2]; cores.len()];
+    let mut next_core: Vec<[Option<usize>; 2]> = vec![[None; 2]; cores.len()];
+
+    for side in 0..2 {
+        let mut core_ends_by_side = vec![];
+        for (core_id, core) in cores.iter().enumerate() {
+            core_ends_by_side.push((core.file_ids[side], core.start[side], core_id));
+            core_ends_by_side.push((core.file_ids[side], core.end[side], core_id));
+        }
+        core_ends_by_side.sort();
+        for i in (1..core_ends_by_side.len() - 1).step_by(2) {
+            let earlier_core_id = core_ends_by_side[i].2;
+            let later_core_id = core_ends_by_side[i + 1].2;
+            previous_core[later_core_id][side] = Some(earlier_core_id);
+            next_core[earlier_core_id][side] = Some(later_core_id);
+        }
+
+        // detect and relabel moved cores that can be inserted into the main sequence
+        // TODO: switch from greedy to DP (can be done in O(n log n))
+        // TODO: extract function
+        if side == 0 {
+            let mut next_main_core = vec![None; cores.len()];
+            let mut last_main_seen = None;
+            for i in (0..core_ends_by_side.len()).step_by(2).rev() {
+                let core_id = core_ends_by_side[i].2;
+                if is_main[core_id] {
+                    last_main_seen = Some(core_id);
+                    continue;
+                }
+                if let Some(last_main) = last_main_seen {
+                    if cores[core_id].file_ids != cores[last_main].file_ids {
+                        last_main_seen = None;
+                    }
+                }
+                if let Some(last_main) = last_main_seen {
+                    if cores[core_id].end[1] <= cores[last_main].start[1] {
+                        next_main_core[core_id] = Some(last_main);
+                    }
                 }
             }
-            alignment.append(&mut core.word_alignment);
+            let mut last_main_seen: Option<usize> = None;
+            for i in (0..core_ends_by_side.len()).step_by(2) {
+                let core_id = core_ends_by_side[i].2;
+                if let Some(last_main) = last_main_seen {
+                    if cores[last_main].file_ids != cores[core_id].file_ids {
+                        last_main_seen = None;
+                    }
+                }
 
-            let core_end_word_indices =
-                [0, 1].map(|side| line_to_word_index[core.file_ids[side]][side][core.end[side]].raw());
+                if !is_main[core_id] && next_main_core[core_id].is_some() {
+                    if let Some(last_main) = last_main_seen {
+                        if cores[last_main].end[1] <= cores[core_id].start[1] {
+                            is_main[core_id] = true;
+                        }
+                    }
+                }
 
-            for (side, op) in [(0, DiffOp::Delete), (1, DiffOp::Insert)] {
-                for _ in core.aligned_end[side].raw()..core_end_word_indices[side] {
-                    alignment.push(op);
+                if is_main[core_id] {
+                    last_main_seen = Some(core_id);
                 }
             }
+        }
+    }
 
-            (
-                AlignedFragment {
-                    starts: core_start_word_indices,
-                    ends: core_end_word_indices,
-                    file_ids: core.file_ids,
-                    alignment,
-                },
-                true,
-            )
-        })
-        .collect()
+    let mut result = vec![];
+    for (core_id, mut core) in cores.into_iter().enumerate() {
+        if core.start == core.end {
+            continue;
+        }
+        let main = is_main[core_id];
+        println!("Core from {:?} to {:?}, main: {}", core.start, core.end, main);
+
+        let core_start_word_indices =
+            [0, 1].map(|side| line_to_word_index[core.file_ids[side]][side][core.start[side]].raw());
+        let mut alignment = vec![];
+        for (side, op) in [(0, DiffOp::Delete), (1, DiffOp::Insert)] {
+            for _ in core_start_word_indices[side]..core.aligned_start[side].raw() {
+                alignment.push(op);
+            }
+        }
+        alignment.append(&mut core.word_alignment);
+
+        let core_end_word_indices =
+            [0, 1].map(|side| line_to_word_index[core.file_ids[side]][side][core.end[side]].raw());
+
+        for (side, op) in [(0, DiffOp::Delete), (1, DiffOp::Insert)] {
+            for _ in core.aligned_end[side].raw()..core_end_word_indices[side] {
+                alignment.push(op);
+            }
+        }
+        result.push((
+            AlignedFragment {
+                starts: core_start_word_indices,
+                ends: core_end_word_indices,
+                file_ids: core.file_ids,
+                alignment,
+            },
+            main,
+        ));
+    }
+    result
 }
 
 pub(super) fn main_then_moved(
@@ -256,7 +386,7 @@ pub(super) fn main_then_moved(
             holes[side].append(&mut found_holes[side]);
         }
     }
-    let moved_cores = find_moved_cores(&holes);
+    let moved_cores = moved_cores::find_moved_cores(text_words, &line_to_word_index, &holes);
 
     extend_cores(main_cores, moved_cores, &line_to_word_index)
 }
