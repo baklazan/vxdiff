@@ -54,6 +54,7 @@ impl<'a> ExtendedDiffFileSide<'a> {
 struct ExtendedDiff<'a> {
     section_sides: Vec<[Option<ExtendedDiffSectionSide<'a>>; 2]>,
     file_sides: Vec<[ExtendedDiffFileSide<'a>; 2]>,
+    file_headers: Vec<String>,
     sections: &'a [Section],
     files: &'a [FileDiff],
 }
@@ -61,6 +62,52 @@ struct ExtendedDiff<'a> {
 impl<'a> ExtendedDiff<'a> {
     fn section_side(&self, section_id: usize, side: usize) -> &ExtendedDiffSectionSide<'a> {
         self.section_sides[section_id][side].as_ref().unwrap()
+    }
+}
+
+fn make_file_header(file_names: &[&str; 2]) -> String {
+    fn split(mut input: &str) -> Vec<&str> {
+        let mut result = vec![];
+        while let Some(point) = input.find(['.', '/']) {
+            if point != 0 {
+                result.push(&input[0..point]);
+            }
+            result.push(&input[point..point + 1]);
+            input = &input[point + 1..];
+        }
+        if !input.is_empty() {
+            result.push(input);
+        }
+        result
+    }
+
+    if file_names[0] == file_names[1] {
+        file_names[0].to_owned()
+    } else {
+        let a = split(file_names[0]);
+        let b = split(file_names[1]);
+        let mut prefix = 0;
+        while a.get(prefix).is_some() && a.get(prefix) == b.get(prefix) {
+            prefix += 1;
+        }
+        let mut suffix = 0;
+        while suffix < a.len()
+            && suffix < b.len()
+            && a.get(a.len() - 1 - suffix).is_some()
+            && a.get(a.len() - 1 - suffix) == b.get(b.len() - 1 - suffix)
+        {
+            suffix += 1;
+        }
+        let a_until = a.len() - suffix;
+        let b_until = b.len() - suffix;
+
+        format!(
+            "{}{{{} → {}}}{}",
+            a[..prefix].join(""),
+            a[prefix..a_until].join(""),
+            b[prefix..b_until].join(""),
+            a[a_until..].join("")
+        )
     }
 }
 
@@ -79,6 +126,9 @@ fn make_extended_diff<'a>(
                     line_offsets: vec![0, 0],
                 })
             })
+            .collect(),
+        file_headers: (0..diff.files.len())
+            .map(|file_id| make_file_header(&file_names[file_id]))
             .collect(),
         sections: &diff.sections,
         files: &diff.files,
@@ -1881,12 +1931,7 @@ impl<'a> State<'a> {
                         2 => true,
                         _ => panic!("unexpected node.visible of FileHeaderLine's parent"),
                     };
-                    let string = format!(
-                        "{} vs {} (press z to {})",
-                        self.diff.file_sides[file_id][0].filename,
-                        self.diff.file_sides[file_id][1].filename,
-                        if is_open { "close" } else { "open" }
-                    );
+                    let string = &self.diff.file_headers[file_id];
                     let style = Style {
                         fg: Some(Color::Black),
                         bg: Some(if is_open { Color::Green } else { Color::Red }),
