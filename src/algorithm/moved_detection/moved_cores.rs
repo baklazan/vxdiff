@@ -4,7 +4,7 @@ use crate::algorithm::{moved_detection::range_iter, suffix_array, DiffOp, Partit
 use index_vec::{index_vec, IndexVec};
 use string_interner::{backend::StringBackend, StringInterner};
 
-use super::{index_converter::IndexConverter, Core, Hole, LineIndex, WordIndex, MIN_LINES_IN_CORE};
+use super::{index_converter::IndexConverter, trim_to_core, Core, Hole, LineIndex, WordIndex, MIN_LINES_IN_CORE};
 
 fn next_lower(array: &[usize]) -> Vec<usize> {
     let mut stack: Vec<(usize, usize)> = vec![];
@@ -249,7 +249,7 @@ fn build_saplings_in_file_combination(seeds: &[Seed], file_size: [usize; 2]) -> 
     }
     let mut edges: Vec<Vec<Edge>> = vec![vec![]; seeds.len()];
 
-    const MAX_GAP_BETWEEN_SEEDS: usize = 5;
+    const MAX_GAP_BETWEEN_SEEDS: usize = 10;
     for side in 0..2 {
         let mut last_seen: Vec<Option<usize>> = vec![None; diagonals_count];
 
@@ -497,6 +497,7 @@ fn select_cores(
                 })
                 .collect();
         }
+        const MIN_LINES_IN_GOOD_INTERVAL: usize = MIN_LINES_IN_CORE + 2;
         let unique_sapling_intervals = sapling.intersect_intervals(&unique_word_intervals);
         let mut has_good_interval = false;
         for (start, end) in unique_sapling_intervals {
@@ -505,7 +506,7 @@ fn select_cores(
                 let file_id = sapling.file_ids[side];
                 let start_line = index_converters[file_id][side].word_to_line_before(start[side]);
                 let end_line = index_converters[file_id][side].word_to_line_after(end[side]);
-                if end_line - start_line < MIN_LINES_IN_CORE {
+                if end_line - start_line < MIN_LINES_IN_GOOD_INTERVAL {
                     good = false;
                     break;
                 }
@@ -550,27 +551,27 @@ fn select_cores(
         }
         let unique_sapling_intervals = sapling.intersect_intervals(&unique_word_intervals);
         for (start, end) in unique_sapling_intervals {
+            let alignment = sapling.approximate_alignment(start, end);
+            let core = trim_to_core(
+                &alignment,
+                start,
+                end,
+                [
+                    &index_converters[sapling.file_ids[0]][0],
+                    &index_converters[sapling.file_ids[1]][1],
+                ],
+                sapling.file_ids,
+            );
+
             let mut good = true;
-            let mut start_lines = [LineIndex::new(0); 2];
-            let mut end_lines = [LineIndex::new(0); 2];
             for side in 0..2 {
-                let file_id = sapling.file_ids[side];
-                start_lines[side] = index_converters[file_id][side].word_to_line_before(start[side]);
-                end_lines[side] = index_converters[file_id][side].word_to_line_after(end[side]);
-                if end_lines[side] - start_lines[side] < MIN_LINES_IN_CORE {
+                if core.end[side] - core.start[side] < MIN_LINES_IN_CORE {
                     good = false;
-                    break;
                 }
             }
+
             if good {
-                result.push(Core {
-                    file_ids: sapling.file_ids,
-                    start: start_lines,
-                    end: end_lines,
-                    aligned_start: start,
-                    aligned_end: end,
-                    word_alignment: sapling.approximate_alignment(start, end),
-                });
+                result.push(core);
             }
         }
     }
