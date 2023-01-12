@@ -65,6 +65,8 @@ pub struct Theme {
     pub select_highlight: Style,
     pub middle_separator: Style,
     pub expander: Style,
+    pub file_header_closed: Style,
+    pub file_header_open: Style,
     pub button: Style,
     pub button_hint: Style,
 }
@@ -113,6 +115,8 @@ fn default_theme() -> Theme {
         select_highlight: style!(fg = Color::Black, bg = Color::White),
         middle_separator: style!(),
         expander: style!(),
+        file_header_closed: style!(fg = Color::Black, bg = Color::Red),
+        file_header_open: style!(fg = Color::Black, bg = Color::Green),
         button: style!(fg = Color::Black, bg = Color::White),
         button_hint: style!(fg = Color::White, bg = Color::Blue, bold = true),
     }
@@ -163,6 +167,8 @@ fn new_theme() -> Theme {
         select_highlight: style!(fg = Color::Black, bg = Color::White),
         middle_separator: style!(),
         expander: style!(),
+        file_header_closed: style!(fg = Color::Black, bg = Color::Red),
+        file_header_open: style!(fg = Color::Black, bg = Color::Green),
         button: style!(fg = black, bg = Color::Indexed(195)), // #D7FFFF
         button_hint: style!(fg = black, bg = Color::Indexed(123), bold = true), // #87FFFF
     }
@@ -211,6 +217,8 @@ fn light_theme() -> Theme {
         select_highlight: style!(fg = Color::Black, bg = Color::White),
         middle_separator: style!(fg = Color::Rgb(140, 140, 180), bg = Color::Rgb(248, 249, 250)),
         expander: style!(fg = Color::Rgb(200, 200, 200), bg = Color::Rgb(248, 249, 250)),
+        file_header_closed: style!(fg = Color::Rgb(32, 33, 36), bg = Color::Rgb(172, 227, 246), bold = true),
+        file_header_open: style!(fg = Color::Rgb(32, 33, 36), bg = Color::Rgb(112, 219, 255), bold = true),
         button: style!(fg = Color::Indexed(16), bg = Color::Indexed(195)), // #D7FFFF
         button_hint: style!(fg = Color::Indexed(16), bg = Color::Indexed(123), bold = true), // #87FFFF
     }

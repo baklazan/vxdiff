@@ -21,7 +21,7 @@ use std::ops::{DerefMut as _, Range};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use text_input::TextInput;
-use tui::style::{Color, Modifier};
+use tui::style::Modifier;
 use unicode_width::UnicodeWidthStr as _;
 
 fn vec_of<T>(length: usize, func: impl Fn() -> T) -> Vec<T> {
@@ -1136,7 +1136,7 @@ fn tui_style(style: Style) -> tui::style::Style {
         fg: style.fg,
         bg: style.bg,
         add_modifier: modifier,
-        sub_modifier: Modifier::empty(),
+        sub_modifier: modifier.complement(),
     }
 }
 
@@ -1932,12 +1932,13 @@ impl<'a> State<'a> {
                         _ => panic!("unexpected node.visible of FileHeaderLine's parent"),
                     };
                     let string = &self.diff.file_headers[file_id];
-                    let style = Style {
-                        fg: Some(Color::Black),
-                        bg: Some(if is_open { Color::Green } else { Color::Red }),
-                        ..Style::default()
+                    let style = if is_open {
+                        self.config.theme.file_header_open
+                    } else {
+                        self.config.theme.file_header_closed
                     };
                     let x = if self.config.show_cursor { 1 } else { 0 };
+                    buffer_write(buffer, x, y, " ".repeat(term_width - x), style);
                     buffer_write(buffer, x, y, string, style);
                     let button_text = if is_open { "Close".to_owned() } else { "Open".to_owned() };
                     let button_pos = (term_width - 1 - button_text.width() - 4)..(term_width - 1);
