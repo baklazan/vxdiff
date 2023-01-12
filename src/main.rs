@@ -134,6 +134,7 @@ fn try_main() -> DynResult<()> {
     }
     let file_input: Vec<_> = input.file_input.iter().map(borrow_array).collect();
     let file_names: Vec<_> = input.file_names.iter().map(borrow_array).collect();
+    let file_status_text: Vec<&str> = input.file_status_text.iter().map(AsRef::as_ref).collect();
 
     let diff = compute_diff(&file_input, args.algorithm.convert());
 
@@ -146,7 +147,9 @@ fn try_main() -> DynResult<()> {
         OutputMode::TuiPlain => {
             print_side_by_side_diff_plainly(&diff, config, &file_input, &file_names, &mut stdout())?
         }
-        OutputMode::Tui => run_in_terminal(|terminal| run_tui(&diff, config, &file_input, &file_names, terminal))?,
+        OutputMode::Tui => {
+            run_in_terminal(|terminal| run_tui(&diff, config, &file_input, &file_names, &file_status_text, terminal))?
+        }
     }
 
     Ok(())

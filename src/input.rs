@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 pub struct ProgramInput {
     pub file_input: Vec<[String; 2]>,
     pub file_names: Vec<[String; 2]>,
+    pub file_status_text: Vec<String>,
 }
 
 // WTF
@@ -132,7 +133,6 @@ pub fn read_by_running_git_diff_raw(git_diff_args: &[String]) -> DynResult<Progr
         if parts.len() != 5 {
             return Err(format!("unexpected output from git diff: {metadata}"))?;
         }
-        // TODO: use them
         let [old_mode, new_mode, old_oid, new_oid, status] = [parts[0], parts[1], parts[2], parts[3], parts[4]];
 
         let old_name_raw = read_token(&mut diff_stdout)?;
@@ -206,8 +206,49 @@ pub fn read_by_running_git_diff_raw(git_diff_args: &[String]) -> DynResult<Progr
             read(new_mode, new_oid, &new_name_raw)?
         };
 
+        let file_status_text = {
+            let similarity = |num: &str| {
+                if num.is_empty() {
+                    "".to_owned()
+                } else {
+                    format!("{num}% similarity")
+                }
+            };
+            let ad_mode = |mode: &str| {
+                if mode == "100644" {
+                    "".to_owned()
+                } else {
+                    format!("mode {mode}")
+                }
+            };
+            let modes = || {
+                if old_mode == new_mode {
+                    "".to_owned()
+                } else {
+                    format!("mode {old_mode} → {new_mode}")
+                }
+            };
+
+            match (status.get(..1).unwrap_or_default(), status.get(1..).unwrap_or_default()) {
+                ("A", "") => vec!["added".to_owned(), ad_mode(new_mode)],
+                ("C", s) => vec!["copied".to_owned(), similarity(s), modes()],
+                ("D", "") => vec!["deleted".to_owned(), ad_mode(old_mode)],
+                ("M", s) => vec![similarity(s), modes()],
+                ("R", s) => vec!["renamed".to_owned(), similarity(s), modes()],
+                ("T", "") => vec![modes()],
+                // "U" is handled earlier
+                _ => vec![format!("unexpected status: {status}")],
+            }
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(String::as_str) // ugh
+            .collect::<Vec<_>>() // ugh
+            .join(", ")
+        };
+
         result.file_input.push([old_content, new_content]);
         result.file_names.push([old_name_lossy, new_name_lossy]);
+        result.file_status_text.push(file_status_text);
     }
 
     let diff_status = diff_child.wait()?;
@@ -325,15 +366,20 @@ pub fn read_as_git_pager() -> DynResult<ProgramInput> {
             let _new_mode = read_token(&mut stdin)?;
 
             let new_name;
+            let xfrm_msg;
             if n == 9 {
                 new_name = String::from_utf8_lossy(&read_token(&mut stdin)?).into_owned();
-                let _xfrm_msg = read_token(&mut stdin)?; // TODO: use it
+                xfrm_msg = String::from_utf8_lossy(&read_token(&mut stdin)?).into_owned();
             } else {
                 new_name = old_name.clone();
+                xfrm_msg = Default::default();
             }
+
+            let file_status_text = xfrm_msg.split('\n').next().unwrap().to_owned(); // TODO
 
             result.file_input.push([old_content, new_content]);
             result.file_names.push([old_name, new_name]);
+            result.file_status_text.push(file_status_text);
         }
 
         counter += 1;
@@ -358,6 +404,7 @@ pub fn read_file_list(files: &[String]) -> DynResult<ProgramInput> {
         let new_content = String::from_utf8_lossy(&std::fs::read(&new_name)?).into_owned();
         result.file_input.push([old_content, new_content]);
         result.file_names.push([old_name, new_name]);
+        result.file_status_text.push("".to_owned());
     }
 
     Ok(result)

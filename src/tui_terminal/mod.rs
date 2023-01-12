@@ -1067,6 +1067,7 @@ struct State<'a> {
     visible_byte_sets: Vec<[RangeMap<()>; 2]>,
     byte_to_nid_maps: Vec<[RangeMap<Nid>; 2]>,
     diff: &'a ExtendedDiff<'a>,
+    file_status_text: &'a [&'a str],
     line_number_width: usize,
     scroll_pos: LeafPosition,
     cursor_pos: LeafPosition,
@@ -1931,7 +1932,10 @@ impl<'a> State<'a> {
                         2 => true,
                         _ => panic!("unexpected node.visible of FileHeaderLine's parent"),
                     };
-                    let string = &self.diff.file_headers[file_id];
+                    let mut string = self.diff.file_headers[file_id].clone();
+                    if !self.file_status_text[file_id].is_empty() {
+                        string.push_str(&format!(" ({})", self.file_status_text[file_id]));
+                    }
                     let style = if is_open {
                         self.config.theme.file_header_open
                     } else {
@@ -2110,6 +2114,7 @@ pub fn run_tui(
     config: Config,
     file_input: &[[&str; 2]],
     file_names: &[[&str; 2]],
+    file_status_text: &[&str],
     terminal: &mut TheTerminal,
 ) -> TheResult {
     let diff = make_extended_diff(diff, file_input, file_names);
@@ -2162,6 +2167,7 @@ pub fn run_tui(
             visible_byte_sets,
             byte_to_nid_maps,
             diff: &diff,
+            file_status_text,
             line_number_width,
             scroll_pos: initial_scroll,
             cursor_pos: initial_scroll,
