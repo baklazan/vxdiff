@@ -1,8 +1,10 @@
 use std::ops::{Range, RangeInclusive};
 
-use super::{main_sequence::main_sequence_fragments, AlignedFragment, DiffOp, MainSequenceAlgorithm, PartitionedText};
-use index_vec::{index_vec, IndexVec};
+use self::index_converter::IndexConverter;
 
+use super::{main_sequence::main_sequence_fragments, AlignedFragment, DiffOp, MainSequenceAlgorithm, PartitionedText};
+
+mod index_converter;
 mod moved_cores;
 
 const MIN_LINES_IN_CORE: usize = 3;
@@ -23,6 +25,13 @@ macro_rules! extend_index_type {
 
             fn to_usize(&self) -> usize {
                 self.raw()
+            }
+        }
+
+        #[allow(dead_code)]
+        impl $type {
+            fn saturating_sub(&self, other: Self) -> Self {
+                Self::new(self.raw().saturating_sub(other.raw()))
             }
         }
     };
@@ -64,25 +73,16 @@ struct Hole {
 
 fn filter_long_matches(
     word_alignment: &[DiffOp],
-    line_to_word_index: &[IndexVec<LineIndex, WordIndex>; 2],
+    index_converters: &[IndexConverter; 2],
     file_id: usize,
 ) -> (Vec<Core>, [Vec<Hole>; 2]) {
     #[derive(Clone, Copy, Debug)]
-    struct Indices {
-        line: [LineIndex; 2],
-        word: [WordIndex; 2],
-    }
-
-    #[derive(Clone, Copy, Debug)]
     struct ClusterBound {
-        text_position: Indices,
+        text_position: [WordIndex; 2],
         alignment_index: usize,
     }
 
-    let mut current = Indices {
-        line: [LineIndex::new(0); 2],
-        word: [WordIndex::new(0); 2],
-    };
+    let mut current = [WordIndex::new(0); 2];
     let mut cluster_start: Option<ClusterBound> = None;
     let mut cluster_end: Option<ClusterBound> = None;
 
@@ -97,12 +97,7 @@ fn filter_long_matches(
         }
 
         for side in 0..2 {
-            current.word[side] += op.movement()[side];
-            while current.line[side] + 1 < line_to_word_index[side].len()
-                && line_to_word_index[side][current.line[side] + 1] <= current.word[side]
-            {
-                current.line[side] += 1;
-            }
+            current[side] += op.movement()[side];
         }
 
         match op {
@@ -115,11 +110,9 @@ fn filter_long_matches(
             DiffOp::Delete | DiffOp::Insert => {
                 if let Some(end) = cluster_end {
                     for side in 0..2 {
-                        let mut whole_lines_skipped: usize =
-                            usize::from(current.line[side] - end.text_position.line[side]);
-                        if line_to_word_index[side][end.text_position.line[side]] != end.text_position.word[side] {
-                            whole_lines_skipped = whole_lines_skipped.saturating_sub(1);
-                        }
+                        let whole_lines_skipped: LineIndex = index_converters[side]
+                            .word_to_line_before(current[side])
+                            .saturating_sub(index_converters[side].word_to_line_after(end.text_position[side]));
                         const MIN_SKIPPED_LINES_BETWEEN_CLUSTERS: usize = 2;
                         if whole_lines_skipped >= MIN_SKIPPED_LINES_BETWEEN_CLUSTERS {
                             clusters.push((cluster_start.unwrap(), end));
@@ -140,43 +133,36 @@ fn filter_long_matches(
     let mut cores = vec![];
     let mut current_hole_start = [LineIndex::new(0); 2];
     for (start, end) in clusters {
-        let mut start_lines = start.text_position.line;
-        let mut start_words = start.text_position.word;
-        for side in 0..2 {
-            if line_to_word_index[side][start_lines[side]] < start_words[side] {
-                start_lines[side] += 1;
-            }
-        }
+        let mut start_lines = [0, 1].map(|side| index_converters[side].word_to_line_after(start.text_position[side]));
+        let mut start_words = start.text_position;
         let mut start_i = start.alignment_index;
         let mut end_i = end.alignment_index;
-        while (start_words[0] < line_to_word_index[0][start_lines[0]]
-            || start_words[1] < line_to_word_index[1][start_lines[1]])
+        while (start_words[0] < index_converters[0].line_to_word(start_lines[0])
+            || start_words[1] < index_converters[1].line_to_word(start_lines[1]))
             && start_i < end_i
         {
             for side in 0..2 {
                 start_words[side] += word_alignment[start_i].movement()[side];
-                if start_lines[side] + 1 < line_to_word_index[side].len()
-                    && start_words[side] >= line_to_word_index[side][start_lines[side] + 1]
-                {
-                    start_lines[side] += 1;
-                }
             }
             start_i += 1;
         }
 
-        let mut end_words = end.text_position.word;
-        let mut end_lines = end.text_position.line;
-        while (end_words[0] > line_to_word_index[0][end_lines[0]] || end_words[1] > line_to_word_index[1][end_lines[1]])
+        let mut end_words = end.text_position;
+        let mut end_lines = [0, 1].map(|side| index_converters[side].word_to_line_before(end.text_position[side]));
+        while (end_words[0] > index_converters[0].line_to_word(end_lines[0])
+            || end_words[1] > index_converters[1].line_to_word(end_lines[1]))
             && end_i > start_i
         {
             for side in 0..2 {
                 end_words[side] -= word_alignment[end_i - 1].movement()[side];
-                if end_lines[side] > 0 && end_words[side] <= line_to_word_index[side][end_lines[side] - 1] {
-                    end_lines[side] -= 1;
-                }
             }
             end_i -= 1;
         }
+        for side in 0..2 {
+            start_lines[side] = index_converters[side].word_to_line_before(start_words[side]);
+            end_lines[side] = index_converters[side].word_to_line_after(end_words[side]);
+        }
+
         if end_i > start_i
             && end_lines[0] - start_lines[0] >= MIN_LINES_IN_CORE
             && end_lines[1] - start_lines[1] >= MIN_LINES_IN_CORE
@@ -202,11 +188,11 @@ fn filter_long_matches(
         }
     }
     for side in 0..2 {
-        if line_to_word_index[side].len() - 1 > current_hole_start[side] {
+        if index_converters[side].lines_count() > current_hole_start[side] {
             holes[side].push(Hole {
                 file_id,
                 start: current_hole_start[side],
-                end: LineIndex::new(line_to_word_index[side].len() - 1),
+                end: index_converters[side].lines_count(),
             });
         }
     }
@@ -217,7 +203,7 @@ fn filter_long_matches(
 fn extend_cores(
     main_cores: Vec<Core>,
     mut moved_cores: Vec<Core>,
-    line_to_word_index: &[[IndexVec<LineIndex, WordIndex>; 2]],
+    index_converters: &[[IndexConverter; 2]],
 ) -> Vec<(AlignedFragment, bool)> {
     let mut cores = main_cores;
     let mut is_main = vec![true; cores.len()];
@@ -225,7 +211,7 @@ fn extend_cores(
     is_main.resize(cores.len(), false);
 
     // add virtual zero-length cores at the start and at the end of each file
-    for (file_id, file_line_to_word) in line_to_word_index.iter().enumerate() {
+    for (file_id, file_converters) in index_converters.iter().enumerate() {
         cores.push(Core {
             file_ids: [file_id, file_id],
             start: [LineIndex::new(0); 2],
@@ -235,8 +221,8 @@ fn extend_cores(
             word_alignment: vec![],
         });
         is_main.push(true);
-        let end_lines = [0, 1].map(|side| file_line_to_word[side].last_idx());
-        let end_words = [0, 1].map(|side| *file_line_to_word[side].last().unwrap());
+        let end_lines = [0, 1].map(|side| file_converters[side].lines_count());
+        let end_words = [0, 1].map(|side| file_converters[side].words_count());
         cores.push(Core {
             file_ids: [file_id, file_id],
             start: end_lines,
@@ -322,8 +308,11 @@ fn extend_cores(
         let main = is_main[core_id];
         println!("Core from {:?} to {:?}, main: {}", core.start, core.end, main);
 
-        let core_start_word_indices =
-            [0, 1].map(|side| line_to_word_index[core.file_ids[side]][side][core.start[side]].raw());
+        let core_start_word_indices = [0, 1].map(|side| {
+            index_converters[core.file_ids[side]][side]
+                .line_to_word(core.start[side])
+                .raw()
+        });
         let mut alignment = vec![];
         for (side, op) in [(0, DiffOp::Delete), (1, DiffOp::Insert)] {
             for _ in core_start_word_indices[side]..core.aligned_start[side].raw() {
@@ -332,8 +321,11 @@ fn extend_cores(
         }
         alignment.append(&mut core.word_alignment);
 
-        let core_end_word_indices =
-            [0, 1].map(|side| line_to_word_index[core.file_ids[side]][side][core.end[side]].raw());
+        let core_end_word_indices = [0, 1].map(|side| {
+            index_converters[core.file_ids[side]][side]
+                .line_to_word(core.end[side])
+                .raw()
+        });
 
         for (side, op) in [(0, DiffOp::Delete), (1, DiffOp::Insert)] {
             for _ in core.aligned_end[side].raw()..core_end_word_indices[side] {
@@ -365,28 +357,25 @@ pub(super) fn main_then_moved(
 
     let mut main_cores = vec![];
     let mut holes = [vec![], vec![]];
-    let mut line_to_word_index: Vec<[IndexVec<LineIndex, WordIndex>; 2]> = vec![];
+
+    let mut index_converters: Vec<[IndexConverter; 2]> = vec![];
+
     for (file_id, alignment) in alignments.iter().enumerate() {
-        let mut file_line_to_word_index = [index_vec![], index_vec![]];
+        let file_index_converters = [0, 1].map(|side| {
+            IndexConverter::new(
+                text_words[file_id][side].part_bounds,
+                text_lines[file_id][side].part_bounds,
+            )
+        });
 
-        for side in 0..2 {
-            let mut line_index = 0;
-            for (word_index, &byte_index) in text_words[file_id][side].part_bounds.iter().enumerate() {
-                if byte_index == text_lines[file_id][side].part_bounds[line_index] {
-                    file_line_to_word_index[side].push(WordIndex::new(word_index));
-                    line_index += 1;
-                }
-            }
-        }
-
-        let (mut found_cores, mut found_holes) = filter_long_matches(alignment, &file_line_to_word_index, file_id);
-        line_to_word_index.push(file_line_to_word_index);
+        let (mut found_cores, mut found_holes) = filter_long_matches(alignment, &file_index_converters, file_id);
+        index_converters.push(file_index_converters);
         main_cores.append(&mut found_cores);
         for side in 0..2 {
             holes[side].append(&mut found_holes[side]);
         }
     }
-    let moved_cores = moved_cores::find_moved_cores(text_words, &line_to_word_index, &holes);
+    let moved_cores = moved_cores::find_moved_cores(text_words, &index_converters, &holes);
 
-    extend_cores(main_cores, moved_cores, &line_to_word_index)
+    extend_cores(main_cores, moved_cores, &index_converters)
 }

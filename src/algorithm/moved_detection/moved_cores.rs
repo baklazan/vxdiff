@@ -1,13 +1,10 @@
 use std::{cmp::Ordering, collections::HashMap, ops::Add};
 
-use crate::algorithm::{
-    moved_detection::{range_incl_iter, range_iter},
-    suffix_array, DiffOp, PartitionedText,
-};
+use crate::algorithm::{moved_detection::range_iter, suffix_array, DiffOp, PartitionedText};
 use index_vec::{index_vec, IndexVec};
 use string_interner::{backend::StringBackend, StringInterner};
 
-use super::{Core, Hole, LineIndex, WordIndex, MIN_LINES_IN_CORE};
+use super::{index_converter::IndexConverter, Core, Hole, LineIndex, WordIndex, MIN_LINES_IN_CORE};
 
 fn next_lower(array: &[usize]) -> Vec<usize> {
     let mut stack: Vec<(usize, usize)> = vec![];
@@ -34,7 +31,7 @@ struct Seed {
 
 fn find_seeds(
     text_words: &[[PartitionedText; 2]],
-    line_to_word_index: &[[IndexVec<LineIndex, WordIndex>; 2]],
+    index_converters: &[[IndexConverter; 2]],
     holes: &[Vec<Hole>; 2],
 ) -> Vec<Seed> {
     let mut interner: StringInterner<StringBackend<usize>> = StringInterner::new();
@@ -51,8 +48,8 @@ fn find_seeds(
     let mut string: Vec<usize> = vec![];
     for (side, side_holes) in holes.iter().enumerate() {
         for hole in side_holes {
-            let start_word: WordIndex = line_to_word_index[hole.file_id][side][hole.start];
-            let end_word: WordIndex = line_to_word_index[hole.file_id][side][hole.end];
+            let start_word: WordIndex = index_converters[hole.file_id][side].line_to_word(hole.start);
+            let end_word: WordIndex = index_converters[hole.file_id][side].line_to_word(hole.end);
             for word in range_iter(start_word..end_word) {
                 let symbol = interner.get_or_intern(text_words[hole.file_id][side].get_part(word.raw()));
                 string.push(symbol + 2);
@@ -447,41 +444,15 @@ impl LineCoverage {
 
 fn select_cores(
     saplings: &[Sapling],
-    line_to_word_index: &[[IndexVec<LineIndex, WordIndex>; 2]],
+    index_converters: &[[IndexConverter; 2]],
     file_sizes_words: &[[usize; 2]],
 ) -> Vec<Core> {
     // TODO: quite nasty, refactor
-
-    let mut word_to_line_index: Vec<[IndexVec<WordIndex, LineIndex>; 2]> = vec![];
-    for file_id in 0..file_sizes_words.len() {
-        let mut file_word_to_line: [IndexVec<WordIndex, LineIndex>; 2] = [index_vec![], index_vec![]];
-        for side in 0..2 {
-            let mut current_line = LineIndex::new(0);
-            let side_line_to_word = &line_to_word_index[file_id][side];
-            for word in range_incl_iter(WordIndex::new(0)..=WordIndex::new(file_sizes_words[file_id][side])) {
-                while current_line + 1 < side_line_to_word.len_idx() && side_line_to_word[current_line + 1] <= word {
-                    current_line += 1;
-                }
-                file_word_to_line[side].push(current_line);
-            }
-        }
-        word_to_line_index.push(file_word_to_line);
-    }
 
     let mut coverage: Vec<_> = file_sizes_words
         .iter()
         .map(|sizes| sizes.map(LineCoverage::new))
         .collect();
-
-    let word_to_line_before =
-        |file_id: usize, side: usize, word: WordIndex| -> LineIndex { word_to_line_index[file_id][side][word] };
-    let word_to_line_after = |file_id: usize, side: usize, word: WordIndex| -> LineIndex {
-        if word == 0 || word_to_line_index[file_id][side][word - 1] < word_to_line_index[file_id][side][word] {
-            word_to_line_index[file_id][side][word]
-        } else {
-            word_to_line_index[file_id][side][word] + 1
-        }
-    };
 
     let mut by_score = vec![];
     for (sapling_id, sapling) in saplings.iter().enumerate() {
@@ -489,8 +460,8 @@ fn select_cores(
             let file_id = sapling.file_ids[side];
             let start_word = sapling.intervals[0].start[side];
             let end_word = sapling.intervals.last().unwrap().end[side];
-            let start_line = word_to_line_before(file_id, side, start_word);
-            let end_line = word_to_line_after(file_id, side, end_word);
+            let start_line = index_converters[file_id][side].word_to_line_before(start_word);
+            let end_line = index_converters[file_id][side].word_to_line_after(end_word);
             coverage[file_id][side].add(start_line, end_line);
         }
 
@@ -513,15 +484,15 @@ fn select_cores(
         let mut unique_word_intervals: [Vec<(WordIndex, WordIndex)>; 2] = [vec![], vec![]];
         for side in 0..2 {
             let file_id = sapling.file_ids[side];
-            let start_line = word_to_line_before(file_id, side, start_words[side]);
-            let end_line = word_to_line_after(file_id, side, end_words[side]);
+            let start_line = index_converters[file_id][side].word_to_line_before(start_words[side]);
+            let end_line = index_converters[file_id][side].word_to_line_after(end_words[side]);
             let unique_line_intervals = coverage[file_id][side].once_covered_invervals(start_line, end_line);
             unique_word_intervals[side] = unique_line_intervals
                 .iter()
                 .map(|(from, to)| {
                     (
-                        line_to_word_index[file_id][side][*from],
-                        line_to_word_index[file_id][side][*to],
+                        index_converters[file_id][side].line_to_word(*from),
+                        index_converters[file_id][side].line_to_word(*to),
                     )
                 })
                 .collect();
@@ -532,8 +503,8 @@ fn select_cores(
             let mut good = true;
             for side in 0..2 {
                 let file_id = sapling.file_ids[side];
-                let start_line = word_to_line_before(file_id, side, start[side]);
-                let end_line = word_to_line_after(file_id, side, end[side]);
+                let start_line = index_converters[file_id][side].word_to_line_before(start[side]);
+                let end_line = index_converters[file_id][side].word_to_line_after(end[side]);
                 if end_line - start_line < MIN_LINES_IN_CORE {
                     good = false;
                     break;
@@ -549,8 +520,8 @@ fn select_cores(
         } else {
             for side in 0..2 {
                 let file_id = sapling.file_ids[side];
-                let start_line = word_to_line_before(file_id, side, start_words[side]);
-                let end_line = word_to_line_after(file_id, side, end_words[side]);
+                let start_line = index_converters[file_id][side].word_to_line_before(start_words[side]);
+                let end_line = index_converters[file_id][side].word_to_line_after(end_words[side]);
                 coverage[file_id][side].remove(start_line, end_line);
             }
         }
@@ -564,15 +535,15 @@ fn select_cores(
         let mut unique_word_intervals: [Vec<(WordIndex, WordIndex)>; 2] = [vec![], vec![]];
         for side in 0..2 {
             let file_id = sapling.file_ids[side];
-            let start_line = word_to_line_before(file_id, side, start_words[side]);
-            let end_line = word_to_line_after(file_id, side, end_words[side]);
+            let start_line = index_converters[file_id][side].word_to_line_before(start_words[side]);
+            let end_line = index_converters[file_id][side].word_to_line_after(end_words[side]);
             let unique_line_intervals = coverage[file_id][side].once_covered_invervals(start_line, end_line);
             unique_word_intervals[side] = unique_line_intervals
                 .iter()
                 .map(|(from, to)| {
                     (
-                        line_to_word_index[file_id][side][*from],
-                        line_to_word_index[file_id][side][*to],
+                        index_converters[file_id][side].line_to_word(*from),
+                        index_converters[file_id][side].line_to_word(*to),
                     )
                 })
                 .collect();
@@ -584,8 +555,8 @@ fn select_cores(
             let mut end_lines = [LineIndex::new(0); 2];
             for side in 0..2 {
                 let file_id = sapling.file_ids[side];
-                start_lines[side] = word_to_line_before(file_id, side, start[side]);
-                end_lines[side] = word_to_line_after(file_id, side, end[side]);
+                start_lines[side] = index_converters[file_id][side].word_to_line_before(start[side]);
+                end_lines[side] = index_converters[file_id][side].word_to_line_after(end[side]);
                 if end_lines[side] - start_lines[side] < MIN_LINES_IN_CORE {
                     good = false;
                     break;
@@ -609,14 +580,14 @@ fn select_cores(
 
 pub(super) fn find_moved_cores(
     text_words: &[[PartitionedText; 2]],
-    line_to_word_index: &[[IndexVec<LineIndex, WordIndex>; 2]],
+    index_converters: &[[IndexConverter; 2]],
     holes: &[Vec<Hole>; 2],
 ) -> Vec<Core> {
-    let seeds = find_seeds(text_words, line_to_word_index, holes);
+    let seeds = find_seeds(text_words, index_converters, holes);
     let file_sizes_words: Vec<[usize; 2]> = text_words
         .iter()
         .map(|file_words| [0, 1].map(|side| file_words[side].part_count()))
         .collect();
     let saplings = build_saplings(seeds, &file_sizes_words);
-    select_cores(&saplings, line_to_word_index, &file_sizes_words)
+    select_cores(&saplings, index_converters, &file_sizes_words)
 }
