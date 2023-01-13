@@ -91,11 +91,11 @@ impl InputSliceBounds {
         [0, 1].map(|side| self.local_index(side, global_indices[side]))
     }
 
-    pub fn subslice(&self, start_local: [usize; 2], size: [usize; 2]) -> InputSliceBounds {
+    pub fn subslice(&self, start_local: [usize; 2], end_local: [usize; 2]) -> InputSliceBounds {
         InputSliceBounds {
             file_ids: self.file_ids,
             start: self.global_indices(start_local),
-            size,
+            size: [0, 1].map(|side| end_local[side] - start_local[side]),
             direction: self.direction,
         }
     }

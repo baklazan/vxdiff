@@ -1,10 +1,10 @@
 use std::{cmp::Ordering, collections::HashMap, ops::Add};
 
-use crate::algorithm::{moved_detection::range_iter, suffix_array, DiffOp, PartitionedText};
+use crate::algorithm::{indices::range_iter, suffix_array, DiffOp, PartitionedText};
 use index_vec::{index_vec, IndexVec};
 use string_interner::{backend::StringBackend, StringInterner};
 
-use super::{index_converter::IndexConverter, trim_to_core, Core, Hole, LineIndex, WordIndex, MIN_LINES_IN_CORE};
+use super::{trim_to_core, Core, Hole, IndexConverter, LineIndex, WordIndex, MIN_LINES_IN_CORE};
 
 fn next_lower(array: &[usize]) -> Vec<usize> {
     let mut stack: Vec<(usize, usize)> = vec![];

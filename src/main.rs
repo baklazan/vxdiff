@@ -25,7 +25,6 @@ enum OutputMode {
 #[derive(Clone, ValueEnum, Debug)]
 pub enum DiffAlgorithmArg {
     Naive,
-    MainSeeds,
     MovingSeeds,
     LinesThenWords,
     MainThenMoved,
@@ -35,7 +34,6 @@ impl DiffAlgorithmArg {
     pub fn convert(&self) -> DiffAlgorithm {
         match &self {
             DiffAlgorithmArg::Naive => DiffAlgorithm::MainSequence(MainSequenceAlgorithm::Naive),
-            DiffAlgorithmArg::MainSeeds => DiffAlgorithm::MainSequence(MainSequenceAlgorithm::Seeds),
             DiffAlgorithmArg::LinesThenWords => {
                 DiffAlgorithm::MainSequence(MainSequenceAlgorithm::LinesThenWords(LineScoringStrategy::KGram))
             }

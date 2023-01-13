@@ -40,7 +40,6 @@ impl LineScoring {
 #[derive(Clone, Debug)]
 pub enum AlgorithmType {
     Naive,
-    Seeds,
     LinesThenWords(LineScoring),
 }
 
@@ -48,7 +47,6 @@ impl AlgorithmType {
     pub fn convert(&self) -> MainSequenceAlgorithm {
         match &self {
             AlgorithmType::Naive => MainSequenceAlgorithm::Naive,
-            AlgorithmType::Seeds => MainSequenceAlgorithm::Seeds,
             AlgorithmType::LinesThenWords(line_scoring) => {
                 MainSequenceAlgorithm::LinesThenWords(line_scoring.convert())
             }
@@ -59,7 +57,6 @@ impl AlgorithmType {
         let words: Vec<&str> = arg.split(".").collect();
         match words[0] {
             "naive" => Ok(AlgorithmType::Naive),
-            "seeds" => Ok(AlgorithmType::Seeds),
             "lines-then-words" => {
                 if words.len() < 2 {
                     return Err(String::from("Lines-then-words needs a line scoring subargument {zero-one, zero-information, whitespace-ignoring, k-gram}"));

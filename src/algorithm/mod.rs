@@ -2,6 +2,7 @@ pub mod benchmark;
 mod dp_substate_vec;
 mod dynamic_programming;
 mod fragment_selection;
+mod indices;
 mod main_sequence;
 mod moved_detection;
 mod postprocess;
@@ -66,7 +67,6 @@ pub enum DiffAlgorithm {
 
 pub enum MainSequenceAlgorithm {
     Naive,
-    Seeds,
     LinesThenWords(LineScoringStrategy),
 }
 

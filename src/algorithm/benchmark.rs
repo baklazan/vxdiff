@@ -1,64 +1,59 @@
 use super::{
-    main_sequence::{greedy_seeds, multi_level, naive_dp},
+    indices::WordIndex,
+    main_sequence::{get_aligner, naive_dp},
     preprocess::partition_into_words,
     scoring::{AlignmentSliceScoring, DpDirection, InputSliceBounds},
-    DiffOp, MainSequenceAlgorithm, PartitionedText,
+    MainSequenceAlgorithm, PartitionedText,
 };
 
 type AlignmentScoring = super::scoring::affine_scoring::AffineWordScoring;
 
 pub struct PreprocessedTestcase<'a> {
     text_strings: [&'a str; 2],
-    bounds: [Vec<usize>; 2],
+    word_bounds: [Vec<usize>; 2],
     scoring: AlignmentScoring,
 }
 
 impl<'a> PreprocessedTestcase<'a> {
     pub fn new(left: &'a str, right: &'a str) -> PreprocessedTestcase<'a> {
         let text_strings = [left, right];
-        let bounds = [0, 1].map(|side| partition_into_words(text_strings[side]));
+        let word_bounds = [0, 1].map(|side| partition_into_words(text_strings[side]));
 
-        let partitioned_texts = [[0, 1].map(|side| PartitionedText {
+        let text_words = [[0, 1].map(|side| PartitionedText {
             text: text_strings[side],
-            part_bounds: &bounds[side],
+            part_bounds: &word_bounds[side],
         })];
-        let scoring = AlignmentScoring::new(&partitioned_texts);
+        let scoring = AlignmentScoring::new(&text_words);
 
         PreprocessedTestcase {
-            bounds,
+            word_bounds,
             text_strings,
             scoring,
         }
     }
 }
 
-type Algorithm = Box<dyn Fn(&[[PartitionedText; 2]], &AlignmentScoring) -> Vec<Vec<DiffOp>>>;
-
-fn get_algorithm(algorithm: MainSequenceAlgorithm) -> Algorithm {
-    match algorithm {
-        MainSequenceAlgorithm::Seeds => Box::new(greedy_seeds::greedy_seeds),
-        MainSequenceAlgorithm::Naive => {
-            Box::new(|text_words, scoring| naive_dp::naive_dp_all_files(text_words, scoring))
-        }
-        MainSequenceAlgorithm::LinesThenWords(line_scoring) => {
-            Box::new(move |text_words, scoring| multi_level::lines_then_words(text_words, scoring, line_scoring))
-        }
-    }
-}
-
 pub fn run_algorithm(input: &PreprocessedTestcase, algorithm: MainSequenceAlgorithm) -> f64 {
-    let partitioned_texts = [[0, 1].map(|side| PartitionedText {
-        text: &input.text_strings[side],
-        part_bounds: &input.bounds[side],
+    let text_words = [[0, 1].map(|side| PartitionedText {
+        text: input.text_strings[side],
+        part_bounds: &input.word_bounds[side],
     })];
-    let alignment = get_algorithm(algorithm)(&partitioned_texts, &input.scoring).remove(0);
+    let aligner = get_aligner(&text_words, &input.scoring, algorithm);
+    let alignment = aligner.align(
+        [0, 0],
+        [WordIndex::new(0), WordIndex::new(0)],
+        [
+            WordIndex::new(input.word_bounds[0].len() - 1),
+            WordIndex::new(input.word_bounds[1].len() - 1),
+        ],
+    );
     input.scoring.alignment_score(&alignment, [0, 0]).unwrap()
 }
 
 pub fn compute_optimal_score(input: &PreprocessedTestcase) -> f64 {
     let partitioned_texts = [0, 1].map(|side| PartitionedText {
         text: &input.text_strings[side],
-        part_bounds: &input.bounds[side],
+        part_bounds: &input.word_bounds[side],
     });
     let slice = InputSliceBounds {
         file_ids: [0, 0],

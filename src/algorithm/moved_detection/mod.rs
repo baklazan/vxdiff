@@ -1,59 +1,12 @@
-use std::ops::{Range, RangeInclusive};
+use super::{
+    indices::{IndexConverter, LineIndex, WordIndex},
+    main_sequence::main_sequence_fragments,
+    AlignedFragment, DiffOp, MainSequenceAlgorithm, PartitionedText,
+};
 
-use self::index_converter::IndexConverter;
-
-use super::{main_sequence::main_sequence_fragments, AlignedFragment, DiffOp, MainSequenceAlgorithm, PartitionedText};
-
-mod index_converter;
 mod moved_cores;
 
 const MIN_LINES_IN_CORE: usize = 3;
-
-trait UsizeConvertible {
-    fn from_usize(val: usize) -> Self;
-    fn to_usize(&self) -> usize;
-}
-
-macro_rules! extend_index_type {
-    (
-        $type:ident
-    ) => {
-        impl UsizeConvertible for $type {
-            fn from_usize(val: usize) -> Self {
-                Self::new(val)
-            }
-
-            fn to_usize(&self) -> usize {
-                self.raw()
-            }
-        }
-
-        #[allow(dead_code)]
-        impl $type {
-            fn saturating_sub(&self, other: Self) -> Self {
-                Self::new(self.raw().saturating_sub(other.raw()))
-            }
-        }
-    };
-}
-
-index_vec::define_index_type! {
-    struct LineIndex = usize;
-}
-extend_index_type!(LineIndex);
-
-index_vec::define_index_type! {
-    struct WordIndex = usize;
-}
-extend_index_type!(WordIndex);
-
-fn range_iter<Index: UsizeConvertible>(range: Range<Index>) -> impl Iterator<Item = Index> {
-    (range.start.to_usize()..range.end.to_usize()).map(Index::from_usize)
-}
-
-fn range_incl_iter<Index: UsizeConvertible>(range: RangeInclusive<Index>) -> impl Iterator<Item = Index> {
-    (range.start().to_usize()..=range.end().to_usize()).map(Index::from_usize)
-}
 
 #[derive(Debug)]
 struct Core {
@@ -328,7 +281,7 @@ fn extend_cores(
                 .line_to_word(core.start[side])
                 .raw()
         });
-        let mut alignment = vec![];
+        let mut alignment: Vec<DiffOp> = vec![];
         for (side, op) in [(0, DiffOp::Delete), (1, DiffOp::Insert)] {
             for _ in core_start_word_indices[side]..core.aligned_start[side].raw() {
                 alignment.push(op);

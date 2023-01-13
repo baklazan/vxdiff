@@ -1,6 +1,48 @@
+use std::ops::Range;
+
 use index_vec::{index_vec, IndexVec};
 
-use super::{LineIndex, WordIndex};
+pub(super) trait UsizeConvertible {
+    fn from_usize(val: usize) -> Self;
+    fn to_usize(&self) -> usize;
+}
+
+macro_rules! extend_index_type {
+    (
+        $type:ident
+    ) => {
+        impl UsizeConvertible for $type {
+            fn from_usize(val: usize) -> Self {
+                Self::new(val)
+            }
+
+            fn to_usize(&self) -> usize {
+                self.raw()
+            }
+        }
+
+        #[allow(dead_code)]
+        impl $type {
+            pub fn saturating_sub(&self, other: Self) -> Self {
+                Self::new(self.raw().saturating_sub(other.raw()))
+            }
+        }
+    };
+}
+
+index_vec::define_index_type! {
+    pub(super) struct LineIndex = usize;
+}
+extend_index_type!(LineIndex);
+
+index_vec::define_index_type! {
+    pub(super) struct WordIndex = usize;
+}
+extend_index_type!(WordIndex);
+
+pub(super) fn range_iter<Index: UsizeConvertible>(range: Range<Index>) -> impl Iterator<Item = Index> {
+    (range.start.to_usize()..range.end.to_usize()).map(Index::from_usize)
+}
 
 pub(super) struct IndexConverter {
     line_to_word: IndexVec<LineIndex, WordIndex>,
@@ -55,7 +97,8 @@ impl IndexConverter {
 #[cfg(test)]
 mod test {
     use super::IndexConverter;
-    use crate::algorithm::moved_detection::{LineIndex, WordIndex};
+    use super::LineIndex;
+    use super::WordIndex;
 
     #[test]
     fn line_to_word() {

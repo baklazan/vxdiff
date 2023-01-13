@@ -1,10 +1,11 @@
 use crate::algorithm::{
     dp_substate_vec::DpStateVec,
-    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, TScore},
-    DiffOp, PartitionedText,
+    indices::WordIndex,
+    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, DpDirection::Forward, InputSliceBounds, TScore},
+    DiffOp,
 };
 
-use super::slices_for_files;
+use super::Aligner;
 
 fn compute_dp_matrix(alignment_scoring: &AlignmentSliceScoring, row_range: usize) -> Vec<DpStateVec> {
     let sizes = &alignment_scoring.slice.size;
@@ -34,7 +35,7 @@ fn compute_dp_matrix(alignment_scoring: &AlignmentSliceScoring, row_range: usize
     result
 }
 
-pub fn naive_dp(alignment_scoring: &AlignmentSliceScoring) -> Vec<DiffOp> {
+fn naive_dp(alignment_scoring: &AlignmentSliceScoring) -> Vec<DiffOp> {
     let sizes = alignment_scoring.slice.size;
     let matrix = compute_dp_matrix(alignment_scoring, sizes[0] + 1);
 
@@ -81,12 +82,28 @@ pub fn compute_score(alignment_scoring: &AlignmentSliceScoring) -> TScore {
     result
 }
 
-pub(in crate::algorithm) fn naive_dp_all_files(
-    text_words: &[[PartitionedText; 2]],
-    scoring: &dyn AlignmentScoringMethod,
-) -> Vec<Vec<DiffOp>> {
-    slices_for_files(text_words)
-        .iter()
-        .map(|&slice| naive_dp(&AlignmentSliceScoring { slice, scoring }))
-        .collect()
+pub(in crate::algorithm) struct NaiveAligner<'a> {
+    scoring: &'a dyn AlignmentScoringMethod,
+}
+
+impl<'a> NaiveAligner<'a> {
+    pub fn new(scoring: &'a dyn AlignmentScoringMethod) -> Self {
+        NaiveAligner { scoring }
+    }
+}
+
+impl<'a> Aligner for NaiveAligner<'a> {
+    fn align(&self, file_ids: [usize; 2], start: [WordIndex; 2], end: [WordIndex; 2]) -> Vec<DiffOp> {
+        let slice = InputSliceBounds {
+            file_ids,
+            start: [usize::from(start[0]), usize::from(start[1])],
+            size: [usize::from(end[0] - start[0]), usize::from(end[1] - start[1])],
+            direction: Forward,
+        };
+        let slice_scoring = AlignmentSliceScoring {
+            scoring: self.scoring,
+            slice,
+        };
+        naive_dp(&slice_scoring)
+    }
 }
