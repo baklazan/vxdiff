@@ -685,6 +685,7 @@ dependencies = [
  "index_vec",
  "memchr",
  "rand",
+ "rand_chacha",
  "regex",
  "serde",
  "shell-words",

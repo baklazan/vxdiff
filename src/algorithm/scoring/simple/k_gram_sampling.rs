@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use rand::Rng;
+use rand::SeedableRng;
 
 use crate::algorithm::{
     preprocess::{information_values, internalize_parts},
@@ -26,7 +27,7 @@ impl KGramSamplingScoring {
 
     pub(in crate::algorithm) fn new(text_parts: &[[PartitionedText; 2]]) -> Self {
         const BASE: u64 = 257;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(42);
         let hash_factor: u64 = rng.gen_range(1..Self::HASH_MOD_P);
         let hash_additive: u64 = rng.gen_range(0..Self::HASH_MOD_P);
         let mut base_to_k = 1;
