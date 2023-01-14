@@ -1,7 +1,7 @@
 use crate::algorithm::{DiffOp, PartitionedText};
 
 use super::{
-    preprocess::information_values, preprocess::internalize_parts, AlignmentScoringMethod, DpDirection, DpSubstate,
+    preprocess::information_values, preprocess::internalize_parts, AlignmentScoringMethod, DpSubstate,
     FragmentBoundsScoringMethod, TScore,
 };
 
@@ -15,7 +15,6 @@ pub struct AffineWordScoring {
     is_white: Vec<[Vec<bool>; 2]>,
     line_splits_at: Vec<[Vec<bool>; 2]>,
     nearest_line_split_forward: Vec<[Vec<usize>; 2]>,
-    nearest_line_split_backward: Vec<[Vec<usize>; 2]>,
     bound_score: Vec<[Vec<TScore>; 2]>,
 }
 
@@ -140,7 +139,6 @@ impl AffineWordScoring {
             information_values,
             is_white,
             line_splits_at,
-            nearest_line_split_backward,
             nearest_line_split_forward,
             bound_score,
         }
@@ -152,7 +150,6 @@ impl AffineWordScoring {
         position: [usize; 2],
         from_state: usize,
         to_state: usize,
-        direction: DpDirection,
     ) -> TScore {
         let transition_matrix =
             if self.line_splits_at[file_ids[0]][0][position[0]] && self.line_splits_at[file_ids[1]][1][position[1]] {
@@ -160,11 +157,7 @@ impl AffineWordScoring {
             } else {
                 &self.transition_matrix
             };
-        if direction == DpDirection::Forward {
-            transition_matrix[from_state][to_state]
-        } else {
-            transition_matrix[to_state][from_state]
-        }
+        transition_matrix[from_state][to_state]
     }
 
     pub fn alignment_score(&self, alignment: &[DiffOp], file_ids: [usize; 2]) -> Option<TScore> {
@@ -181,19 +174,18 @@ impl AffineWordScoring {
                 }
                 if in_gap {
                     current_gap_score +=
-                        self.transition_cost(file_ids, word_indices, Self::GAP, Self::MATCH, DpDirection::Forward);
+                        self.transition_cost(file_ids, word_indices, Self::GAP, Self::MATCH);
                     current_white_gap_score += self.transition_cost(
                         file_ids,
                         word_indices,
                         Self::WHITE_GAP,
                         Self::MATCH,
-                        DpDirection::Forward,
                     );
                     result += TScore::max(current_gap_score, current_white_gap_score);
                     in_gap = false;
                 } else if i > 0 {
                     result +=
-                        self.transition_cost(file_ids, word_indices, Self::MATCH, Self::MATCH, DpDirection::Forward);
+                        self.transition_cost(file_ids, word_indices, Self::MATCH, Self::MATCH);
                 }
                 result += self.information_values[file_ids[0]][0][word_indices[0]];
             } else {
@@ -204,24 +196,22 @@ impl AffineWordScoring {
 
                     if i > 0 {
                         current_gap_score +=
-                            self.transition_cost(file_ids, word_indices, Self::MATCH, Self::GAP, DpDirection::Forward);
+                            self.transition_cost(file_ids, word_indices, Self::MATCH, Self::GAP);
                         current_white_gap_score += self.transition_cost(
                             file_ids,
                             word_indices,
                             Self::MATCH,
                             Self::WHITE_GAP,
-                            DpDirection::Forward,
                         );
                     }
                 } else {
                     current_gap_score +=
-                        self.transition_cost(file_ids, word_indices, Self::GAP, Self::GAP, DpDirection::Forward);
+                        self.transition_cost(file_ids, word_indices, Self::GAP, Self::GAP);
                     current_white_gap_score += self.transition_cost(
                         file_ids,
                         word_indices,
                         Self::WHITE_GAP,
                         Self::WHITE_GAP,
-                        DpDirection::Forward,
                     );
                 }
                 let side = if op == DiffOp::Delete { 0 } else { 1 };
@@ -258,12 +248,8 @@ impl AlignmentScoringMethod for AffineWordScoring {
         state_after_move: &[DpSubstate],
         state: &[DpSubstate],
         step: DiffOp,
-        direction: DpDirection,
     ) {
-        let word_indices = match direction {
-            DpDirection::Backward => dp_position,
-            DpDirection::Forward => [dp_position[0].wrapping_sub(1), dp_position[1].wrapping_sub(1)],
-        };
+        let word_indices = [dp_position[0].wrapping_sub(1), dp_position[1].wrapping_sub(1)];
 
         let improve = |substate: usize, proposed: TScore, proposed_movement: &Option<(DiffOp, usize)>| {
             if state[substate].score.get() < proposed {
@@ -285,7 +271,7 @@ impl AlignmentScoringMethod for AffineWordScoring {
                 improve(
                     to_state,
                     score_without_transition
-                        + self.transition_cost(file_ids, dp_position, Self::MATCH, to_state, direction),
+                        + self.transition_cost(file_ids, dp_position, Self::MATCH, to_state),
                     &movement,
                 );
             }
@@ -296,7 +282,7 @@ impl AlignmentScoringMethod for AffineWordScoring {
                 improve(
                     to_state,
                     score_without_transition
-                        + self.transition_cost(file_ids, dp_position, Self::GAP, to_state, direction),
+                        + self.transition_cost(file_ids, dp_position, Self::GAP, to_state),
                     &movement,
                 );
             }
@@ -309,7 +295,7 @@ impl AlignmentScoringMethod for AffineWordScoring {
                     improve(
                         to_state,
                         score_without_transition
-                            + self.transition_cost(file_ids, dp_position, Self::WHITE_GAP, to_state, direction),
+                            + self.transition_cost(file_ids, dp_position, Self::WHITE_GAP, to_state),
                         &movement,
                     );
                 }
@@ -342,7 +328,6 @@ impl AlignmentScoringMethod for AffineWordScoring {
         substate: usize,
         file_ids: [usize; 2],
         position: [usize; 2],
-        direction: DpDirection,
     ) -> TScore {
         if state[substate].previous_step.get().is_none() {
             state[substate].score.get()
@@ -353,7 +338,6 @@ impl AlignmentScoringMethod for AffineWordScoring {
                     position,
                     state[substate].previous_step.get().unwrap().1,
                     substate,
-                    direction,
                 )
         }
     }
@@ -371,10 +355,7 @@ impl FragmentBoundsScoringMethod for AffineWordScoring {
         index < self.bound_score[file_id][side].len() && self.bound_score[file_id][side][index] != TScore::NEG_INFINITY
     }
 
-    fn nearest_bound(&self, side: usize, index: usize, file_id: usize, direction: DpDirection) -> usize {
-        (match direction {
-            DpDirection::Backward => &self.nearest_line_split_backward,
-            DpDirection::Forward => &self.nearest_line_split_forward,
-        })[file_id][side][index]
+    fn nearest_bound(&self, side: usize, index: usize, file_id: usize) -> usize {
+        self.nearest_line_split_forward[file_id][side][index]
     }
 }

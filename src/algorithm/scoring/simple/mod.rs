@@ -1,6 +1,6 @@
 use crate::algorithm::DiffOp;
 
-use super::{AlignmentScoringMethod, DpDirection, DpSubstate, TScore};
+use super::{AlignmentScoringMethod, DpSubstate, TScore};
 
 pub mod k_gram_sampling;
 pub mod whitespace_ignoring;
@@ -42,16 +42,12 @@ impl<Matcher: MatchScoring> AlignmentScoringMethod for SimpleScoring<Matcher> {
         state_before_step: &[DpSubstate],
         state: &[DpSubstate],
         step: DiffOp,
-        direction: DpDirection,
     ) {
         let step_score = match step {
             DiffOp::Insert => 0.0,
             DiffOp::Delete => 0.0,
             DiffOp::Match => {
-                let index_correction = match direction {
-                    DpDirection::Forward => 1,
-                    DpDirection::Backward => 0,
-                };
+                let index_correction = 1;
                 let part_indices = dp_position.map(|i| i - index_correction);
                 self.match_scoring.score(part_indices, file_ids)
             }

@@ -426,7 +426,6 @@ impl<'a> Aligner for MultiLevelAligner<'a> {
             let slice = InputSliceBounds {
                 file_ids,
                 start: [0, 0],
-                direction: crate::algorithm::scoring::DpDirection::Forward,
                 size: [0, 1].map(|side| {
                     if level == 0 {
                         *self.coarse_to_fine_index[0][file_ids[side]][side].last().unwrap()

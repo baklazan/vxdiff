@@ -12,12 +12,6 @@ pub struct DpSubstate {
     pub previous_step: Cell<Option<(DiffOp, usize)>>,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum DpDirection {
-    Backward,
-    Forward,
-}
-
 pub trait AlignmentScoringMethod {
     fn substates_count(&self) -> usize;
 
@@ -35,7 +29,6 @@ pub trait AlignmentScoringMethod {
         state_before_step: &[DpSubstate],
         state: &[DpSubstate],
         step: DiffOp,
-        direction: DpDirection,
     );
 
     fn is_match(&self, part_indices: [usize; 2], file_ids: [usize; 2]) -> bool;
@@ -54,7 +47,6 @@ pub trait AlignmentScoringMethod {
         substate: usize,
         _file_ids: [usize; 2],
         _position: [usize; 2],
-        _direction: DpDirection,
     ) -> TScore {
         state[substate].score.get()
     }
@@ -64,31 +56,16 @@ pub trait AlignmentScoringMethod {
 pub struct InputSliceBounds {
     pub file_ids: [usize; 2],
     pub start: [usize; 2],
-    pub direction: DpDirection,
     pub size: [usize; 2],
 }
 
 impl InputSliceBounds {
     fn global_index(&self, side: usize, local_index: usize) -> usize {
-        match self.direction {
-            DpDirection::Forward => self.start[side] + local_index,
-            DpDirection::Backward => self.start[side] - local_index,
-        }
+        self.start[side] + local_index
     }
 
     fn global_indices(&self, local_indices: [usize; 2]) -> [usize; 2] {
         [0, 1].map(|side| self.global_index(side, local_indices[side]))
-    }
-
-    fn local_index(&self, side: usize, global_index: usize) -> usize {
-        match self.direction {
-            DpDirection::Forward => global_index - self.start[side],
-            DpDirection::Backward => self.start[side] - global_index,
-        }
-    }
-
-    fn local_indices(&self, global_indices: [usize; 2]) -> [usize; 2] {
-        [0, 1].map(|side| self.local_index(side, global_indices[side]))
     }
 
     pub fn subslice(&self, start_local: [usize; 2], end_local: [usize; 2]) -> InputSliceBounds {
@@ -96,7 +73,6 @@ impl InputSliceBounds {
             file_ids: self.file_ids,
             start: self.global_indices(start_local),
             size: [0, 1].map(|side| end_local[side] - start_local[side]),
-            direction: self.direction,
         }
     }
 }
@@ -128,7 +104,6 @@ impl<'a> AlignmentSliceScoring<'a> {
             state_after_move,
             state,
             step,
-            self.slice.direction,
         )
     }
 
@@ -137,25 +112,12 @@ impl<'a> AlignmentSliceScoring<'a> {
             .is_match(self.slice.global_indices(part_indices), self.slice.file_ids)
     }
 
-    pub fn append_gaps(&self, mut start_indices: [usize; 2], mut end_indices: [usize; 2], substate: usize) -> TScore {
-        if self.slice.direction == DpDirection::Backward {
-            (start_indices, end_indices) = (end_indices, start_indices);
-        }
-        self.scoring.append_gaps(
-            self.slice.file_ids,
-            self.slice.global_indices(start_indices),
-            self.slice.global_indices(end_indices),
-            substate,
-        )
-    }
-
     pub fn substate_score(&self, state: &[DpSubstate], substate: usize, position: [usize; 2]) -> TScore {
         self.scoring.substate_score(
             state,
             substate,
             self.slice.file_ids,
             self.slice.global_indices(position),
-            self.slice.direction,
         )
     }
 }
@@ -166,29 +128,6 @@ pub trait FragmentBoundsScoringMethod {
 
     fn fragment_bound_penalty(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> TScore;
     fn is_viable_bound(&self, side: usize, index: usize, file_id: usize) -> bool;
-    fn nearest_bound(&self, side: usize, index: usize, file_id: usize, direction: DpDirection) -> usize;
+    fn nearest_bound(&self, side: usize, index: usize, file_id: usize) -> usize;
 }
 
-pub struct BoundsSliceScoring<'a, Scoring: FragmentBoundsScoringMethod> {
-    pub slice: InputSliceBounds,
-    pub scoring: &'a Scoring,
-}
-
-impl<'a, Scoring: FragmentBoundsScoringMethod> BoundsSliceScoring<'a, Scoring> {
-    pub fn fragment_bound_penalty(&self, word_indices: [usize; 2]) -> TScore {
-        self.scoring
-            .fragment_bound_penalty(self.slice.global_indices(word_indices), self.slice.file_ids)
-    }
-
-    pub fn nearest_bound_point(&self, word_indices: [usize; 2]) -> [usize; 2] {
-        let global_point_indices = [0, 1].map(|side| {
-            self.scoring.nearest_bound(
-                side,
-                self.slice.global_index(side, word_indices[side]),
-                self.slice.file_ids[side],
-                self.slice.direction,
-            )
-        });
-        self.slice.local_indices(global_point_indices)
-    }
-}

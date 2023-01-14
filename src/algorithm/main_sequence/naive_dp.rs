@@ -1,7 +1,7 @@
 use crate::algorithm::{
     dp_substate_vec::DpStateVec,
     indices::WordIndex,
-    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, DpDirection::Forward, InputSliceBounds, TScore},
+    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, InputSliceBounds, TScore},
     DiffOp,
 };
 
@@ -98,7 +98,6 @@ impl<'a> Aligner for NaiveAligner<'a> {
             file_ids,
             start: [usize::from(start[0]), usize::from(start[1])],
             size: [usize::from(end[0] - start[0]), usize::from(end[1] - start[1])],
-            direction: Forward,
         };
         let slice_scoring = AlignmentSliceScoring {
             scoring: self.scoring,

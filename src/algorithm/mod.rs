@@ -1,18 +1,14 @@
 pub mod benchmark;
 mod dp_substate_vec;
-mod dynamic_programming;
-mod fragment_selection;
 mod indices;
 mod main_sequence;
 mod moved_detection;
 mod postprocess;
 mod preprocess;
 mod scoring;
-mod seed_selection;
 mod suffix_array;
 
 use self::{
-    fragment_selection::greedy_fragments,
     main_sequence::main_sequence_fragments,
     moved_detection::main_then_moved,
     preprocess::{partition_into_lines, partition_into_words},
@@ -62,7 +58,6 @@ impl DiffOp {
 pub enum DiffAlgorithm {
     MainSequence(MainSequenceAlgorithm),
     MainThenMoved(MainSequenceAlgorithm),
-    MovingSeeds,
 }
 
 pub enum MainSequenceAlgorithm {
@@ -150,7 +145,6 @@ fn compute_fragments(
     algorithm: DiffAlgorithm,
 ) -> Vec<(AlignedFragment, bool)> {
     match algorithm {
-        DiffAlgorithm::MovingSeeds => greedy_fragments(text_words),
         DiffAlgorithm::MainThenMoved(main_sequence_algorithm) => {
             main_then_moved(text_words, text_lines, main_sequence_algorithm)
         }

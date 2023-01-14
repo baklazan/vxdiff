@@ -2,7 +2,7 @@ use super::{
     indices::WordIndex,
     main_sequence::{get_aligner, naive_dp},
     preprocess::partition_into_words,
-    scoring::{AlignmentSliceScoring, DpDirection, InputSliceBounds},
+    scoring::{AlignmentSliceScoring, InputSliceBounds},
     MainSequenceAlgorithm, PartitionedText,
 };
 
@@ -58,7 +58,6 @@ pub fn compute_optimal_score(input: &PreprocessedTestcase) -> f64 {
     let slice = InputSliceBounds {
         file_ids: [0, 0],
         start: [0, 0],
-        direction: DpDirection::Forward,
         size: [0, 1].map(|side| partitioned_texts[side].part_count()),
     };
     naive_dp::compute_score(&AlignmentSliceScoring {

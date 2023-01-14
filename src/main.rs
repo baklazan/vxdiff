@@ -25,7 +25,6 @@ enum OutputMode {
 #[derive(Clone, ValueEnum, Debug)]
 pub enum DiffAlgorithmArg {
     Naive,
-    MovingSeeds,
     LinesThenWords,
     MainThenMoved,
 }
@@ -37,7 +36,6 @@ impl DiffAlgorithmArg {
             DiffAlgorithmArg::LinesThenWords => {
                 DiffAlgorithm::MainSequence(MainSequenceAlgorithm::LinesThenWords(LineScoringStrategy::KGram))
             }
-            DiffAlgorithmArg::MovingSeeds => DiffAlgorithm::MovingSeeds,
             DiffAlgorithmArg::MainThenMoved => {
                 DiffAlgorithm::MainThenMoved(MainSequenceAlgorithm::LinesThenWords(LineScoringStrategy::KGram))
             }
@@ -52,7 +50,7 @@ struct Args {
     #[arg(short, long, default_value_t = OutputMode::Tui, value_enum)]
     mode: OutputMode,
 
-    #[arg(short, long, default_value_t = DiffAlgorithmArg::MovingSeeds, value_enum)]
+    #[arg(short, long, default_value_t = DiffAlgorithmArg::LinesThenWords, value_enum)]
     algorithm: DiffAlgorithmArg,
 
     #[arg(group = "input", value_names = ["OLD1", "NEW1", "OLD2", "NEW2"])]

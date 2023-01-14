@@ -25,10 +25,6 @@ impl DpStateVec {
             index_offset,
         }
     }
-
-    pub fn len(&self) -> usize {
-        self.internal.len() / self.substates_count
-    }
 }
 
 impl Index<usize> for DpStateVec {
