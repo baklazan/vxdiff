@@ -7,12 +7,11 @@ use super::{
 
 pub struct AffineWordScoring {
     // these matrices should be constant, but Rust doesn't allow floating point operations in const expressions
-    transition_matrix: [[TScore; 3]; 3],
-    transition_matrix_newline: [[TScore; 3]; 3],
+    transition_matrix: [[TScore; 2]; 2],
+    transition_matrix_newline: [[TScore; 2]; 2],
 
     symbols: Vec<[Vec<string_interner::symbol::SymbolU32>; 2]>,
     pub information_values: Vec<[Vec<TScore>; 2]>,
-    is_white: Vec<[Vec<bool>; 2]>,
     line_splits_at: Vec<[Vec<bool>; 2]>,
     nearest_line_split_forward: Vec<[Vec<usize>; 2]>,
     bound_score: Vec<[Vec<TScore>; 2]>,
@@ -21,30 +20,19 @@ pub struct AffineWordScoring {
 impl AffineWordScoring {
     const MATCH: usize = 0;
     const GAP: usize = 1;
-    const WHITE_GAP: usize = 2;
 
     fn compute_transition_matrix(
         p_start_gap: f64,
         p_end_gap: f64,
-        p_start_white_gap: f64,
-        p_end_white_gap: f64,
-    ) -> [[TScore; 3]; 3] {
-        let p_stay_match = 1.0 - p_start_gap - p_start_white_gap;
+    ) -> [[TScore; 2]; 2] {
         [
-            [p_stay_match.log2(), p_start_gap.log2(), p_start_white_gap.log2()],
-            [p_end_gap.log2(), (1.0 - p_end_gap).log2(), TScore::NEG_INFINITY],
-            [
-                p_end_white_gap.log2(),
-                TScore::NEG_INFINITY,
-                (1.0 - p_end_white_gap).log2(),
-            ],
+            [(1.0 - p_start_gap).log2(), p_start_gap.log2()],
+            [p_end_gap.log2(), (1.0 - p_end_gap).log2()],
         ]
     }
 
     const P_END_GAP: f64 = 0.3;
     const P_START_GAP: f64 = 0.05;
-    const P_END_WHITE_GAP: f64 = 0.4;
-    const P_START_WHITE_GAP: f64 = 0.2;
     const NEWLINE_STATE_CHANGE_COEF: f64 = 1.1;
 
     const BASE_BOUND_SCORE: TScore = -1.0;
@@ -53,13 +41,11 @@ impl AffineWordScoring {
     pub(in crate::algorithm) fn new(text_words: &[[PartitionedText; 2]]) -> AffineWordScoring {
         let information_values = information_values(text_words);
 
-        let mut is_white = vec![];
         let mut line_splits_at = vec![];
         let mut bound_score = vec![];
         let mut nearest_line_split_forward = vec![];
         let mut nearest_line_split_backward = vec![];
         for (file_id, file_text_words) in text_words.iter().enumerate() {
-            let mut file_is_white = [vec![], vec![]];
             let mut file_line_splits_at = [vec![true], vec![true]];
             let mut file_bound_score = [
                 vec![TScore::NEG_INFINITY; file_text_words[0].part_count() + 1],
@@ -73,13 +59,6 @@ impl AffineWordScoring {
                 let mut last_line_end = 0;
                 for i in 0..file_text_words[side].part_count() {
                     let word = file_text_words[side].get_part(i);
-                    let mut white = true;
-                    for c in word.chars() {
-                        if !c.is_whitespace() {
-                            white = false;
-                        }
-                    }
-                    file_is_white[side].push(white);
 
                     this_line_value += information_values[file_id][side][i];
                     if word == "\n" || i + 1 >= file_text_words[side].part_count() {
@@ -112,7 +91,6 @@ impl AffineWordScoring {
                 }
                 file_nearest_split_forward[side].reverse();
             }
-            is_white.push(file_is_white);
             line_splits_at.push(file_line_splits_at);
             bound_score.push(file_bound_score);
             nearest_line_split_backward.push(file_nearest_split_backward);
@@ -122,14 +100,10 @@ impl AffineWordScoring {
         let transition_matrix = Self::compute_transition_matrix(
             Self::P_START_GAP,
             Self::P_END_GAP,
-            Self::P_START_WHITE_GAP,
-            Self::P_END_WHITE_GAP,
         );
         let transition_matrix_newline = Self::compute_transition_matrix(
             Self::P_START_GAP * Self::NEWLINE_STATE_CHANGE_COEF,
             Self::P_END_GAP * Self::NEWLINE_STATE_CHANGE_COEF,
-            Self::P_START_WHITE_GAP * Self::NEWLINE_STATE_CHANGE_COEF,
-            Self::P_END_WHITE_GAP * Self::NEWLINE_STATE_CHANGE_COEF,
         );
 
         AffineWordScoring {
@@ -137,7 +111,6 @@ impl AffineWordScoring {
             transition_matrix_newline,
             symbols: internalize_parts(text_words),
             information_values,
-            is_white,
             line_splits_at,
             nearest_line_split_forward,
             bound_score,
@@ -162,7 +135,6 @@ impl AffineWordScoring {
 
     pub fn alignment_score(&self, alignment: &[DiffOp], file_ids: [usize; 2]) -> Option<TScore> {
         let mut current_gap_score: TScore = 0.0;
-        let mut current_white_gap_score: TScore = 0.0;
         let mut in_gap = false;
 
         let mut word_indices = [0, 0];
@@ -175,13 +147,7 @@ impl AffineWordScoring {
                 if in_gap {
                     current_gap_score +=
                         self.transition_cost(file_ids, word_indices, Self::GAP, Self::MATCH);
-                    current_white_gap_score += self.transition_cost(
-                        file_ids,
-                        word_indices,
-                        Self::WHITE_GAP,
-                        Self::MATCH,
-                    );
-                    result += TScore::max(current_gap_score, current_white_gap_score);
+                    result += current_gap_score;
                     in_gap = false;
                 } else if i > 0 {
                     result +=
@@ -192,31 +158,13 @@ impl AffineWordScoring {
                 if !in_gap {
                     in_gap = true;
                     current_gap_score = 0.0;
-                    current_white_gap_score = 0.0;
-
                     if i > 0 {
                         current_gap_score +=
                             self.transition_cost(file_ids, word_indices, Self::MATCH, Self::GAP);
-                        current_white_gap_score += self.transition_cost(
-                            file_ids,
-                            word_indices,
-                            Self::MATCH,
-                            Self::WHITE_GAP,
-                        );
                     }
                 } else {
                     current_gap_score +=
                         self.transition_cost(file_ids, word_indices, Self::GAP, Self::GAP);
-                    current_white_gap_score += self.transition_cost(
-                        file_ids,
-                        word_indices,
-                        Self::WHITE_GAP,
-                        Self::WHITE_GAP,
-                    );
-                }
-                let side = if op == DiffOp::Delete { 0 } else { 1 };
-                if !self.is_white[file_ids[side]][side][word_indices[side]] {
-                    current_white_gap_score = TScore::NEG_INFINITY;
                 }
             }
             for side in 0..2 {
@@ -224,7 +172,7 @@ impl AffineWordScoring {
             }
         }
         if in_gap {
-            result += TScore::max(current_gap_score, current_white_gap_score);
+            result += current_gap_score;
         }
 
         for side in 0..2 {
@@ -267,7 +215,7 @@ impl AlignmentScoringMethod for AffineWordScoring {
             let score_without_transition =
                 state_after_move[Self::MATCH].score.get() + self.information_values[file_ids[0]][0][word_indices[0]];
             let movement = Some((DiffOp::Match, Self::MATCH));
-            for to_state in [Self::MATCH, Self::GAP, Self::WHITE_GAP] {
+            for to_state in [Self::MATCH, Self::GAP] {
                 improve(
                     to_state,
                     score_without_transition
@@ -285,20 +233,6 @@ impl AlignmentScoringMethod for AffineWordScoring {
                         + self.transition_cost(file_ids, dp_position, Self::GAP, to_state),
                     &movement,
                 );
-            }
-            if step == DiffOp::Insert && self.is_white[file_ids[1]][1][word_indices[1]]
-                || step == DiffOp::Delete && self.is_white[file_ids[0]][0][word_indices[0]]
-            {
-                let score_without_transition = state_after_move[Self::WHITE_GAP].score.get();
-                let movement = Some((step, Self::WHITE_GAP));
-                for to_state in [Self::MATCH, Self::WHITE_GAP] {
-                    improve(
-                        to_state,
-                        score_without_transition
-                            + self.transition_cost(file_ids, dp_position, Self::WHITE_GAP, to_state),
-                        &movement,
-                    );
-                }
             }
         }
     }
