@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use crate::algorithm::{DiffOp, PartitionedText};
 
 use super::{
@@ -79,7 +81,7 @@ impl AffineWordScoring {
         transition_matrix[from_state][to_state]
     }
 
-    // alignment of length x will produce output of length 2*x - 1 (x steps + (x-1) transitions)
+    // alignment of length x will produce output of length 2*x + 1 (x steps + (x+1) transitions)
     fn score_alignment_steps(
         &self,
         alignment: &[DiffOp],
@@ -89,17 +91,15 @@ impl AffineWordScoring {
     ) -> Option<Vec<TScore>> {
         let mut position = start;
         let mut result = vec![];
-        for (i, &op) in alignment.iter().enumerate() {
-            if i > 0 {
-                let op_to_state = |op: DiffOp| match op {
-                    DiffOp::Match => Self::MATCH,
-                    DiffOp::Insert => Self::GAP,
-                    DiffOp::Delete => Self::GAP,
-                };
-                let old_state = op_to_state(alignment[i - 1]);
-                let new_state = op_to_state(op);
-                result.push(self.transition_cost(file_ids, position, old_state, new_state));
-            }
+        let mut state = Self::MATCH;
+        for &op in alignment {
+            let new_state = match op {
+                DiffOp::Match => Self::MATCH,
+                DiffOp::Insert => Self::GAP,
+                DiffOp::Delete => Self::GAP,
+            };
+            result.push(self.transition_cost(file_ids, position, state, new_state));
+            state = new_state;
             if op == DiffOp::Match {
                 if !self.is_match(position, file_ids) {
                     return None;
@@ -112,6 +112,7 @@ impl AffineWordScoring {
                 position[side] += op.movement()[side];
             }
         }
+        result.push(self.transition_cost(file_ids, position, state, Self::MATCH));
         for side in 0..2 {
             if position[side] != end[side] {
                 return None;
@@ -138,6 +139,23 @@ impl AffineWordScoring {
 impl AlignmentScoringMethod for AffineWordScoring {
     fn substates_count(&self) -> usize {
         2
+    }
+
+    fn set_starting_state(
+        &self,
+        dp_position: [usize; 2],
+        file_ids: [usize; 2],
+        starting_score: TScore,
+        state: &mut [DpSubstate],
+    ) {
+        state[Self::MATCH] = DpSubstate {
+            score: Cell::from(starting_score + self.transition_cost(file_ids, dp_position, Self::MATCH, Self::MATCH)),
+            previous_step: Cell::from(None),
+        };
+        state[Self::GAP] = DpSubstate {
+            score: Cell::from(starting_score + self.transition_cost(file_ids, dp_position, Self::MATCH, Self::GAP)),
+            previous_step: Cell::from(None),
+        };
     }
 
     fn consider_step(
@@ -205,24 +223,8 @@ impl AlignmentScoringMethod for AffineWordScoring {
             + self.transition_matrix[Self::GAP][Self::GAP] * (gap_length - 1) as f64
     }
 
-    fn substate_score(
-        &self,
-        state: &[DpSubstate],
-        substate: usize,
-        file_ids: [usize; 2],
-        position: [usize; 2],
-    ) -> TScore {
-        if state[substate].previous_step.get().is_none() {
-            state[substate].score.get()
-        } else {
-            state[substate].score.get()
-                - self.transition_cost(
-                    file_ids,
-                    position,
-                    state[substate].previous_step.get().unwrap().1,
-                    substate,
-                )
-        }
+    fn final_substate(&self) -> usize {
+        Self::MATCH
     }
 
     fn prefix_scores(
@@ -236,10 +238,8 @@ impl AlignmentScoringMethod for AffineWordScoring {
         let mut score = 0.0;
         let mut result = vec![score];
         for i in 0..alignment.len() {
-            if i > 0 {
-                score += step_scores[i * 2 - 1];
-            }
             score += step_scores[i * 2];
+            score += step_scores[i * 2 + 1];
             result.push(score);
         }
         result
@@ -256,10 +256,8 @@ impl AlignmentScoringMethod for AffineWordScoring {
         let mut score = 0.0;
         let mut result = vec![score];
         for i in (0..alignment.len()).rev() {
-            if i + 1 < alignment.len() {
-                score += step_scores[i * 2 + 1];
-            }
-            score += step_scores[i * 2];
+            score += step_scores[i * 2 + 1];
+            score += step_scores[i * 2 + 2];
             result.push(score);
         }
         result.reverse();

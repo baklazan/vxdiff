@@ -18,7 +18,11 @@ fn compute_dp_matrix(alignment_scoring: &AlignmentSliceScoring, row_range: usize
             } else {
                 TScore::NEG_INFINITY
             };
-            alignment_scoring.set_starting_state(default_score, &mut result[old_index % row_range][new_index]);
+            alignment_scoring.set_starting_state(
+                [old_index, new_index],
+                default_score,
+                &mut result[old_index % row_range][new_index],
+            );
             for op in [DiffOp::Delete, DiffOp::Insert, DiffOp::Match] {
                 if old_index >= op.movement()[0] && new_index >= op.movement()[1] {
                     alignment_scoring.consider_step(
@@ -39,18 +43,8 @@ fn naive_dp(alignment_scoring: &AlignmentSliceScoring) -> Vec<DiffOp> {
     let sizes = alignment_scoring.slice.size;
     let matrix = compute_dp_matrix(alignment_scoring, sizes[0] + 1);
 
-    let mut best_substate = 0;
-    let final_scores: Vec<TScore> = (0..alignment_scoring.substates_count())
-        .map(|substate| alignment_scoring.substate_score(&matrix[sizes[0]][sizes[1]], substate, [sizes[0], sizes[1]]))
-        .collect();
-    for substate in 1..alignment_scoring.substates_count() {
-        if final_scores[substate] > final_scores[best_substate] {
-            best_substate = substate;
-        }
-    }
-
     let mut result = vec![];
-    let mut substate = best_substate;
+    let mut substate = alignment_scoring.final_substate();
     let mut indices = sizes;
     while indices[0] > 0 || indices[1] > 0 {
         let (op, next_substate) = matrix[indices[0]][indices[1]][substate].previous_step.get().unwrap();
@@ -67,19 +61,9 @@ fn naive_dp(alignment_scoring: &AlignmentSliceScoring) -> Vec<DiffOp> {
 pub fn compute_score(alignment_scoring: &AlignmentSliceScoring) -> TScore {
     let matrix = compute_dp_matrix(alignment_scoring, 2);
     let sizes = alignment_scoring.slice.size;
-    let scores: Vec<TScore> = (0..alignment_scoring.substates_count())
-        .map(|substate| {
-            alignment_scoring.substate_score(&matrix[sizes[0] % 2][sizes[1]], substate, [sizes[0], sizes[1]])
-        })
-        .collect();
-
-    let mut result = scores[0];
-    for substate in 1..alignment_scoring.substates_count() {
-        if scores[substate] > result {
-            result = scores[substate];
-        }
-    }
-    result
+    matrix[sizes[0] % 2][sizes[1]][alignment_scoring.final_substate()]
+        .score
+        .get()
 }
 
 pub(in crate::algorithm) struct NaiveAligner<'a> {

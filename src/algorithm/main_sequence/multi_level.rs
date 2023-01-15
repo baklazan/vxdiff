@@ -86,7 +86,7 @@ fn dp_in_area(scoring: &AlignmentSliceScoring, area: &DpArea) -> Vec<ApxDiffOp> 
             } else {
                 TScore::NEG_INFINITY
             };
-            scoring.set_starting_state(default_score, &mut dp[old_index][new_index]);
+            scoring.set_starting_state([old_index, new_index], default_score, &mut dp[old_index][new_index]);
             for op in [DiffOp::Delete, DiffOp::Insert, DiffOp::Match] {
                 let previos_old = old_index.wrapping_sub(op.movement()[0]);
                 let previos_new = new_index.wrapping_sub(op.movement()[1]);
@@ -105,21 +105,10 @@ fn dp_in_area(scoring: &AlignmentSliceScoring, area: &DpArea) -> Vec<ApxDiffOp> 
         }
     }
 
-    let last_cell = &dp[scoring.slice.size[0]][scoring.slice.size[1]];
-    let mut best_substate = 0;
-    let mut best_score = scoring.substate_score(last_cell, 0, scoring.slice.size);
-    for substate in 1..scoring.substates_count() {
-        let score = scoring.substate_score(last_cell, substate, scoring.slice.size);
-        if score > best_score {
-            best_score = score;
-            best_substate = substate;
-        }
-    }
-
     let mut result = vec![];
     let mut old_index = scoring.slice.size[0];
     let mut new_index = scoring.slice.size[1];
-    let mut substate = best_substate;
+    let mut substate = scoring.final_substate();
     while old_index > 0 || new_index > 0 {
         let (op, previous_substate) = dp[old_index][new_index][substate].previous_step.get().unwrap();
         substate = previous_substate;

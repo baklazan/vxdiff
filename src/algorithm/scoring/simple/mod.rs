@@ -21,6 +21,10 @@ impl<Matcher: MatchScoring> AlignmentScoringMethod for SimpleScoring<Matcher> {
         1
     }
 
+    fn final_substate(&self) -> usize {
+        0
+    }
+
     fn is_match(&self, part_indices: [usize; 2], file_ids: [usize; 2]) -> bool {
         self.match_scoring.is_match(part_indices, file_ids)
     }

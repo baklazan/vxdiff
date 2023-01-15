@@ -15,7 +15,13 @@ pub struct DpSubstate {
 pub trait AlignmentScoringMethod {
     fn substates_count(&self) -> usize;
 
-    fn set_starting_state(&self, starting_score: TScore, state: &mut [DpSubstate]) {
+    fn set_starting_state(
+        &self,
+        _dp_position: [usize; 2],
+        _file_ids: [usize; 2],
+        starting_score: TScore,
+        state: &mut [DpSubstate],
+    ) {
         state.fill(DpSubstate {
             score: Cell::from(starting_score),
             previous_step: Cell::from(None),
@@ -41,15 +47,7 @@ pub trait AlignmentScoringMethod {
         starting_substate: usize,
     ) -> TScore;
 
-    fn substate_score(
-        &self,
-        state: &[DpSubstate],
-        substate: usize,
-        _file_ids: [usize; 2],
-        _position: [usize; 2],
-    ) -> TScore {
-        state[substate].score.get()
-    }
+    fn final_substate(&self) -> usize;
 
     fn prefix_scores(
         &self,
@@ -102,8 +100,17 @@ impl<'a> AlignmentSliceScoring<'a> {
         self.scoring.substates_count()
     }
 
-    pub fn set_starting_state(&self, starting_score: TScore, state: &mut [DpSubstate]) {
-        self.scoring.set_starting_state(starting_score, state);
+    pub fn final_substate(&self) -> usize {
+        self.scoring.final_substate()
+    }
+
+    pub fn set_starting_state(&self, dp_position: [usize; 2], starting_score: TScore, state: &mut [DpSubstate]) {
+        self.scoring.set_starting_state(
+            self.slice.global_indices(dp_position),
+            self.slice.file_ids,
+            starting_score,
+            state,
+        );
     }
 
     pub fn consider_step(
@@ -125,14 +132,5 @@ impl<'a> AlignmentSliceScoring<'a> {
     pub fn is_match(&self, part_indices: [usize; 2]) -> bool {
         self.scoring
             .is_match(self.slice.global_indices(part_indices), self.slice.file_ids)
-    }
-
-    pub fn substate_score(&self, state: &[DpSubstate], substate: usize, position: [usize; 2]) -> TScore {
-        self.scoring.substate_score(
-            state,
-            substate,
-            self.slice.file_ids,
-            self.slice.global_indices(position),
-        )
     }
 }
