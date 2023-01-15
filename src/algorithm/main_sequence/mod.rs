@@ -1,6 +1,6 @@
 use super::{
     indices::WordIndex,
-    scoring::{affine_scoring::AffineWordScoring, AlignmentScoringMethod},
+    scoring::{affine_scoring::AffineWordScoring, AlignmentScoringMethod, TScore},
     AlignedFragment, DiffOp, MainSequenceAlgorithm, PartitionedText,
 };
 
@@ -9,7 +9,7 @@ pub mod naive_dp;
 
 pub(super) trait Aligner {
     fn align(&self, file_ids: [usize; 2], start: [WordIndex; 2], end: [WordIndex; 2]) -> Vec<DiffOp>;
-    /*fn prefix_scores(
+    fn prefix_scores(
         &self,
         file_ids: [usize; 2],
         start: [WordIndex; 2],
@@ -22,7 +22,7 @@ pub(super) trait Aligner {
         start: [WordIndex; 2],
         end: [WordIndex; 2],
         alignment: &[DiffOp],
-    ) -> Vec<TScore>;*/
+    ) -> Vec<TScore>;
 }
 
 pub(super) fn get_aligner<'a>(

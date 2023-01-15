@@ -1,6 +1,7 @@
 use super::{
     indices::{IndexConverter, LineIndex, WordIndex},
-    main_sequence::main_sequence_fragments,
+    main_sequence::{get_aligner, Aligner},
+    scoring::{affine_scoring::AffineWordScoring, TScore},
     AlignedFragment, DiffOp, MainSequenceAlgorithm, PartitionedText,
 };
 
@@ -170,10 +171,228 @@ fn filter_long_matches(
     (cores, holes)
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ExtensionTradeoffPoint<'a> {
+    position: [LineIndex; 2],
+    alignment: &'a [DiffOp],
+    aligned_position: [WordIndex; 2],
+    score: TScore,
+}
+
+fn prefix_tradeoffs<'a>(
+    alignment: &'a [DiffOp],
+    prefix_scores: &[TScore],
+    start: [WordIndex; 2],
+    converters: [&IndexConverter; 2],
+) -> Vec<ExtensionTradeoffPoint<'a>> {
+    let mut word_position = start;
+    let mut line_position = [0, 1].map(|side| converters[side].word_to_line_after(word_position[side]));
+    let mut best_seen_score = prefix_scores[0];
+    let mut result = vec![ExtensionTradeoffPoint {
+        position: line_position,
+        alignment: &[],
+        aligned_position: word_position,
+        score: best_seen_score,
+    }];
+    for (i, op) in alignment.iter().enumerate() {
+        for side in 0..2 {
+            word_position[side] += op.movement()[side];
+            line_position[side] = converters[side].word_to_line_after(word_position[side]);
+        }
+        if prefix_scores[i + 1] > best_seen_score {
+            best_seen_score = prefix_scores[i + 1];
+            if result.last().unwrap().position == line_position {
+                result.pop();
+            }
+            result.push(ExtensionTradeoffPoint {
+                position: line_position,
+                alignment: &alignment[..i + 1],
+                aligned_position: word_position,
+                score: best_seen_score,
+            });
+        }
+    }
+    result
+}
+
+fn suffix_tradeoffs<'a>(
+    alignment: &'a [DiffOp],
+    suffix_scores: &[TScore],
+    end: [WordIndex; 2],
+    converters: [&IndexConverter; 2],
+) -> Vec<ExtensionTradeoffPoint<'a>> {
+    let mut word_position = end;
+    let mut line_position = [0, 1].map(|side| converters[side].word_to_line_before(word_position[side]));
+    let mut best_seen_score = *suffix_scores.last().unwrap();
+    let mut result = vec![ExtensionTradeoffPoint {
+        position: line_position,
+        alignment: &[],
+        aligned_position: word_position,
+        score: best_seen_score,
+    }];
+    for (i, op) in alignment.iter().enumerate().rev() {
+        for side in 0..2 {
+            word_position[side] -= op.movement()[side];
+            line_position[side] = converters[side].word_to_line_before(word_position[side]);
+        }
+        if suffix_scores[i] > best_seen_score {
+            best_seen_score = suffix_scores[i];
+            if result.last().unwrap().position == line_position {
+                result.pop();
+            }
+            result.push(ExtensionTradeoffPoint {
+                position: line_position,
+                alignment: &alignment[i..],
+                aligned_position: word_position,
+                score: best_seen_score,
+            });
+        }
+    }
+    result.reverse();
+    result
+}
+
+struct TradeoffsSolver<'a, 'b> {
+    candidates: &'a [Vec<ExtensionTradeoffPoint<'b>>],
+    score_buffer: Vec<Vec<TScore>>,
+    come_from_buffer: Vec<Vec<usize>>,
+}
+
+impl<'a, 'b> TradeoffsSolver<'a, 'b> {
+    fn new(tradeoff_candidates: &'a [Vec<ExtensionTradeoffPoint<'b>>]) -> Self {
+        TradeoffsSolver {
+            candidates: tradeoff_candidates,
+            score_buffer: tradeoff_candidates
+                .iter()
+                .map(|row| vec![TScore::NEG_INFINITY; row.len()])
+                .collect(),
+            come_from_buffer: tradeoff_candidates
+                .iter()
+                .map(|row| vec![usize::MAX; row.len()])
+                .collect(),
+        }
+    }
+
+    fn best_path_with_start(
+        &mut self,
+        low_inclusive: &[usize],
+        high_inclusive: &[usize],
+        start: usize,
+    ) -> (TScore, Vec<usize>) {
+        self.score_buffer[0][start] = self.candidates[0][start].score;
+        for row_id in 0..self.candidates.len() - 1 {
+            let next_row_id = row_id + 1;
+            let row = &self.candidates[row_id];
+            let next_row = &self.candidates[next_row_id];
+            if row_id % 2 == 0 {
+                let mut post_id = low_inclusive[row_id];
+                let mut best_post_score = TScore::NEG_INFINITY;
+                let mut best_post_id = post_id;
+                for pre_id in low_inclusive[next_row_id]..=high_inclusive[next_row_id] {
+                    while post_id <= high_inclusive[row_id] && row[post_id].position[0] <= next_row[pre_id].position[0]
+                    {
+                        if self.score_buffer[row_id][post_id] > best_post_score {
+                            best_post_score = self.score_buffer[row_id][post_id];
+                            best_post_id = post_id;
+                        }
+                        post_id += 1;
+                    }
+                    self.score_buffer[next_row_id][pre_id] = best_post_score + next_row[pre_id].score;
+                    self.come_from_buffer[next_row_id][pre_id] = best_post_id;
+                }
+            } else {
+                let mut pre_id = high_inclusive[row_id];
+                let mut best_pre_score = TScore::NEG_INFINITY;
+                let mut best_pre_id = pre_id;
+                for post_id in (low_inclusive[next_row_id]..=high_inclusive[next_row_id]).rev() {
+                    while pre_id >= low_inclusive[row_id] && row[pre_id].position[1] >= next_row[post_id].position[1] {
+                        if self.score_buffer[row_id][pre_id] > best_pre_score {
+                            best_pre_score = self.score_buffer[row_id][pre_id];
+                            best_pre_id = pre_id;
+                        }
+                        if pre_id == low_inclusive[row_id] {
+                            break;
+                        }
+                        pre_id -= 1;
+                    }
+                    self.score_buffer[next_row_id][post_id] = best_pre_score + next_row[post_id].score;
+                    self.come_from_buffer[next_row_id][post_id] = best_pre_id;
+                }
+            }
+        }
+        let mut best_score = TScore::NEG_INFINITY;
+        let mut best_last_id = 0;
+        let last_row_id = self.candidates.len() - 1;
+        for last_id in low_inclusive[last_row_id]..=high_inclusive[last_row_id] {
+            let candidate = &self.candidates[last_row_id][last_id];
+            if candidate.position[1] >= self.candidates[0][start].position[1]
+                && self.score_buffer[last_row_id][last_id] > best_score
+            {
+                best_score = self.score_buffer[last_row_id][last_id];
+                best_last_id = last_id;
+            }
+        }
+        let mut result = vec![best_last_id];
+        let mut current_id = best_last_id;
+        for row_id in (0..self.candidates.len() - 1).rev() {
+            current_id = self.come_from_buffer[row_id + 1][current_id];
+            result.push(current_id);
+        }
+        result.reverse();
+        self.score_buffer[0][start] = TScore::NEG_INFINITY;
+        (best_score, result)
+    }
+
+    fn optimal_tradeoffs_recursive(
+        &mut self,
+        low_inclusive: &[usize],
+        high_inclusive: &[usize],
+    ) -> (TScore, Vec<usize>) {
+        let mid_start = (low_inclusive[0] + high_inclusive[0]) / 2;
+        let (mid_score, mut mid_path) = self.best_path_with_start(low_inclusive, high_inclusive, mid_start);
+        let mut best_score = mid_score;
+        let mut best_path = mid_path.clone();
+        if mid_start > low_inclusive[0] {
+            mid_path[0] = mid_start - 1;
+            let (left_score, letf_path) = self.optimal_tradeoffs_recursive(low_inclusive, &mid_path);
+            if left_score > best_score {
+                best_score = left_score;
+                best_path = letf_path;
+            }
+        }
+        if mid_start < high_inclusive[0] {
+            mid_path[0] = mid_start + 1;
+            let (right_score, right_path) = self.optimal_tradeoffs_recursive(&mid_path, high_inclusive);
+            if right_score > best_score {
+                best_score = right_score;
+                best_path = right_path;
+            }
+        }
+        (best_score, best_path)
+    }
+}
+
+fn optimal_tradeoffs<'a>(tradeoff_candidates: &[Vec<ExtensionTradeoffPoint<'a>>]) -> Vec<ExtensionTradeoffPoint<'a>> {
+    let left_inclusive = vec![0; tradeoff_candidates.len()];
+    let right_inclusive: Vec<usize> = tradeoff_candidates.iter().map(|row| row.len() - 1).collect();
+
+    let mut solver = TradeoffsSolver::new(tradeoff_candidates);
+    let (_, path) = solver.optimal_tradeoffs_recursive(&left_inclusive, &right_inclusive);
+
+    let mut result = vec![];
+
+    for row_id in 0..tradeoff_candidates.len() {
+        result.push(tradeoff_candidates[row_id][path[row_id]]);
+    }
+
+    result
+}
+
 fn extend_cores(
     main_cores: Vec<Core>,
     mut moved_cores: Vec<Core>,
     index_converters: &[[IndexConverter; 2]],
+    aligner: &dyn Aligner,
 ) -> Vec<(AlignedFragment, bool)> {
     let mut cores = main_cores;
     let mut is_main = vec![true; cores.len()];
@@ -208,15 +427,15 @@ fn extend_cores(
     let mut next_core: Vec<[Option<usize>; 2]> = vec![[None; 2]; cores.len()];
 
     for side in 0..2 {
-        let mut core_ends_by_side = vec![];
+        let mut cores_by_side = vec![];
         for (core_id, core) in cores.iter().enumerate() {
-            core_ends_by_side.push((core.file_ids[side], core.start[side], core_id));
-            core_ends_by_side.push((core.file_ids[side], core.end[side], core_id));
+            // sort by sum of coordinates, to avoid corner cases with zero-length virtual cores
+            cores_by_side.push((core.file_ids[side], core.start[side] + core.end[side], core_id));
         }
-        core_ends_by_side.sort();
-        for i in (1..core_ends_by_side.len() - 1).step_by(2) {
-            let earlier_core_id = core_ends_by_side[i].2;
-            let later_core_id = core_ends_by_side[i + 1].2;
+        cores_by_side.sort();
+        for i in 0..cores_by_side.len() - 1 {
+            let earlier_core_id = cores_by_side[i].2;
+            let later_core_id = cores_by_side[i + 1].2;
             previous_core[later_core_id][side] = Some(earlier_core_id);
             next_core[earlier_core_id][side] = Some(later_core_id);
         }
@@ -227,8 +446,8 @@ fn extend_cores(
         if side == 0 {
             let mut next_main_core = vec![None; cores.len()];
             let mut last_main_seen = None;
-            for i in (0..core_ends_by_side.len()).step_by(2).rev() {
-                let core_id = core_ends_by_side[i].2;
+            for i in (0..cores_by_side.len()).rev() {
+                let core_id = cores_by_side[i].2;
                 if is_main[core_id] {
                     last_main_seen = Some(core_id);
                     continue;
@@ -245,8 +464,8 @@ fn extend_cores(
                 }
             }
             let mut last_main_seen: Option<usize> = None;
-            for i in (0..core_ends_by_side.len()).step_by(2) {
-                let core_id = core_ends_by_side[i].2;
+            for i in 0..cores_by_side.len() {
+                let core_id = cores_by_side[i].2;
                 if let Some(last_main) = last_main_seen {
                     if cores[last_main].file_ids != cores[core_id].file_ids {
                         last_main_seen = None;
@@ -268,13 +487,111 @@ fn extend_cores(
         }
     }
 
+    let mut post_extension_processed = vec![false; cores.len()];
+    let mut core_pre_extension: Vec<Vec<DiffOp>> = vec![vec![]; cores.len()];
+    let mut core_post_extension: Vec<Vec<DiffOp>> = vec![vec![]; cores.len()];
+    let mut core_pre_extension_from: Vec<[WordIndex; 2]> = cores.iter().map(|c| c.aligned_start).collect();
+    let mut core_post_extension_to: Vec<[WordIndex; 2]> = cores.iter().map(|c| c.aligned_end).collect();
+
+    for start_core_id in 0..cores.len() {
+        if post_extension_processed[start_core_id] {
+            continue;
+        }
+        if next_core[start_core_id][0].is_none() {
+            continue;
+        }
+
+        let mut extension_alignments = vec![];
+        let mut extension_limits = vec![];
+        let mut extended_core_id = vec![];
+        let mut core_to_post_id = start_core_id;
+        loop {
+            let core_to_post = &cores[core_to_post_id];
+            let post_extension_start = core_to_post.aligned_end;
+            let post_extension_limit = [0, 1].map(|side| {
+                let next_id = next_core[core_to_post_id][side].unwrap();
+                let next = &cores[next_id];
+                let file_id = core_to_post.file_ids[side];
+                index_converters[file_id][side].line_to_word(next.start[side])
+            });
+            let alignment = aligner.align(core_to_post.file_ids, post_extension_start, post_extension_limit);
+            extension_alignments.push(alignment);
+            extension_limits.push(post_extension_limit);
+            extended_core_id.push(core_to_post_id);
+            post_extension_processed[core_to_post_id] = true;
+
+            let core_to_pre_id = next_core[core_to_post_id][0].unwrap();
+            let core_to_pre = &cores[core_to_pre_id];
+            let pre_extension_end = core_to_pre.aligned_start;
+            let pre_extension_limit = [0, 1].map(|side| {
+                let prev_id = previous_core[core_to_pre_id][side].unwrap();
+                let prev = &cores[prev_id];
+                let file_id = core_to_pre.file_ids[side];
+                index_converters[file_id][side].line_to_word(prev.end[side])
+            });
+            let alignment = aligner.align(core_to_pre.file_ids, pre_extension_limit, pre_extension_end);
+
+            extension_alignments.push(alignment);
+            extension_limits.push(pre_extension_limit);
+            extended_core_id.push(core_to_pre_id);
+
+            core_to_post_id = previous_core[core_to_pre_id][1].unwrap();
+            if core_to_post_id == start_core_id {
+                break;
+            }
+        }
+        let mut tradeoff_point_candidates = vec![];
+        for (i, alignment) in extension_alignments.iter().enumerate() {
+            let core_id = extended_core_id[i];
+            let core = &cores[core_id];
+            let converters = [0, 1].map(|side| &index_converters[core.file_ids[side]][side]);
+            tradeoff_point_candidates.push(if i % 2 == 0 {
+                let prefix_scores =
+                    aligner.prefix_scores(core.file_ids, core.aligned_end, extension_limits[i], &alignment);
+                prefix_tradeoffs(&alignment, &prefix_scores, core.aligned_end, converters)
+            } else {
+                let suffix_scores =
+                    aligner.suffix_scores(core.file_ids, extension_limits[i], core.aligned_start, &alignment);
+                suffix_tradeoffs(&alignment, &suffix_scores, core.aligned_start, converters)
+            });
+        }
+
+        let tradeoffs = optimal_tradeoffs(&tradeoff_point_candidates);
+        for (i, tradeoff) in tradeoffs.iter().enumerate() {
+            let core_id = extended_core_id[i];
+            if i % 2 == 0 {
+                core_post_extension[core_id] = Vec::from(tradeoff.alignment);
+                core_post_extension_to[core_id] = tradeoff.aligned_position;
+            } else {
+                core_pre_extension[core_id] = Vec::from(tradeoff.alignment);
+                core_pre_extension_from[core_id] = tradeoff.aligned_position;
+            }
+        }
+
+        // TODO: special handling for 2-cycles
+    }
+
     let mut result = vec![];
     for (core_id, mut core) in cores.into_iter().enumerate() {
+        core.aligned_start = core_pre_extension_from[core_id];
+        core.aligned_end = core_post_extension_to[core_id];
+
+        for side in 0..2 {
+            let file_id = core.file_ids[side];
+            let converter = &index_converters[file_id][side];
+            core.start[side] = converter.word_to_line_before(core.aligned_start[side]);
+            core.end[side] = converter.word_to_line_after(core.aligned_end[side]);
+        }
         if core.start == core.end {
             continue;
         }
+
+        let mut extended_alignment = std::mem::take(&mut core_pre_extension[core_id]);
+        extended_alignment.append(&mut core.word_alignment);
+        extended_alignment.append(&mut core_post_extension[core_id]);
+        core.word_alignment = extended_alignment;
+
         let main = is_main[core_id];
-        println!("Core from {:?} to {:?}, main: {}", core.start, core.end, main);
 
         let core_start_word_indices = [0, 1].map(|side| {
             index_converters[core.file_ids[side]][side]
@@ -318,10 +635,17 @@ pub(super) fn main_then_moved(
     text_lines: &[[PartitionedText; 2]],
     algorithm: MainSequenceAlgorithm,
 ) -> Vec<(AlignedFragment, bool)> {
-    let alignments: Vec<Vec<DiffOp>> = main_sequence_fragments(text_words, algorithm)
-        .into_iter()
-        .map(|(fragment, _is_main)| fragment.alignment)
-        .collect(); // TODO: this is ridiculous, refactor main sequence algorithm ecosystem
+    let scoring = AffineWordScoring::new(text_words);
+    let aligner = get_aligner(text_words, &scoring, algorithm);
+
+    let mut alignments: Vec<Vec<DiffOp>> = vec![];
+    for (file_id, file_text_words) in text_words.iter().enumerate() {
+        alignments.push(aligner.align(
+            [file_id, file_id],
+            [WordIndex::new(0), WordIndex::new(0)],
+            [0, 1].map(|side| WordIndex::new(file_text_words[side].part_count())),
+        ));
+    }
 
     let mut main_cores = vec![];
     let mut holes = [vec![], vec![]];
@@ -345,5 +669,5 @@ pub(super) fn main_then_moved(
     }
     let moved_cores = moved_cores::find_moved_cores(text_words, &index_converters, &holes);
 
-    extend_cores(main_cores, moved_cores, &index_converters)
+    extend_cores(main_cores, moved_cores, &index_converters, aligner.as_ref())
 }

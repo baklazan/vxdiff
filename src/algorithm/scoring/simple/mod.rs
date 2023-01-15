@@ -47,8 +47,7 @@ impl<Matcher: MatchScoring> AlignmentScoringMethod for SimpleScoring<Matcher> {
             DiffOp::Insert => 0.0,
             DiffOp::Delete => 0.0,
             DiffOp::Match => {
-                let index_correction = 1;
-                let part_indices = dp_position.map(|i| i - index_correction);
+                let part_indices = dp_position.map(|i| i - 1);
                 self.match_scoring.score(part_indices, file_ids)
             }
         };
@@ -57,5 +56,50 @@ impl<Matcher: MatchScoring> AlignmentScoringMethod for SimpleScoring<Matcher> {
             state[0].score.set(proposed_score);
             state[0].previous_step.set(Some((step, 0)));
         }
+    }
+
+    fn prefix_scores(
+        &self,
+        file_ids: [usize; 2],
+        start: [usize; 2],
+        _end: [usize; 2],
+        alignment: &[DiffOp],
+    ) -> Vec<TScore> {
+        let mut position = start;
+        let mut score = 0.0;
+        let mut result = vec![score];
+        for &op in alignment {
+            if op == DiffOp::Match {
+                score += self.match_scoring.score(position, file_ids);
+            }
+            result.push(score);
+            for side in 0..2 {
+                position[side] += op.movement()[side];
+            }
+        }
+        result
+    }
+
+    fn suffix_scores(
+        &self,
+        file_ids: [usize; 2],
+        _start: [usize; 2],
+        end: [usize; 2],
+        alignment: &[DiffOp],
+    ) -> Vec<TScore> {
+        let mut position = end;
+        let mut score = 0.0;
+        let mut result = vec![score];
+        for &op in alignment.iter().rev() {
+            for side in 0..2 {
+                position[side] -= op.movement()[side];
+            }
+            if op == DiffOp::Match {
+                score += self.match_scoring.score(position, file_ids);
+            }
+            result.push(score);
+        }
+        result.reverse();
+        result
     }
 }

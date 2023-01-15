@@ -105,4 +105,26 @@ impl<'a> Aligner for NaiveAligner<'a> {
         };
         naive_dp(&slice_scoring)
     }
+
+    fn prefix_scores(
+        &self,
+        file_ids: [usize; 2],
+        start: [WordIndex; 2],
+        end: [WordIndex; 2],
+        alignment: &[DiffOp],
+    ) -> Vec<TScore> {
+        self.scoring
+            .prefix_scores(file_ids, start.map(WordIndex::raw), end.map(WordIndex::raw), alignment)
+    }
+
+    fn suffix_scores(
+        &self,
+        file_ids: [usize; 2],
+        start: [WordIndex; 2],
+        end: [WordIndex; 2],
+        alignment: &[DiffOp],
+    ) -> Vec<TScore> {
+        self.scoring
+            .suffix_scores(file_ids, start.map(WordIndex::raw), end.map(WordIndex::raw), alignment)
+    }
 }

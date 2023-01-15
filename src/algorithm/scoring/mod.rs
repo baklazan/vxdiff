@@ -50,6 +50,21 @@ pub trait AlignmentScoringMethod {
     ) -> TScore {
         state[substate].score.get()
     }
+
+    fn prefix_scores(
+        &self,
+        file_ids: [usize; 2],
+        start: [usize; 2],
+        end: [usize; 2],
+        alignment: &[DiffOp],
+    ) -> Vec<TScore>;
+    fn suffix_scores(
+        &self,
+        file_ids: [usize; 2],
+        start: [usize; 2],
+        end: [usize; 2],
+        alignment: &[DiffOp],
+    ) -> Vec<TScore>;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -121,13 +136,3 @@ impl<'a> AlignmentSliceScoring<'a> {
         )
     }
 }
-
-pub trait FragmentBoundsScoringMethod {
-    const SUPERSECTION_THRESHOLD: TScore;
-    const MOVED_SUPERSECTION_THRESHOLD: TScore;
-
-    fn fragment_bound_penalty(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> TScore;
-    fn is_viable_bound(&self, side: usize, index: usize, file_id: usize) -> bool;
-    fn nearest_bound(&self, side: usize, index: usize, file_id: usize) -> usize;
-}
-

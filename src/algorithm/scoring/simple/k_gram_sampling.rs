@@ -68,6 +68,9 @@ impl KGramSamplingScoring {
                             hashes.push(((value_with_seen * hash_factor) + hash_additive) % Self::HASH_MOD_P);
                         }
                     }
+                    if hashes.is_empty() {
+                        hashes.push(current_prefix_value);
+                    }
                     let mut samples = &hashes[..];
                     if hashes.len() > Self::SAMPLES {
                         samples = hashes.select_nth_unstable(Self::SAMPLES).0;

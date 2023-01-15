@@ -42,6 +42,7 @@ impl ApxDiffOp {
     }
 }
 
+#[derive(Debug)]
 struct DpArea {
     start: [usize; 2],
     row_ranges_local_inclusive: Vec<(usize, usize)>,
@@ -479,5 +480,27 @@ impl<'a> Aligner for MultiLevelAligner<'a> {
             );
         }
         alignment.iter().map(ApxDiffOp::to_diff_op).collect()
+    }
+
+    fn prefix_scores(
+        &self,
+        file_ids: [usize; 2],
+        start: [WordIndex; 2],
+        end: [WordIndex; 2],
+        alignment: &[DiffOp],
+    ) -> Vec<TScore> {
+        self.bottom_level_scoring
+            .prefix_scores(file_ids, start.map(WordIndex::raw), end.map(WordIndex::raw), alignment)
+    }
+
+    fn suffix_scores(
+        &self,
+        file_ids: [usize; 2],
+        start: [WordIndex; 2],
+        end: [WordIndex; 2],
+        alignment: &[DiffOp],
+    ) -> Vec<TScore> {
+        self.bottom_level_scoring
+            .suffix_scores(file_ids, start.map(WordIndex::raw), end.map(WordIndex::raw), alignment)
     }
 }
