@@ -69,6 +69,9 @@ fn find_seeds(
             words_till_hole_end.push(0);
         }
     }
+    if string.is_empty() {
+        return vec![];
+    }
     let suffix_array = suffix_array::suffix_array(&string);
     let mut new_suffixes_until = vec![0; suffix_array.len() + 1];
     for (i, &string_index) in suffix_array.iter().enumerate() {
@@ -497,7 +500,6 @@ fn select_cores(
                 })
                 .collect();
         }
-        const MIN_LINES_IN_GOOD_INTERVAL: usize = MIN_LINES_IN_CORE + 2;
         let unique_sapling_intervals = sapling.intersect_intervals(&unique_word_intervals);
         let mut has_good_interval = false;
         for (start, end) in unique_sapling_intervals {
@@ -506,7 +508,7 @@ fn select_cores(
                 let file_id = sapling.file_ids[side];
                 let start_line = index_converters[file_id][side].word_to_line_before(start[side]);
                 let end_line = index_converters[file_id][side].word_to_line_after(end[side]);
-                if end_line - start_line < MIN_LINES_IN_GOOD_INTERVAL {
+                if end_line - start_line < MIN_LINES_IN_CORE {
                     good = false;
                     break;
                 }

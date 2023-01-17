@@ -11,6 +11,9 @@ pub(super) fn suffix_array(string: &[usize]) -> Vec<usize> {
         }
     }
 
+    if string.is_empty() {
+        panic!("suffix array called on an empty string!");
+    }
     if string.len() == 1 {
         return vec![0];
     }

@@ -436,8 +436,10 @@ fn extend_cores(
         for i in 0..cores_by_side.len() - 1 {
             let earlier_core_id = cores_by_side[i].2;
             let later_core_id = cores_by_side[i + 1].2;
-            previous_core[later_core_id][side] = Some(earlier_core_id);
-            next_core[earlier_core_id][side] = Some(later_core_id);
+            if cores[earlier_core_id].file_ids[side] == cores[later_core_id].file_ids[side] {
+                previous_core[later_core_id][side] = Some(earlier_core_id);
+                next_core[earlier_core_id][side] = Some(later_core_id);
+            }
         }
 
         // detect and relabel moved cores that can be inserted into the main sequence

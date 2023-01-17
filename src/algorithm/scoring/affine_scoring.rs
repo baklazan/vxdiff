@@ -141,6 +141,10 @@ impl AlignmentScoringMethod for AffineWordScoring {
         2
     }
 
+    fn final_substate(&self) -> usize {
+        Self::MATCH
+    }
+
     fn set_starting_state(
         &self,
         dp_position: [usize; 2],
@@ -162,7 +166,7 @@ impl AlignmentScoringMethod for AffineWordScoring {
         &self,
         dp_position: [usize; 2],
         file_ids: [usize; 2],
-        state_after_move: &[DpSubstate],
+        state_before: &[DpSubstate],
         state: &[DpSubstate],
         step: DiffOp,
     ) {
@@ -182,7 +186,7 @@ impl AlignmentScoringMethod for AffineWordScoring {
                 return;
             }
             let score_without_transition =
-                state_after_move[Self::MATCH].score.get() + self.information_values[file_ids[0]][0][word_indices[0]];
+                state_before[Self::MATCH].score.get() + self.information_values[file_ids[0]][0][word_indices[0]];
             let movement = Some((DiffOp::Match, Self::MATCH));
             for to_state in [Self::MATCH, Self::GAP] {
                 improve(
@@ -192,7 +196,7 @@ impl AlignmentScoringMethod for AffineWordScoring {
                 );
             }
         } else {
-            let score_without_transition = state_after_move[Self::GAP].score.get();
+            let score_without_transition = state_before[Self::GAP].score.get();
             let movement = Some((step, Self::GAP));
             for to_state in [Self::MATCH, Self::GAP] {
                 improve(
@@ -221,10 +225,6 @@ impl AlignmentScoringMethod for AffineWordScoring {
         }
         self.transition_matrix[starting_substate][Self::GAP]
             + self.transition_matrix[Self::GAP][Self::GAP] * (gap_length - 1) as f64
-    }
-
-    fn final_substate(&self) -> usize {
-        Self::MATCH
     }
 
     fn prefix_scores(
