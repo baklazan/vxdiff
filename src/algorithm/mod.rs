@@ -73,6 +73,58 @@ pub enum LineScoringStrategy {
     KGram,
 }
 
+pub fn compute_diff_with_hints(files: &[[&str; 2]], hints: &[Vec<[usize; 2]>], algorithm: DiffAlgorithm) -> Diff {
+    assert_eq!(files.len(), hints.len());
+
+    let mut split_files = vec![];
+    for (file, file_hints) in files.iter().zip(hints.iter()) {
+        let mut last = [0, 0];
+        let end = [file[0].len(), file[1].len()];
+        for hint in file_hints.iter().copied().chain(std::iter::once(end)) {
+            assert!(last[0] <= hint[0]);
+            assert!(last[1] <= hint[1]);
+            assert!(hint != last);
+
+            split_files.push([0, 1].map(|side| &file[side][last[side]..hint[side]]));
+            last = hint;
+        }
+    }
+
+    let split_diff = compute_diff(&split_files, algorithm);
+
+    let mut joined_diff = Diff {
+        sections: split_diff.sections,
+        files: vec![],
+    };
+
+    let mut split_index = 0;
+    for file_hints in hints {
+        let mut ops = vec![];
+        for last in std::iter::once([0, 0]).chain(file_hints.iter().copied()) {
+            for &(op, section_id) in &split_diff.files[split_index].ops {
+                ops.push((op, section_id));
+                for side in 0..2 {
+                    if op.movement()[side] != 0 {
+                        let section_side = &mut joined_diff.sections[section_id].sides[side];
+                        let adjust = |range: &mut Range<usize>| {
+                            range.start += last[side];
+                            range.end += last[side];
+                        };
+                        adjust(&mut section_side.byte_range);
+                        for highlight_range in section_side.highlight_ranges.iter_mut() {
+                            adjust(highlight_range);
+                        }
+                    }
+                }
+            }
+            split_index += 1;
+        }
+        joined_diff.files.push(FileDiff { ops });
+    }
+
+    joined_diff
+}
+
 pub fn compute_diff(files: &[[&str; 2]], algorithm: DiffAlgorithm) -> Diff {
     let word_bounds: Vec<[Vec<usize>; 2]> = files.iter().map(|file| file.map(partition_into_words)).collect();
     let line_bounds: Vec<[Vec<usize>; 2]> = files.iter().map(|file| file.map(partition_into_lines)).collect();
