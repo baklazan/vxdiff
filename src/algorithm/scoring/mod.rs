@@ -39,13 +39,7 @@ pub trait AlignmentScoringMethod {
 
     fn is_match(&self, part_indices: [usize; 2], file_ids: [usize; 2]) -> bool;
 
-    fn append_gaps(
-        &self,
-        file_ids: [usize; 2],
-        start_indices: [usize; 2],
-        end_indices: [usize; 2],
-        starting_substate: usize,
-    ) -> TScore;
+    fn score_gaps_between(&self, start_indices: [usize; 2], end_indices: [usize; 2]) -> TScore;
 
     fn final_substate(&self) -> usize;
 

@@ -23,6 +23,7 @@ pub(super) trait Aligner {
         end: [WordIndex; 2],
         alignment: &[DiffOp],
     ) -> Vec<TScore>;
+    fn score_gaps_between(&self, file_ids: [usize; 2], start: [WordIndex; 2], end: [WordIndex; 2]) -> TScore;
 }
 
 pub(super) fn get_aligner<'a>(

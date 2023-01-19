@@ -212,18 +212,13 @@ impl AlignmentScoringMethod for AffineWordScoring {
         self.symbols[file_ids[0]][0][word_indices[0]] == self.symbols[file_ids[1]][1][word_indices[1]]
     }
 
-    fn append_gaps(
-        &self,
-        _file_ids: [usize; 2],
-        start_indices: [usize; 2],
-        end_indices: [usize; 2],
-        starting_substate: usize,
-    ) -> TScore {
+    fn score_gaps_between(&self, start_indices: [usize; 2], end_indices: [usize; 2]) -> TScore {
         let gap_length = (end_indices[0] - start_indices[0]) + (end_indices[1] - start_indices[1]);
         if gap_length == 0 {
             return 0.0;
         }
-        self.transition_matrix[starting_substate][Self::GAP]
+        self.transition_matrix[Self::MATCH][Self::GAP] + self.transition_matrix[Self::GAP][Self::MATCH]
+            - self.transition_matrix[Self::MATCH][Self::MATCH]
             + self.transition_matrix[Self::GAP][Self::GAP] * (gap_length - 1) as f64
     }
 

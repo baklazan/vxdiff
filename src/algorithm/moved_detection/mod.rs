@@ -184,6 +184,8 @@ fn prefix_tradeoffs<'a>(
     prefix_scores: &[TScore],
     start: [WordIndex; 2],
     converters: [&IndexConverter; 2],
+    file_ids: [usize; 2],
+    aligner: &dyn Aligner,
 ) -> Vec<ExtensionTradeoffPoint<'a>> {
     let mut word_position = start;
     let mut line_position = [0, 1].map(|side| converters[side].word_to_line_after(word_position[side]));
@@ -199,8 +201,12 @@ fn prefix_tradeoffs<'a>(
             word_position[side] += op.movement()[side];
             line_position[side] = converters[side].word_to_line_after(word_position[side]);
         }
-        if prefix_scores[i + 1] > best_seen_score {
-            best_seen_score = prefix_scores[i + 1];
+        let word_position_of_line_end = [0, 1].map(|side| converters[side].line_to_word(line_position[side]));
+
+        let proposed_score =
+            prefix_scores[i + 1] + aligner.score_gaps_between(file_ids, word_position, word_position_of_line_end);
+        if proposed_score > best_seen_score {
+            best_seen_score = proposed_score;
             if result.last().unwrap().position == line_position {
                 result.pop();
             }
@@ -220,6 +226,8 @@ fn suffix_tradeoffs<'a>(
     suffix_scores: &[TScore],
     end: [WordIndex; 2],
     converters: [&IndexConverter; 2],
+    file_ids: [usize; 2],
+    aligner: &dyn Aligner,
 ) -> Vec<ExtensionTradeoffPoint<'a>> {
     let mut word_position = end;
     let mut line_position = [0, 1].map(|side| converters[side].word_to_line_before(word_position[side]));
@@ -235,8 +243,11 @@ fn suffix_tradeoffs<'a>(
             word_position[side] -= op.movement()[side];
             line_position[side] = converters[side].word_to_line_before(word_position[side]);
         }
-        if suffix_scores[i] > best_seen_score {
-            best_seen_score = suffix_scores[i];
+        let word_position_of_line_start = [0, 1].map(|side| converters[side].line_to_word(line_position[side]));
+        let proposed_score =
+            suffix_scores[i] + aligner.score_gaps_between(file_ids, word_position_of_line_start, word_position);
+        if proposed_score > best_seen_score {
+            best_seen_score = proposed_score;
             if result.last().unwrap().position == line_position {
                 result.pop();
             }
@@ -372,12 +383,14 @@ impl<'a, 'b> TradeoffsSolver<'a, 'b> {
     }
 }
 
-fn optimal_tradeoffs<'a>(tradeoff_candidates: &[Vec<ExtensionTradeoffPoint<'a>>]) -> Vec<ExtensionTradeoffPoint<'a>> {
+fn optimal_tradeoffs<'a>(
+    tradeoff_candidates: &[Vec<ExtensionTradeoffPoint<'a>>],
+) -> (TScore, Vec<ExtensionTradeoffPoint<'a>>) {
     let left_inclusive = vec![0; tradeoff_candidates.len()];
     let right_inclusive: Vec<usize> = tradeoff_candidates.iter().map(|row| row.len() - 1).collect();
 
     let mut solver = TradeoffsSolver::new(tradeoff_candidates);
-    let (_, path) = solver.optimal_tradeoffs_recursive(&left_inclusive, &right_inclusive);
+    let (score, path) = solver.optimal_tradeoffs_recursive(&left_inclusive, &right_inclusive);
 
     let mut result = vec![];
 
@@ -385,7 +398,7 @@ fn optimal_tradeoffs<'a>(tradeoff_candidates: &[Vec<ExtensionTradeoffPoint<'a>>]
         result.push(tradeoff_candidates[row_id][path[row_id]]);
     }
 
-    result
+    (score, result)
 }
 
 fn extend_cores(
@@ -425,6 +438,12 @@ fn extend_cores(
 
     let mut previous_core: Vec<[Option<usize>; 2]> = vec![[None; 2]; cores.len()];
     let mut next_core: Vec<[Option<usize>; 2]> = vec![[None; 2]; cores.len()];
+
+    // a group of cores that are consecutive on both sides can be potentially joined into
+    // a single aligned fragment.
+    let mut is_first_core_in_chain = vec![true; cores.len()];
+    let mut next_core_in_chain: Vec<Option<usize>> = vec![None; cores.len()];
+    let mut bridges_after_cores_in_chain: Vec<Option<Vec<DiffOp>>> = vec![None; cores.len()];
 
     for side in 0..2 {
         let mut cores_by_side = vec![];
@@ -548,17 +567,56 @@ fn extend_cores(
             let core = &cores[core_id];
             let converters = [0, 1].map(|side| &index_converters[core.file_ids[side]][side]);
             tradeoff_point_candidates.push(if i % 2 == 0 {
+                // TODO nasty, arguments passing, refactor
                 let prefix_scores =
                     aligner.prefix_scores(core.file_ids, core.aligned_end, extension_limits[i], &alignment);
-                prefix_tradeoffs(&alignment, &prefix_scores, core.aligned_end, converters)
+                prefix_tradeoffs(
+                    &alignment,
+                    &prefix_scores,
+                    core.aligned_end,
+                    converters,
+                    core.file_ids,
+                    aligner,
+                )
             } else {
                 let suffix_scores =
                     aligner.suffix_scores(core.file_ids, extension_limits[i], core.aligned_start, &alignment);
-                suffix_tradeoffs(&alignment, &suffix_scores, core.aligned_start, converters)
+                suffix_tradeoffs(
+                    &alignment,
+                    &suffix_scores,
+                    core.aligned_start,
+                    converters,
+                    core.file_ids,
+                    aligner,
+                )
             });
         }
 
-        let tradeoffs = optimal_tradeoffs(&tradeoff_point_candidates);
+        let (tradeoff_score, tradeoffs) = optimal_tradeoffs(&tradeoff_point_candidates);
+
+        // a 2-cycle means we can potentially join these two cores
+        if extension_alignments.len() == 2 {
+            let start_core = &cores[start_core_id];
+            let other_core_id = next_core[start_core_id][0].unwrap();
+            let other_core = &cores[other_core_id];
+            let alignment = aligner.align(start_core.file_ids, start_core.aligned_end, other_core.aligned_start);
+            let whole_score = *aligner
+                .prefix_scores(
+                    start_core.file_ids,
+                    start_core.aligned_end,
+                    other_core.aligned_start,
+                    &alignment,
+                )
+                .last()
+                .unwrap();
+            if whole_score > tradeoff_score {
+                is_first_core_in_chain[other_core_id] = false;
+                next_core_in_chain[start_core_id] = Some(other_core_id);
+                bridges_after_cores_in_chain[start_core_id] = Some(alignment);
+                continue;
+            }
+        }
+
         for (i, tradeoff) in tradeoffs.iter().enumerate() {
             let core_id = extended_core_id[i];
             if i % 2 == 0 {
@@ -569,62 +627,60 @@ fn extend_cores(
                 core_pre_extension_from[core_id] = tradeoff.aligned_position;
             }
         }
-
-        // TODO: special handling for 2-cycles
     }
 
     let mut result = vec![];
-    for (core_id, mut core) in cores.into_iter().enumerate() {
-        core.aligned_start = core_pre_extension_from[core_id];
-        core.aligned_end = core_post_extension_to[core_id];
-
-        for side in 0..2 {
-            let file_id = core.file_ids[side];
-            let converter = &index_converters[file_id][side];
-            core.start[side] = converter.word_to_line_before(core.aligned_start[side]);
-            core.end[side] = converter.word_to_line_after(core.aligned_end[side]);
-        }
-        if core.start == core.end {
+    for mut core_id in 0..cores.len() {
+        if !is_first_core_in_chain[core_id] {
             continue;
         }
 
-        let mut extended_alignment = std::mem::take(&mut core_pre_extension[core_id]);
-        extended_alignment.append(&mut core.word_alignment);
-        extended_alignment.append(&mut core_post_extension[core_id]);
-        core.word_alignment = extended_alignment;
-
+        let file_ids = cores[core_id].file_ids;
         let main = is_main[core_id];
 
-        let core_start_word_indices = [0, 1].map(|side| {
-            index_converters[core.file_ids[side]][side]
-                .line_to_word(core.start[side])
-                .raw()
-        });
-        let mut alignment: Vec<DiffOp> = vec![];
+        let aligned_start = core_pre_extension_from[core_id];
+        let start = [0, 1].map(|side| index_converters[file_ids[side]][side].word_to_line_before(aligned_start[side]));
+        let start_word_indices =
+            [0, 1].map(|side| index_converters[file_ids[side]][side].line_to_word(start[side]).raw());
+
+        let mut extended_alignment = vec![];
         for (side, op) in [(0, DiffOp::Delete), (1, DiffOp::Insert)] {
-            for _ in core_start_word_indices[side]..core.aligned_start[side].raw() {
-                alignment.push(op);
+            for _ in start_word_indices[side]..aligned_start[side].raw() {
+                extended_alignment.push(op);
             }
         }
-        alignment.append(&mut core.word_alignment);
 
-        let core_end_word_indices = [0, 1].map(|side| {
-            index_converters[core.file_ids[side]][side]
-                .line_to_word(core.end[side])
-                .raw()
-        });
+        extended_alignment.append(&mut core_pre_extension[core_id]);
+        extended_alignment.append(&mut cores[core_id].word_alignment);
+
+        while let Some(next_id) = next_core_in_chain[core_id] {
+            extended_alignment.append(&mut bridges_after_cores_in_chain[core_id].as_mut().unwrap());
+            core_id = next_id;
+            extended_alignment.append(&mut cores[core_id].word_alignment);
+        }
+
+        extended_alignment.append(&mut core_post_extension[core_id]);
+
+        let aligned_end = core_post_extension_to[core_id];
+        let end = [0, 1].map(|side| index_converters[file_ids[side]][side].word_to_line_after(aligned_end[side]));
+        let end_word_indices = [0, 1].map(|side| index_converters[file_ids[side]][side].line_to_word(end[side]).raw());
 
         for (side, op) in [(0, DiffOp::Delete), (1, DiffOp::Insert)] {
-            for _ in core.aligned_end[side].raw()..core_end_word_indices[side] {
-                alignment.push(op);
+            for _ in aligned_end[side].raw()..end_word_indices[side] {
+                extended_alignment.push(op);
             }
         }
+
+        if start == end {
+            continue;
+        }
+
         result.push((
             AlignedFragment {
-                starts: core_start_word_indices,
-                ends: core_end_word_indices,
-                file_ids: core.file_ids,
-                alignment,
+                starts: start_word_indices,
+                ends: end_word_indices,
+                file_ids,
+                alignment: extended_alignment,
             },
             main,
         ));

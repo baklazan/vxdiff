@@ -29,13 +29,7 @@ impl<Matcher: MatchScoring> AlignmentScoringMethod for SimpleScoring<Matcher> {
         self.match_scoring.is_match(part_indices, file_ids)
     }
 
-    fn append_gaps(
-        &self,
-        _file_ids: [usize; 2],
-        _start_indices: [usize; 2],
-        _end_indices: [usize; 2],
-        _starting_substate: usize,
-    ) -> super::TScore {
+    fn score_gaps_between(&self, _start_indices: [usize; 2], _end_indices: [usize; 2]) -> super::TScore {
         0.0
     }
 

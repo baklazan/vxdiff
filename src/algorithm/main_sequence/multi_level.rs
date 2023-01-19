@@ -492,4 +492,9 @@ impl<'a> Aligner for MultiLevelAligner<'a> {
         self.bottom_level_scoring
             .suffix_scores(file_ids, start.map(WordIndex::raw), end.map(WordIndex::raw), alignment)
     }
+
+    fn score_gaps_between(&self, _file_ids: [usize; 2], start: [WordIndex; 2], end: [WordIndex; 2]) -> TScore {
+        self.bottom_level_scoring
+            .score_gaps_between(start.map(WordIndex::raw), end.map(WordIndex::raw))
+    }
 }
