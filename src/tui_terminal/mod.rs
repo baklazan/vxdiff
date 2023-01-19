@@ -1150,6 +1150,9 @@ fn u16tos(number: u16) -> usize {
 }
 
 fn buffer_write(buffer: &mut tui::buffer::Buffer, x: usize, y: usize, string: impl AsRef<str>, style: Style) {
+    if string.as_ref().is_empty() {
+        return;
+    }
     buffer.set_string(usto16(x), usto16(y), string, tui_style(style));
 }
 
