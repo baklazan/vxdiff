@@ -1,9 +1,9 @@
-use clap::{error::ErrorKind, ArgGroup, CommandFactory as _, Parser, ValueEnum};
+use clap::{error::ErrorKind, ArgGroup, CommandFactory as _, Parser};
 use std::io::stdout;
 use vxdiff::{
     algorithm::{compute_diff, DiffAlgorithm, LineScoringStrategy, MainSequenceAlgorithm},
     basic_terminal::{print, print_side_by_side},
-    config::{Config, ConfigOpt},
+    config::{Config, ConfigOpt, DiffAlgorithm as DiffAlgorithmArg, OutputMode},
     input::{
         read_as_git_pager, read_by_running_git_diff_raw, read_file_list, run_external_helper_for_git_diff,
         run_git_diff, ProgramInput,
@@ -13,32 +13,14 @@ use vxdiff::{
     DynResult,
 };
 
-#[derive(Clone, ValueEnum, Debug)]
-enum OutputMode {
-    Debug,
-    Unified,
-    Side,
-    TuiPlain,
-    Tui,
-}
-
-#[derive(Clone, ValueEnum, Debug)]
-pub enum DiffAlgorithmArg {
-    Naive,
-    LinesThenWords,
-    MainThenMoved,
-}
-
-impl DiffAlgorithmArg {
-    pub fn convert(&self) -> DiffAlgorithm {
-        match &self {
-            DiffAlgorithmArg::Naive => DiffAlgorithm::MainSequence(MainSequenceAlgorithm::Naive),
-            DiffAlgorithmArg::LinesThenWords => {
-                DiffAlgorithm::MainSequence(MainSequenceAlgorithm::LinesThenWords(LineScoringStrategy::KGram))
-            }
-            DiffAlgorithmArg::MainThenMoved => {
-                DiffAlgorithm::MainThenMoved(MainSequenceAlgorithm::LinesThenWords(LineScoringStrategy::KGram))
-            }
+fn convert_algorithm(algorithm: DiffAlgorithmArg) -> DiffAlgorithm {
+    match algorithm {
+        DiffAlgorithmArg::Naive => DiffAlgorithm::MainSequence(MainSequenceAlgorithm::Naive),
+        DiffAlgorithmArg::LinesThenWords => {
+            DiffAlgorithm::MainSequence(MainSequenceAlgorithm::LinesThenWords(LineScoringStrategy::KGram))
+        }
+        DiffAlgorithmArg::MainThenMoved => {
+            DiffAlgorithm::MainThenMoved(MainSequenceAlgorithm::LinesThenWords(LineScoringStrategy::KGram))
         }
     }
 }
@@ -47,12 +29,6 @@ impl DiffAlgorithmArg {
 #[command(arg_required_else_help(true))]
 #[command(group(ArgGroup::new("input").required(true)))]
 struct Args {
-    #[arg(short, long, default_value_t = OutputMode::Tui, value_enum)]
-    mode: OutputMode,
-
-    #[arg(short, long, default_value_t = DiffAlgorithmArg::LinesThenWords, value_enum)]
-    algorithm: DiffAlgorithmArg,
-
     #[arg(group = "input", value_names = ["OLD1", "NEW1", "OLD2", "NEW2"])]
     files: Vec<String>,
 
@@ -68,6 +44,9 @@ struct Args {
     #[arg(long, group = "input", value_name = "?", num_args = 1.., allow_hyphen_values = true, exclusive = true)]
     git_external_diff: Vec<String>,
 
+    #[arg(long, hide = true)]
+    git_pager_hack: bool,
+
     #[command(flatten)]
     config: ConfigOpt,
 }
@@ -75,13 +54,22 @@ struct Args {
 fn try_main() -> DynResult<()> {
     let args = Args::parse();
 
+    let args = if args.git_pager_hack {
+        assert!(args.git_old.is_some());
+        assert!(!args.git_pager);
+        Args {
+            git_old: None,
+            git_pager: true,
+            ..args
+        }
+    } else {
+        args
+    };
+
     if let Some(git_diff_args) = &args.git_old {
         let current_exe = std::env::current_exe()?;
         let current_exe = current_exe.to_str().ok_or("current_exe is not unicode")?;
-        // unwrap() is OK because none of our enum variants use #[value(skip)].
-        let mode = args.mode.to_possible_value().unwrap();
-        let algorithm = args.algorithm.to_possible_value().unwrap();
-        let pager_args = ["--mode", mode.get_name(), "--algorithm", algorithm.get_name()];
+        let pager_args: Vec<String> = std::env::args().skip(1).collect();
         run_git_diff(current_exe, git_diff_args, &pager_args)?;
         return Ok(());
     }
@@ -132,11 +120,11 @@ fn try_main() -> DynResult<()> {
     let file_names: Vec<_> = input.file_names.iter().map(borrow_array).collect();
     let file_status_text: Vec<&str> = input.file_status_text.iter().map(AsRef::as_ref).collect();
 
-    let diff = compute_diff(&file_input, args.algorithm.convert());
+    let diff = compute_diff(&file_input, convert_algorithm(config.algorithm));
 
     print_errors(&validate(&diff, &file_input, &file_names));
 
-    match args.mode {
+    match config.mode {
         OutputMode::Debug => println!("{diff:#?}"),
         OutputMode::Unified => print(&diff, &file_input, &mut stdout())?,
         OutputMode::Side => print_side_by_side(&diff, &file_input, &mut stdout())?,

@@ -225,6 +225,22 @@ fn light_theme() -> Theme {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Deserialize)]
+pub enum OutputMode {
+    Debug,
+    Unified,
+    Side,
+    TuiPlain,
+    Tui,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Deserialize)]
+pub enum DiffAlgorithm {
+    Naive,
+    LinesThenWords,
+    MainThenMoved,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Deserialize)]
 pub enum SearchCaseSensitivity {
     CaseSensitive,
     CaseInsensitive,
@@ -273,6 +289,12 @@ macro_rules! config_structs {
 }
 
 config_structs! {
+    #[config_opt(arg(short, long))]
+    pub mode: OutputMode,
+
+    #[config_opt(arg(short, long))]
+    pub algorithm: DiffAlgorithm,
+
     #[config_opt(arg(long, value_name = "NUM"))]
     pub context_lines: usize,
 
@@ -341,6 +363,8 @@ config_structs! {
 impl Default for Config {
     fn default() -> Config {
         Config {
+            mode: OutputMode::Tui,
+            algorithm: DiffAlgorithm::LinesThenWords,
             context_lines: 3,
             mouse_wheel_scroll_lines: 3,
             phantom_rendering: true,

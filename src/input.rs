@@ -65,10 +65,10 @@ fn join_path(parent: &[u8], child: &[u8]) -> DynResult<PathBuf> {
     }
 }
 
-pub fn run_git_diff(current_exe: &str, git_diff_args: &[String], pager_args: &[&str]) -> DynResult<()> {
+pub fn run_git_diff(current_exe: &str, git_diff_args: &[String], pager_args: &[String]) -> DynResult<()> {
     let args = concat(&["diff"], git_diff_args);
     let git_external_diff = shell_words::join([current_exe, "--git-external-diff"]);
-    let git_pager = shell_words::join(concat(&[current_exe, "--git-pager"], pager_args));
+    let git_pager = shell_words::join(concat(&[current_exe, "--git-pager-hack"], pager_args));
     let exit_status = Command::new("git")
         .args(args)
         .env("GIT_EXTERNAL_DIFF", git_external_diff)
