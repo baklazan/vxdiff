@@ -401,12 +401,15 @@ fn optimal_tradeoffs<'a>(
     (score, result)
 }
 
-fn extend_cores(
+// When computing extensions, we tread main cores and moved cores alike.
+// However, once the cores are extended, we throw away the main cores and
+// replace them by the original main sequence.
+fn extend_moved_cores(
     main_cores: Vec<Core>,
     mut moved_cores: Vec<Core>,
     index_converters: &[[IndexConverter; 2]],
     aligner: &dyn Aligner,
-) -> Vec<(AlignedFragment, bool)> {
+) -> Vec<AlignedFragment> {
     let mut cores = main_cores;
     let mut is_main = vec![true; cores.len()];
     cores.append(&mut moved_cores);
@@ -458,52 +461,6 @@ fn extend_cores(
             if cores[earlier_core_id].file_ids[side] == cores[later_core_id].file_ids[side] {
                 previous_core[later_core_id][side] = Some(earlier_core_id);
                 next_core[earlier_core_id][side] = Some(later_core_id);
-            }
-        }
-
-        // detect and relabel moved cores that can be inserted into the main sequence
-        // TODO: switch from greedy to DP (can be done in O(n log n))
-        // TODO: extract function
-        if side == 0 {
-            let mut next_main_core = vec![None; cores.len()];
-            let mut last_main_seen = None;
-            for i in (0..cores_by_side.len()).rev() {
-                let core_id = cores_by_side[i].2;
-                if is_main[core_id] {
-                    last_main_seen = Some(core_id);
-                    continue;
-                }
-                if let Some(last_main) = last_main_seen {
-                    if cores[core_id].file_ids != cores[last_main].file_ids {
-                        last_main_seen = None;
-                    }
-                }
-                if let Some(last_main) = last_main_seen {
-                    if cores[core_id].end[1] <= cores[last_main].start[1] {
-                        next_main_core[core_id] = Some(last_main);
-                    }
-                }
-            }
-            let mut last_main_seen: Option<usize> = None;
-            for i in 0..cores_by_side.len() {
-                let core_id = cores_by_side[i].2;
-                if let Some(last_main) = last_main_seen {
-                    if cores[last_main].file_ids != cores[core_id].file_ids {
-                        last_main_seen = None;
-                    }
-                }
-
-                if !is_main[core_id] && next_main_core[core_id].is_some() {
-                    if let Some(last_main) = last_main_seen {
-                        if cores[last_main].end[1] <= cores[core_id].start[1] {
-                            is_main[core_id] = true;
-                        }
-                    }
-                }
-
-                if is_main[core_id] {
-                    last_main_seen = Some(core_id);
-                }
             }
         }
     }
@@ -596,24 +553,26 @@ fn extend_cores(
 
         // a 2-cycle means we can potentially join these two cores
         if extension_alignments.len() == 2 {
-            let start_core = &cores[start_core_id];
             let other_core_id = next_core[start_core_id][0].unwrap();
-            let other_core = &cores[other_core_id];
-            let alignment = aligner.align(start_core.file_ids, start_core.aligned_end, other_core.aligned_start);
-            let whole_score = *aligner
-                .prefix_scores(
-                    start_core.file_ids,
-                    start_core.aligned_end,
-                    other_core.aligned_start,
-                    &alignment,
-                )
-                .last()
-                .unwrap();
-            if whole_score > tradeoff_score {
-                is_first_core_in_chain[other_core_id] = false;
-                next_core_in_chain[start_core_id] = Some(other_core_id);
-                bridges_after_cores_in_chain[start_core_id] = Some(alignment);
-                continue;
+            if !is_main[start_core_id] && !is_main[other_core_id] {
+                let start_core = &cores[start_core_id];
+                let other_core = &cores[other_core_id];
+                let alignment = aligner.align(start_core.file_ids, start_core.aligned_end, other_core.aligned_start);
+                let whole_score = *aligner
+                    .prefix_scores(
+                        start_core.file_ids,
+                        start_core.aligned_end,
+                        other_core.aligned_start,
+                        &alignment,
+                    )
+                    .last()
+                    .unwrap();
+                if whole_score > tradeoff_score {
+                    is_first_core_in_chain[other_core_id] = false;
+                    next_core_in_chain[start_core_id] = Some(other_core_id);
+                    bridges_after_cores_in_chain[start_core_id] = Some(alignment);
+                    continue;
+                }
             }
         }
 
@@ -631,12 +590,11 @@ fn extend_cores(
 
     let mut result = vec![];
     for mut core_id in 0..cores.len() {
-        if !is_first_core_in_chain[core_id] {
+        if !is_first_core_in_chain[core_id] || is_main[core_id] {
             continue;
         }
 
         let file_ids = cores[core_id].file_ids;
-        let main = is_main[core_id];
 
         let aligned_start = core_pre_extension_from[core_id];
         let start = [0, 1].map(|side| index_converters[file_ids[side]][side].word_to_line_before(aligned_start[side]));
@@ -675,16 +633,155 @@ fn extend_cores(
             continue;
         }
 
-        result.push((
-            AlignedFragment {
-                starts: start_word_indices,
-                ends: end_word_indices,
-                file_ids,
-                alignment: extended_alignment,
-            },
-            main,
-        ));
+        result.push(AlignedFragment {
+            starts: start_word_indices,
+            ends: end_word_indices,
+            file_ids,
+            alignment: extended_alignment,
+        });
     }
+    result
+}
+
+fn add_main_fragments(
+    main_alignments: &[Vec<DiffOp>],
+    moved_fragments: Vec<AlignedFragment>,
+    index_converters: &[[IndexConverter; 2]],
+) -> Vec<(AlignedFragment, bool)> {
+    let mut forbidden: [Vec<(usize, WordIndex, WordIndex)>; 2] = [vec![], vec![]];
+    for fragment in moved_fragments.iter() {
+        for side in 0..2 {
+            forbidden[side].push((
+                fragment.file_ids[side],
+                WordIndex::new(fragment.starts[side]),
+                WordIndex::new(fragment.ends[side]),
+            ));
+        }
+    }
+    for side in 0..2 {
+        forbidden[side].sort();
+    }
+    let mut next_forbidden_index = [0; 2];
+
+    let mut result = vec![];
+    const ONE_SIDED_OPS: [DiffOp; 2] = [DiffOp::Delete, DiffOp::Insert];
+    for (file_id, alignment) in main_alignments.iter().enumerate() {
+        let mut position = [WordIndex::new(0); 2];
+        let mut processed_until = [WordIndex::new(0); 2];
+        let mut current_fragment_alignment = vec![];
+        let mut current_fragment_start = position;
+        for &op in alignment {
+            for side in 0..2 {
+                if op.movement()[side] == 0 {
+                    continue;
+                }
+
+                if let Some(&(forbidden_file_id, forbidden_from, forbidden_to)) =
+                    forbidden[side].get(next_forbidden_index[side])
+                {
+                    if forbidden_file_id == file_id && forbidden_from <= position[side] {
+                        next_forbidden_index[side] += 1;
+                        if !current_fragment_alignment.is_empty() {
+                            let other_side = 1 - side;
+                            let line_until: LineIndex =
+                                index_converters[file_id][other_side].word_to_line_after(position[other_side]);
+                            let line_until: WordIndex = index_converters[file_id][other_side].line_to_word(line_until);
+                            while processed_until[other_side] < line_until {
+                                current_fragment_alignment.push(ONE_SIDED_OPS[other_side]);
+                                processed_until[other_side] += 1;
+                            }
+                            processed_until[other_side] = line_until;
+                            result.push((
+                                AlignedFragment {
+                                    starts: current_fragment_start.map(WordIndex::raw),
+                                    ends: processed_until.map(WordIndex::raw),
+                                    file_ids: [file_id, file_id],
+                                    alignment: current_fragment_alignment,
+                                },
+                                true,
+                            ));
+                            current_fragment_alignment = vec![];
+                        }
+                        processed_until[side] = forbidden_to;
+                    }
+                }
+            }
+            let next_position = [0, 1].map(|side| position[side] + op.movement()[side]);
+            if position[0] >= processed_until[0] && position[1] >= processed_until[1] {
+                if current_fragment_alignment.is_empty() {
+                    current_fragment_start = processed_until;
+                }
+                for side in 0..2 {
+                    while processed_until[side] < position[side] {
+                        current_fragment_alignment.push(ONE_SIDED_OPS[side]);
+                        processed_until[side] += 1;
+                    }
+                }
+                current_fragment_alignment.push(op);
+                processed_until = next_position;
+            }
+            position = next_position;
+        }
+        if !current_fragment_alignment.is_empty() {
+            result.push((
+                AlignedFragment {
+                    starts: current_fragment_start.map(WordIndex::raw),
+                    ends: processed_until.map(WordIndex::raw),
+                    file_ids: [file_id, file_id],
+                    alignment: current_fragment_alignment,
+                },
+                true,
+            ));
+        }
+    }
+
+    // TODO: detect and relabel moved cores that can be inserted into the main sequence
+    // old greedy implementation follows.
+    // TODO: switch from greedy to DP (can be done in O(n log n))
+    /*if side == 0 {
+        let mut next_main_core = vec![None; cores.len()];
+        let mut last_main_seen = None;
+        for i in (0..cores_by_side.len()).rev() {
+            let core_id = cores_by_side[i].2;
+            if is_main[core_id] {
+                last_main_seen = Some(core_id);
+                continue;
+            }
+            if let Some(last_main) = last_main_seen {
+                if cores[core_id].file_ids != cores[last_main].file_ids {
+                    last_main_seen = None;
+                }
+            }
+            if let Some(last_main) = last_main_seen {
+                if cores[core_id].end[1] <= cores[last_main].start[1] {
+                    next_main_core[core_id] = Some(last_main);
+                }
+            }
+        }
+        let mut last_main_seen: Option<usize> = None;
+        for i in 0..cores_by_side.len() {
+            let core_id = cores_by_side[i].2;
+            if let Some(last_main) = last_main_seen {
+                if cores[last_main].file_ids != cores[core_id].file_ids {
+                    last_main_seen = None;
+                }
+            }
+
+            if !is_main[core_id] && next_main_core[core_id].is_some() {
+                if let Some(last_main) = last_main_seen {
+                    if cores[last_main].end[1] <= cores[core_id].start[1] {
+                        is_main[core_id] = true;
+                    }
+                }
+            }
+
+            if is_main[core_id] {
+                last_main_seen = Some(core_id);
+            }
+        }
+    }*/
+
+    result.append(&mut moved_fragments.into_iter().map(|fragment| (fragment, false)).collect());
     result
 }
 
@@ -727,5 +824,6 @@ pub(super) fn main_then_moved(
     }
     let moved_cores = moved_cores::find_moved_cores(text_words, &index_converters, &holes);
 
-    extend_cores(main_cores, moved_cores, &index_converters, aligner.as_ref())
+    let moved_fragments = extend_moved_cores(main_cores, moved_cores, &index_converters, aligner.as_ref());
+    add_main_fragments(&alignments, moved_fragments, &index_converters)
 }
