@@ -1,3 +1,5 @@
+use self::moved_cores::find_moved_cores;
+
 use super::{
     indices::{IndexConverter, LineIndex, WordIndex},
     main_sequence::{get_aligner, Aligner},
@@ -822,7 +824,7 @@ pub(super) fn main_then_moved(
             holes[side].append(&mut found_holes[side]);
         }
     }
-    let moved_cores = moved_cores::find_moved_cores(text_words, &index_converters, &holes);
+    let moved_cores = find_moved_cores(text_words, &index_converters, &holes, aligner.as_ref());
 
     let moved_fragments = extend_moved_cores(main_cores, moved_cores, &index_converters, aligner.as_ref());
     add_main_fragments(&alignments, moved_fragments, &index_converters)

@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, collections::HashMap, ops::Add};
 
-use crate::algorithm::{indices::range_iter, suffix_array, DiffOp, PartitionedText};
+use crate::algorithm::{indices::range_iter, main_sequence::Aligner, suffix_array, PartitionedText};
 use index_vec::{index_vec, IndexVec};
 use string_interner::{backend::StringBackend, StringInterner};
 
@@ -210,36 +210,6 @@ impl Sapling {
         }
         result
     }
-
-    // TODO remove, replace with proper alignment computation
-    pub fn approximate_alignment(&self, start: [WordIndex; 2], end: [WordIndex; 2]) -> Vec<DiffOp> {
-        let mut interval_id = 0;
-        while self.intervals[interval_id].end[0] <= start[0] {
-            interval_id += 1;
-        }
-        let mut result = vec![];
-        for _ in range_iter(
-            WordIndex::max(self.intervals[interval_id].start[0], start[0])
-                ..WordIndex::min(self.intervals[interval_id].end[0], end[0]),
-        ) {
-            result.push(DiffOp::Match);
-        }
-        while interval_id + 1 < self.intervals.len() && self.intervals[interval_id + 1].start[0] < end[0] {
-            for (side, op) in [(0, DiffOp::Delete), (1, DiffOp::Insert)] {
-                for _ in range_iter(self.intervals[interval_id].end[side]..self.intervals[interval_id + 1].start[side])
-                {
-                    result.push(op);
-                }
-            }
-            interval_id += 1;
-            for _ in range_iter(
-                self.intervals[interval_id].start[0]..WordIndex::min(self.intervals[interval_id].end[0], end[0]),
-            ) {
-                result.push(DiffOp::Match);
-            }
-        }
-        result
-    }
 }
 
 fn build_saplings_in_file_combination(seeds: &[Seed], file_size: [usize; 2]) -> Vec<Sapling> {
@@ -407,9 +377,9 @@ struct LineCoverage {
 }
 
 impl LineCoverage {
-    fn new(len: usize) -> Self {
+    fn new(len: LineIndex) -> Self {
         LineCoverage {
-            coverage: index_vec![0; len],
+            coverage: index_vec![0; len.raw()],
         }
     }
 
@@ -445,16 +415,10 @@ impl LineCoverage {
     }
 }
 
-fn select_cores(
-    saplings: &[Sapling],
-    index_converters: &[[IndexConverter; 2]],
-    file_sizes_words: &[[usize; 2]],
-) -> Vec<Core> {
-    // TODO: quite nasty, refactor
-
-    let mut coverage: Vec<_> = file_sizes_words
+fn select_cores(saplings: &[Sapling], index_converters: &[[IndexConverter; 2]], aligner: &dyn Aligner) -> Vec<Core> {
+    let mut coverage: Vec<_> = index_converters
         .iter()
-        .map(|sizes| sizes.map(LineCoverage::new))
+        .map(|file_converters| [0, 1].map(|side| LineCoverage::new(file_converters[side].lines_count())))
         .collect();
 
     let mut by_score = vec![];
@@ -478,7 +442,7 @@ fn select_cores(
 
     by_score.sort();
 
-    let mut surviving_saplings = vec![];
+    let mut result = vec![];
     for (_, sapling_id) in by_score {
         let sapling = &saplings[sapling_id];
         let start_words = sapling.intervals[0].start;
@@ -501,59 +465,9 @@ fn select_cores(
                 .collect();
         }
         let unique_sapling_intervals = sapling.intersect_intervals(&unique_word_intervals);
-        let mut has_good_interval = false;
+        let mut sapling_produced_core = false;
         for (start, end) in unique_sapling_intervals {
-            let mut good = true;
-            for side in 0..2 {
-                let file_id = sapling.file_ids[side];
-                let start_line = index_converters[file_id][side].word_to_line_before(start[side]);
-                let end_line = index_converters[file_id][side].word_to_line_after(end[side]);
-                if end_line - start_line < MIN_LINES_IN_CORE {
-                    good = false;
-                    break;
-                }
-            }
-            if good {
-                has_good_interval = true;
-                break;
-            }
-        }
-        if has_good_interval {
-            surviving_saplings.push(sapling_id);
-        } else {
-            for side in 0..2 {
-                let file_id = sapling.file_ids[side];
-                let start_line = index_converters[file_id][side].word_to_line_before(start_words[side]);
-                let end_line = index_converters[file_id][side].word_to_line_after(end_words[side]);
-                coverage[file_id][side].remove(start_line, end_line);
-            }
-        }
-    }
-
-    let mut result = vec![];
-    for sapling_id in surviving_saplings {
-        let sapling = &saplings[sapling_id];
-        let start_words = sapling.intervals[0].start;
-        let end_words = sapling.intervals.last().unwrap().end;
-        let mut unique_word_intervals: [Vec<(WordIndex, WordIndex)>; 2] = [vec![], vec![]];
-        for side in 0..2 {
-            let file_id = sapling.file_ids[side];
-            let start_line = index_converters[file_id][side].word_to_line_before(start_words[side]);
-            let end_line = index_converters[file_id][side].word_to_line_after(end_words[side]);
-            let unique_line_intervals = coverage[file_id][side].once_covered_invervals(start_line, end_line);
-            unique_word_intervals[side] = unique_line_intervals
-                .iter()
-                .map(|(from, to)| {
-                    (
-                        index_converters[file_id][side].line_to_word(*from),
-                        index_converters[file_id][side].line_to_word(*to),
-                    )
-                })
-                .collect();
-        }
-        let unique_sapling_intervals = sapling.intersect_intervals(&unique_word_intervals);
-        for (start, end) in unique_sapling_intervals {
-            let alignment = sapling.approximate_alignment(start, end);
+            let alignment = aligner.align(sapling.file_ids, start, end);
             let core = trim_to_core(
                 &alignment,
                 start,
@@ -574,10 +488,18 @@ fn select_cores(
 
             if good {
                 result.push(core);
+                sapling_produced_core = true;
+            }
+        }
+        if !sapling_produced_core {
+            for side in 0..2 {
+                let file_id = sapling.file_ids[side];
+                let start_line = index_converters[file_id][side].word_to_line_before(start_words[side]);
+                let end_line = index_converters[file_id][side].word_to_line_after(end_words[side]);
+                coverage[file_id][side].remove(start_line, end_line);
             }
         }
     }
-
     result
 }
 
@@ -585,6 +507,7 @@ pub(super) fn find_moved_cores(
     text_words: &[[PartitionedText; 2]],
     index_converters: &[[IndexConverter; 2]],
     holes: &[Vec<Hole>; 2],
+    aligner: &dyn Aligner,
 ) -> Vec<Core> {
     let seeds = find_seeds(text_words, index_converters, holes);
     let file_sizes_words: Vec<[usize; 2]> = text_words
@@ -592,5 +515,5 @@ pub(super) fn find_moved_cores(
         .map(|file_words| [0, 1].map(|side| file_words[side].part_count()))
         .collect();
     let saplings = build_saplings(seeds, &file_sizes_words);
-    select_cores(&saplings, index_converters, &file_sizes_words)
+    select_cores(&saplings, index_converters, aligner)
 }
