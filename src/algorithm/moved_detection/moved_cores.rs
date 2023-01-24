@@ -4,7 +4,7 @@ use crate::algorithm::{indices::range_iter, main_sequence::Aligner, suffix_array
 use index_vec::{index_vec, IndexVec};
 use string_interner::{backend::StringBackend, StringInterner};
 
-use super::{trim_to_core, Core, Hole, IndexConverter, LineIndex, WordIndex, MIN_LINES_IN_CORE};
+use super::{trim_to_core, Core, Hole, IndexConverter, LineIndex, WordIndex, MIN_LINES_IN_CORE, MIN_MOVED_CORE_SCORE};
 
 fn next_lower(array: &[usize]) -> Vec<usize> {
     let mut stack: Vec<(usize, usize)> = vec![];
@@ -479,7 +479,16 @@ fn select_cores(saplings: &[Sapling], index_converters: &[[IndexConverter; 2]], 
                 sapling.file_ids,
             );
 
-            let mut good = true;
+            let score = *aligner
+                .prefix_scores(
+                    core.file_ids,
+                    core.aligned_start,
+                    core.aligned_end,
+                    &core.word_alignment,
+                )
+                .last()
+                .unwrap();
+            let mut good = score >= MIN_MOVED_CORE_SCORE;
             for side in 0..2 {
                 if core.end[side] - core.start[side] < MIN_LINES_IN_CORE {
                     good = false;
