@@ -4,6 +4,7 @@ use super::*;
 
 pub type TScore = f64;
 pub mod affine_scoring;
+pub mod line_bounds_scoring;
 pub mod simple;
 
 #[derive(Clone, Default)]

@@ -3,13 +3,14 @@ use self::moved_cores::find_moved_cores;
 use super::{
     indices::{IndexConverter, LineIndex, WordIndex},
     main_sequence::{get_aligner, Aligner},
-    scoring::{affine_scoring::AffineWordScoring, TScore},
+    scoring::{affine_scoring::AffineWordScoring, line_bounds_scoring::LineBoundsScoring, TScore},
     AlignedFragment, DiffOp, MainSequenceAlgorithm, PartitionedText,
 };
 
 mod moved_cores;
 
 const MIN_LINES_IN_CORE: usize = 3;
+const MOVING_PENALTY: TScore = -4.0;
 const MIN_MOVED_CORE_SCORE: TScore = 10.0;
 
 #[derive(Debug)]
@@ -189,10 +190,11 @@ fn prefix_tradeoffs<'a>(
     converters: [&IndexConverter; 2],
     file_ids: [usize; 2],
     aligner: &dyn Aligner,
+    bounds_scoring: &LineBoundsScoring,
 ) -> Vec<ExtensionTradeoffPoint<'a>> {
     let mut word_position = start;
     let mut line_position = [0, 1].map(|side| converters[side].word_to_line_after(word_position[side]));
-    let mut best_seen_score = prefix_scores[0];
+    let mut best_seen_score = prefix_scores[0] + bounds_scoring.score(file_ids, line_position);
     let mut result = vec![ExtensionTradeoffPoint {
         position: line_position,
         alignment: &[],
@@ -206,8 +208,9 @@ fn prefix_tradeoffs<'a>(
         }
         let word_position_of_line_end = [0, 1].map(|side| converters[side].line_to_word(line_position[side]));
 
-        let proposed_score =
-            prefix_scores[i + 1] + aligner.score_gaps_between(file_ids, word_position, word_position_of_line_end);
+        let proposed_score = prefix_scores[i + 1]
+            + aligner.score_gaps_between(file_ids, word_position, word_position_of_line_end)
+            + bounds_scoring.score(file_ids, line_position);
         if proposed_score > best_seen_score {
             best_seen_score = proposed_score;
             if result.last().unwrap().position == line_position {
@@ -231,10 +234,11 @@ fn suffix_tradeoffs<'a>(
     converters: [&IndexConverter; 2],
     file_ids: [usize; 2],
     aligner: &dyn Aligner,
+    bounds_scoring: &LineBoundsScoring,
 ) -> Vec<ExtensionTradeoffPoint<'a>> {
     let mut word_position = end;
     let mut line_position = [0, 1].map(|side| converters[side].word_to_line_before(word_position[side]));
-    let mut best_seen_score = *suffix_scores.last().unwrap();
+    let mut best_seen_score = *suffix_scores.last().unwrap() + bounds_scoring.score(file_ids, line_position);
     let mut result = vec![ExtensionTradeoffPoint {
         position: line_position,
         alignment: &[],
@@ -247,8 +251,9 @@ fn suffix_tradeoffs<'a>(
             line_position[side] = converters[side].word_to_line_before(word_position[side]);
         }
         let word_position_of_line_start = [0, 1].map(|side| converters[side].line_to_word(line_position[side]));
-        let proposed_score =
-            suffix_scores[i] + aligner.score_gaps_between(file_ids, word_position_of_line_start, word_position);
+        let proposed_score = suffix_scores[i]
+            + aligner.score_gaps_between(file_ids, word_position_of_line_start, word_position)
+            + bounds_scoring.score(file_ids, line_position);
         if proposed_score > best_seen_score {
             best_seen_score = proposed_score;
             if result.last().unwrap().position == line_position {
@@ -412,6 +417,7 @@ fn extend_moved_cores(
     mut moved_cores: Vec<Core>,
     index_converters: &[[IndexConverter; 2]],
     aligner: &dyn Aligner,
+    bounds_scoring: &LineBoundsScoring,
 ) -> Vec<AlignedFragment> {
     let mut cores = main_cores;
     let mut is_main = vec![true; cores.len()];
@@ -537,6 +543,7 @@ fn extend_moved_cores(
                     converters,
                     core.file_ids,
                     aligner,
+                    bounds_scoring,
                 )
             } else {
                 let suffix_scores =
@@ -548,6 +555,7 @@ fn extend_moved_cores(
                     converters,
                     core.file_ids,
                     aligner,
+                    bounds_scoring,
                 )
             });
         }
@@ -570,7 +578,7 @@ fn extend_moved_cores(
                     )
                     .last()
                     .unwrap();
-                if whole_score > tradeoff_score {
+                if whole_score > tradeoff_score + MOVING_PENALTY {
                     is_first_core_in_chain[other_core_id] = false;
                     next_core_in_chain[start_core_id] = Some(other_core_id);
                     bridges_after_cores_in_chain[start_core_id] = Some(alignment);
@@ -827,6 +835,14 @@ pub(super) fn main_then_moved(
     }
     let moved_cores = find_moved_cores(text_words, &index_converters, &holes, aligner.as_ref());
 
-    let moved_fragments = extend_moved_cores(main_cores, moved_cores, &index_converters, aligner.as_ref());
+    let bounds_scoring = LineBoundsScoring::new(text_lines);
+
+    let moved_fragments = extend_moved_cores(
+        main_cores,
+        moved_cores,
+        &index_converters,
+        aligner.as_ref(),
+        &bounds_scoring,
+    );
     add_main_fragments(&alignments, moved_fragments, &index_converters)
 }
