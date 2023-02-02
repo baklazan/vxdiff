@@ -54,11 +54,34 @@ fn make_sections<'a>(text_words: &[PartitionedText<'a>; 2], alignment: &[DiffOp]
         let is_last = i + 1 >= alignment.len();
 
         let is_match = op == DiffOp::Match;
-        let used_words = op.movement();
-        let mut is_newline = false;
 
+        if is_match && !section_contains_match {
+            for indel_side in 0..2 {
+                if current_line_start[indel_side] != 0 {
+                    let sides = [0, 1].map(|side| {
+                        if side == indel_side {
+                            highlighted_subsegments(
+                                &text_words[side],
+                                &section_contents[side][0..current_line_start[side]],
+                            )
+                        } else {
+                            SectionSide {
+                                byte_range: 0..0,
+                                highlight_ranges: vec![],
+                            }
+                        }
+                    });
+                    result.push(Section { sides, equal: false });
+                    section_contents[indel_side].drain(0..current_line_start[indel_side]);
+                    current_line_start[indel_side] = 0;
+                }
+            }
+        }
+        section_contains_match |= is_match;
+
+        let mut is_newline = false;
         for side in 0..2 {
-            for _i in 0..used_words[side] {
+            for _i in 0..op.movement()[side] {
                 is_newline = text_words[side].get_part(word_indices[side]) == "\n";
                 section_contents[side].push((!is_match, word_indices[side]));
                 word_indices[side] += 1;
@@ -67,21 +90,6 @@ fn make_sections<'a>(text_words: &[PartitionedText<'a>; 2], alignment: &[DiffOp]
                 }
             }
         }
-
-        if is_match && !section_contains_match && !is_newline {
-            if current_line_start[0] != 0 || current_line_start[1] != 0 {
-                let sides = [0, 1].map(|side| {
-                    highlighted_subsegments(&text_words[side], &section_contents[side][0..current_line_start[side]])
-                });
-                result.push(Section { sides, equal: false });
-                for side in 0..2 {
-                    section_contents[side].drain(0..current_line_start[side]);
-                    current_line_start[side] = 0;
-                }
-            }
-        }
-
-        section_contains_match |= is_match;
 
         if (is_match && is_newline) || is_last {
             let sides = [0, 1].map(|side| highlighted_subsegments(&text_words[side], &section_contents[side]));
