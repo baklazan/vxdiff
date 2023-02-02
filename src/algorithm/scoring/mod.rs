@@ -13,8 +13,9 @@ pub struct DpSubstate {
     pub previous_step: Cell<Option<(DiffOp, usize)>>,
 }
 
-pub trait AlignmentScoringMethod {
+pub trait AlignmentPrioritizer {
     fn substates_count(&self) -> usize;
+    fn final_substate(&self) -> usize;
 
     fn set_starting_state(
         &self,
@@ -39,10 +40,12 @@ pub trait AlignmentScoringMethod {
     );
 
     fn is_match(&self, part_indices: [usize; 2], file_ids: [usize; 2]) -> bool;
+}
+
+pub trait AlignmentScorer: AlignmentPrioritizer {
+    fn as_prioritizer(&self) -> &dyn AlignmentPrioritizer;
 
     fn score_gaps_between(&self, start_indices: [usize; 2], end_indices: [usize; 2]) -> TScore;
-
-    fn final_substate(&self) -> usize;
 
     fn prefix_scores(
         &self,
@@ -85,12 +88,12 @@ impl InputSliceBounds {
     }
 }
 
-pub struct AlignmentSliceScoring<'a> {
+pub struct SliceAlignmentPrioritizer<'a> {
     pub slice: InputSliceBounds,
-    pub scoring: &'a dyn AlignmentScoringMethod,
+    pub scoring: &'a dyn AlignmentPrioritizer,
 }
 
-impl<'a> AlignmentSliceScoring<'a> {
+impl<'a> SliceAlignmentPrioritizer<'a> {
     pub fn substates_count(&self) -> usize {
         self.scoring.substates_count()
     }

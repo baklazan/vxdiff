@@ -7,7 +7,7 @@ use crate::algorithm::{
             k_gram_sampling::KGramSamplingScoring, whitespace_ignoring::WhitespaceIgnoringScoring,
             zero_one::ZeroOneScoring, zero_or_information::ZeroOrInformationScoring, SimpleScoring,
         },
-        AlignmentScoringMethod, AlignmentSliceScoring, InputSliceBounds, TScore,
+        AlignmentPrioritizer, AlignmentScorer, InputSliceBounds, SliceAlignmentPrioritizer, TScore,
     },
     DiffOp, LineScoringStrategy, PartitionedText,
 };
@@ -72,7 +72,7 @@ impl DpArea {
     }
 }
 
-fn dp_in_area(scoring: &AlignmentSliceScoring, area: &DpArea) -> Vec<ApxDiffOp> {
+fn dp_in_area(scoring: &SliceAlignmentPrioritizer, area: &DpArea) -> Vec<ApxDiffOp> {
     let mut dp: Vec<DpStateVec> = area
         .row_ranges_local_inclusive
         .iter()
@@ -132,7 +132,7 @@ fn dp_in_area(scoring: &AlignmentSliceScoring, area: &DpArea) -> Vec<ApxDiffOp> 
 }
 
 fn refine_alignment(
-    fine_scoring: &AlignmentSliceScoring,
+    fine_scoring: &SliceAlignmentPrioritizer,
     fine_start: [usize; 2],
     fine_end: [usize; 2],
     coarse_alignment: &[ApxDiffOp],
@@ -195,7 +195,7 @@ fn refine_alignment(
         let slice = fine_scoring
             .slice
             .subslice(prepared_dp.area.start, prepared_dp.covers_till);
-        let slice_scoring = AlignmentSliceScoring {
+        let slice_scoring = SliceAlignmentPrioritizer {
             slice,
             scoring: fine_scoring.scoring,
         };
@@ -335,15 +335,15 @@ fn upper_bound(array: &[usize], value: usize) -> usize {
 }
 
 pub(in crate::algorithm) struct MultiLevelAligner<'a> {
-    bottom_level_scoring: &'a dyn AlignmentScoringMethod,
-    other_scorings: Vec<Box<dyn AlignmentScoringMethod>>,
+    bottom_level_scoring: &'a dyn AlignmentScorer,
+    other_scorings: Vec<Box<dyn AlignmentPrioritizer>>,
     coarse_to_fine_index: Vec<Vec<[Vec<usize>; 2]>>,
     max_bruteforce_on_level: Vec<usize>,
 }
 
 pub(in crate::algorithm) fn lines_then_words_aligner<'a>(
     text_words: &[[PartitionedText; 2]],
-    word_scoring: &'a dyn AlignmentScoringMethod,
+    word_scoring: &'a dyn AlignmentScorer,
     line_scoring_strategy: LineScoringStrategy,
 ) -> MultiLevelAligner<'a> {
     let mut line_bounds = vec![];
@@ -360,7 +360,7 @@ pub(in crate::algorithm) fn lines_then_words_aligner<'a>(
         text_lines.push(file_text_lines);
     }
 
-    let line_scoring: Box<dyn AlignmentScoringMethod> = match line_scoring_strategy {
+    let line_scoring: Box<dyn AlignmentPrioritizer> = match line_scoring_strategy {
         LineScoringStrategy::ZeroOne => Box::new(SimpleScoring {
             match_scoring: ZeroOneScoring::new(&text_lines),
         }),
@@ -424,10 +424,10 @@ impl<'a> Aligner for MultiLevelAligner<'a> {
                     }
                 }),
             };
-            scorings.push(AlignmentSliceScoring {
+            scorings.push(SliceAlignmentPrioritizer {
                 slice,
                 scoring: if level == 0 {
-                    self.bottom_level_scoring
+                    self.bottom_level_scoring.as_prioritizer()
                 } else {
                     self.other_scorings[level - 1].as_ref()
                 },
@@ -450,7 +450,7 @@ impl<'a> Aligner for MultiLevelAligner<'a> {
             let slice = scorings[top_level]
                 .slice
                 .subslice(start_indices[top_level], end_indices[top_level]);
-            let slice_scoring = AlignmentSliceScoring {
+            let slice_scoring = SliceAlignmentPrioritizer {
                 slice,
                 scoring: scorings[top_level].scoring,
             };

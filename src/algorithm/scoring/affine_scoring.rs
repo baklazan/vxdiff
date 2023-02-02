@@ -3,7 +3,8 @@ use std::cell::Cell;
 use crate::algorithm::{DiffOp, PartitionedText};
 
 use super::{
-    preprocess::information_values, preprocess::internalize_parts, AlignmentScoringMethod, DpSubstate, TScore,
+    preprocess::information_values, preprocess::internalize_parts, AlignmentPrioritizer, AlignmentScorer, DpSubstate,
+    TScore,
 };
 
 pub struct AffineWordScoring {
@@ -136,7 +137,7 @@ impl AffineWordScoring {
     }
 }
 
-impl AlignmentScoringMethod for AffineWordScoring {
+impl AlignmentPrioritizer for AffineWordScoring {
     fn substates_count(&self) -> usize {
         2
     }
@@ -211,7 +212,9 @@ impl AlignmentScoringMethod for AffineWordScoring {
     fn is_match(&self, word_indices: [usize; 2], file_ids: [usize; 2]) -> bool {
         self.symbols[file_ids[0]][0][word_indices[0]] == self.symbols[file_ids[1]][1][word_indices[1]]
     }
+}
 
+impl AlignmentScorer for AffineWordScoring {
     fn score_gaps_between(&self, start_indices: [usize; 2], end_indices: [usize; 2]) -> TScore {
         let gap_length = (end_indices[0] - start_indices[0]) + (end_indices[1] - start_indices[1]);
         if gap_length == 0 {
@@ -257,5 +260,9 @@ impl AlignmentScoringMethod for AffineWordScoring {
         }
         result.reverse();
         result
+    }
+
+    fn as_prioritizer(&self) -> &dyn AlignmentPrioritizer {
+        self
     }
 }

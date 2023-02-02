@@ -1,13 +1,13 @@
 use crate::algorithm::{
     dp_substate_vec::DpStateVec,
     indices::WordIndex,
-    scoring::{AlignmentScoringMethod, AlignmentSliceScoring, InputSliceBounds, TScore},
+    scoring::{AlignmentScorer, InputSliceBounds, SliceAlignmentPrioritizer, TScore},
     DiffOp,
 };
 
 use super::Aligner;
 
-fn compute_dp_matrix(alignment_scoring: &AlignmentSliceScoring, row_range: usize) -> Vec<DpStateVec> {
+fn compute_dp_matrix(alignment_scoring: &SliceAlignmentPrioritizer, row_range: usize) -> Vec<DpStateVec> {
     let sizes = &alignment_scoring.slice.size;
     let mut result = vec![DpStateVec::new(sizes[1] + 1, alignment_scoring.substates_count()); row_range];
 
@@ -39,7 +39,7 @@ fn compute_dp_matrix(alignment_scoring: &AlignmentSliceScoring, row_range: usize
     result
 }
 
-fn naive_dp(alignment_scoring: &AlignmentSliceScoring) -> Vec<DiffOp> {
+fn naive_dp(alignment_scoring: &SliceAlignmentPrioritizer) -> Vec<DiffOp> {
     let sizes = alignment_scoring.slice.size;
     let matrix = compute_dp_matrix(alignment_scoring, sizes[0] + 1);
 
@@ -58,7 +58,7 @@ fn naive_dp(alignment_scoring: &AlignmentSliceScoring) -> Vec<DiffOp> {
     result
 }
 
-pub fn compute_score(alignment_scoring: &AlignmentSliceScoring) -> TScore {
+pub fn compute_score(alignment_scoring: &SliceAlignmentPrioritizer) -> TScore {
     let matrix = compute_dp_matrix(alignment_scoring, 2);
     let sizes = alignment_scoring.slice.size;
     matrix[sizes[0] % 2][sizes[1]][alignment_scoring.final_substate()]
@@ -67,11 +67,11 @@ pub fn compute_score(alignment_scoring: &AlignmentSliceScoring) -> TScore {
 }
 
 pub(in crate::algorithm) struct NaiveAligner<'a> {
-    scoring: &'a dyn AlignmentScoringMethod,
+    scoring: &'a dyn AlignmentScorer,
 }
 
 impl<'a> NaiveAligner<'a> {
-    pub fn new(scoring: &'a dyn AlignmentScoringMethod) -> Self {
+    pub fn new(scoring: &'a dyn AlignmentScorer) -> Self {
         NaiveAligner { scoring }
     }
 }
@@ -83,8 +83,8 @@ impl<'a> Aligner for NaiveAligner<'a> {
             start: [usize::from(start[0]), usize::from(start[1])],
             size: [usize::from(end[0] - start[0]), usize::from(end[1] - start[1])],
         };
-        let slice_scoring = AlignmentSliceScoring {
-            scoring: self.scoring,
+        let slice_scoring = SliceAlignmentPrioritizer {
+            scoring: self.scoring.as_prioritizer(),
             slice,
         };
         naive_dp(&slice_scoring)

@@ -1,6 +1,6 @@
 use super::{
     indices::WordIndex,
-    scoring::{affine_scoring::AffineWordScoring, AlignmentScoringMethod, TScore},
+    scoring::{affine_scoring::AffineWordScoring, AlignmentScorer, TScore},
     AlignedFragment, DiffOp, MainSequenceAlgorithm, PartitionedText,
 };
 
@@ -28,7 +28,7 @@ pub(super) trait Aligner {
 
 pub(super) fn get_aligner<'a>(
     text_words: &[[PartitionedText; 2]],
-    word_scoring: &'a dyn AlignmentScoringMethod,
+    word_scoring: &'a dyn AlignmentScorer,
     algorithm: MainSequenceAlgorithm,
 ) -> Box<dyn Aligner + 'a> {
     match algorithm {

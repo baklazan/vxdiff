@@ -2,7 +2,7 @@ use super::{
     indices::WordIndex,
     main_sequence::{get_aligner, naive_dp},
     preprocess::partition_into_words,
-    scoring::{AlignmentSliceScoring, InputSliceBounds},
+    scoring::{InputSliceBounds, SliceAlignmentPrioritizer},
     MainSequenceAlgorithm, PartitionedText,
 };
 
@@ -60,7 +60,7 @@ pub fn compute_optimal_score(input: &PreprocessedTestcase) -> f64 {
         start: [0, 0],
         size: [0, 1].map(|side| partitioned_texts[side].part_count()),
     };
-    naive_dp::compute_score(&AlignmentSliceScoring {
+    naive_dp::compute_score(&SliceAlignmentPrioritizer {
         slice,
         scoring: &input.scoring,
     })
