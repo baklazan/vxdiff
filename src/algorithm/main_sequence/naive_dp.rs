@@ -112,8 +112,8 @@ impl<'a> Aligner for NaiveAligner<'a> {
             .suffix_scores(file_ids, start.map(WordIndex::raw), end.map(WordIndex::raw), alignment)
     }
 
-    fn score_gaps_between(&self, _file_ids: [usize; 2], start: [WordIndex; 2], end: [WordIndex; 2]) -> TScore {
+    fn score_gaps_between(&self, file_ids: [usize; 2], start: [WordIndex; 2], end: [WordIndex; 2]) -> TScore {
         self.scoring
-            .score_gaps_between(start.map(WordIndex::raw), end.map(WordIndex::raw))
+            .score_gaps_between(file_ids, start.map(WordIndex::raw), end.map(WordIndex::raw))
     }
 }

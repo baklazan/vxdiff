@@ -7,7 +7,7 @@ use std::{
 use clap::Parser;
 use regex::Regex;
 use vxdiff::algorithm::{
-    benchmark::{compute_optimal_score, run_algorithm, PreprocessedTestcase},
+    benchmark::{compute_optimal_score, make_scorer, run_algorithm, PreprocessedTestcase},
     LineScoringStrategy, MainSequenceAlgorithm,
 };
 
@@ -166,11 +166,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let right = read_to_string(testcase.right)?;
 
         let preprocessed_testcase = PreprocessedTestcase::new(&left, &right);
+        let scoring = make_scorer(&preprocessed_testcase);
 
         let optimal_score = if testcase.score.exists() {
             read_to_string(testcase.score)?.parse::<f64>()?
         } else {
-            let score = compute_optimal_score(&preprocessed_testcase);
+            let score = compute_optimal_score(&preprocessed_testcase, &scoring);
             std::fs::write(testcase.score, format!("{}", score))?;
             score
         };
@@ -178,7 +179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Optimal score is {}", optimal_score);
 
         for (i, algorithm) in args.algorithms.iter().enumerate() {
-            let score = run_algorithm(&preprocessed_testcase, algorithm.convert());
+            let score = run_algorithm(&preprocessed_testcase, &scoring, algorithm.convert());
             stats[i].add_input(optimal_score - score, &filenames);
             println!(
                 "Algorithm {:?} scores: {} [{}]",

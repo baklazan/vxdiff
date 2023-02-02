@@ -3,9 +3,11 @@ use crate::algorithm::{
     indices::WordIndex,
     preprocess::partition_into_lines,
     scoring::{
+        affine_scoring::AffineLineScoring,
+        line_bounds_scoring::LineBoundsScoring,
         simple::{
             k_gram_sampling::KGramSamplingScoring, whitespace_ignoring::WhitespaceIgnoringScoring,
-            zero_one::ZeroOneScoring, zero_or_information::ZeroOrInformationScoring, SimpleScoring,
+            zero_one::ZeroOneScoring, zero_or_information::ZeroOrInformationScoring,
         },
         AlignmentPrioritizer, AlignmentScorer, InputSliceBounds, SliceAlignmentPrioritizer, TScore,
     },
@@ -87,7 +89,7 @@ fn dp_in_area(scoring: &SliceAlignmentPrioritizer, area: &DpArea) -> Vec<ApxDiff
                 TScore::NEG_INFINITY
             };
             scoring.set_starting_state([old_index, new_index], default_score, &mut dp[old_index][new_index]);
-            for op in [DiffOp::Delete, DiffOp::Insert, DiffOp::Match] {
+            for op in [DiffOp::Match, DiffOp::Delete, DiffOp::Insert] {
                 let previos_old = old_index.wrapping_sub(op.movement()[0]);
                 let previos_new = new_index.wrapping_sub(op.movement()[1]);
                 if previos_old <= scoring.slice.size[0]
@@ -336,7 +338,7 @@ fn upper_bound(array: &[usize], value: usize) -> usize {
 
 pub(in crate::algorithm) struct MultiLevelAligner<'a> {
     bottom_level_scoring: &'a dyn AlignmentScorer,
-    other_scorings: Vec<Box<dyn AlignmentPrioritizer>>,
+    other_scorings: Vec<Box<dyn AlignmentPrioritizer + 'a>>,
     coarse_to_fine_index: Vec<Vec<[Vec<usize>; 2]>>,
     max_bruteforce_on_level: Vec<usize>,
 }
@@ -344,6 +346,7 @@ pub(in crate::algorithm) struct MultiLevelAligner<'a> {
 pub(in crate::algorithm) fn lines_then_words_aligner<'a>(
     text_words: &[[PartitionedText; 2]],
     word_scoring: &'a dyn AlignmentScorer,
+    line_bounds_scoring: &'a LineBoundsScoring,
     line_scoring_strategy: LineScoringStrategy,
 ) -> MultiLevelAligner<'a> {
     let mut line_bounds = vec![];
@@ -361,18 +364,22 @@ pub(in crate::algorithm) fn lines_then_words_aligner<'a>(
     }
 
     let line_scoring: Box<dyn AlignmentPrioritizer> = match line_scoring_strategy {
-        LineScoringStrategy::ZeroOne => Box::new(SimpleScoring {
-            match_scoring: ZeroOneScoring::new(&text_lines),
-        }),
-        LineScoringStrategy::ZeroInformation => Box::new(SimpleScoring {
-            match_scoring: ZeroOrInformationScoring::new(&text_lines),
-        }),
-        LineScoringStrategy::WhitespaceIgnoring => Box::new(SimpleScoring {
-            match_scoring: WhitespaceIgnoringScoring::new(&text_lines),
-        }),
-        LineScoringStrategy::KGram => Box::new(SimpleScoring {
-            match_scoring: KGramSamplingScoring::new(&text_lines),
-        }),
+        LineScoringStrategy::ZeroOne => Box::new(AffineLineScoring::new(
+            ZeroOneScoring::new(&text_lines),
+            line_bounds_scoring,
+        )),
+        LineScoringStrategy::ZeroInformation => Box::new(AffineLineScoring::new(
+            ZeroOrInformationScoring::new(&text_lines),
+            line_bounds_scoring,
+        )),
+        LineScoringStrategy::WhitespaceIgnoring => Box::new(AffineLineScoring::new(
+            WhitespaceIgnoringScoring::new(&text_lines),
+            line_bounds_scoring,
+        )),
+        LineScoringStrategy::KGram => Box::new(AffineLineScoring::new(
+            KGramSamplingScoring::new(&text_lines),
+            line_bounds_scoring,
+        )),
     };
 
     let mut line_index_to_word_index = vec![];
@@ -493,8 +500,8 @@ impl<'a> Aligner for MultiLevelAligner<'a> {
             .suffix_scores(file_ids, start.map(WordIndex::raw), end.map(WordIndex::raw), alignment)
     }
 
-    fn score_gaps_between(&self, _file_ids: [usize; 2], start: [WordIndex; 2], end: [WordIndex; 2]) -> TScore {
+    fn score_gaps_between(&self, file_ids: [usize; 2], start: [WordIndex; 2], end: [WordIndex; 2]) -> TScore {
         self.bottom_level_scoring
-            .score_gaps_between(start.map(WordIndex::raw), end.map(WordIndex::raw))
+            .score_gaps_between(file_ids, start.map(WordIndex::raw), end.map(WordIndex::raw))
     }
 }

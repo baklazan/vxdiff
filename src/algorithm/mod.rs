@@ -9,9 +9,11 @@ mod scoring;
 mod suffix_array;
 
 use self::{
+    indices::IndexConverter,
     main_sequence::main_sequence_fragments,
     moved_detection::main_then_moved,
     preprocess::{partition_into_lines, partition_into_words},
+    scoring::{line_bounds_scoring::LineBoundsScoring, multiline_gaps_scoring::MultilineGapsScoring},
 };
 use std::ops::Range;
 
@@ -196,12 +198,31 @@ fn compute_fragments(
     text_lines: &[[PartitionedText; 2]],
     algorithm: DiffAlgorithm,
 ) -> Vec<(AlignedFragment, bool)> {
+    let bounds_scoring = LineBoundsScoring::new(text_lines);
+
+    let mut index_converters: Vec<[IndexConverter; 2]> = vec![];
+
+    for file_id in 0..text_words.len() {
+        let file_index_converters = [0, 1].map(|side| {
+            IndexConverter::new(
+                text_words[file_id][side].part_bounds,
+                text_lines[file_id][side].part_bounds,
+            )
+        });
+        index_converters.push(file_index_converters);
+    }
+
+    let scoring = MultilineGapsScoring::new(text_words, &index_converters, &bounds_scoring);
     match algorithm {
-        DiffAlgorithm::MainThenMoved(main_sequence_algorithm) => {
-            main_then_moved(text_words, text_lines, main_sequence_algorithm)
-        }
+        DiffAlgorithm::MainThenMoved(main_sequence_algorithm) => main_then_moved(
+            text_words,
+            main_sequence_algorithm,
+            &index_converters,
+            &bounds_scoring,
+            &scoring,
+        ),
         DiffAlgorithm::MainSequence(main_sequence_algorithm) => {
-            main_sequence_fragments(text_words, main_sequence_algorithm)
+            main_sequence_fragments(text_words, main_sequence_algorithm, &bounds_scoring, &scoring)
         }
     }
 }

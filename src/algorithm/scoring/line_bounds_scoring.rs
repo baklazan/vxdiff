@@ -27,13 +27,17 @@ impl LineBoundsScoring {
                         } else {
                             side_lines.part_bounds[line + 1] - side_lines.part_bounds[line]
                         };
-                        side_scores.push(-0.01 * (usize::min(previous_length, next_length) as TScore));
+                        side_scores.push(-0.0001 * (usize::min(previous_length, next_length) as TScore));
                     }
                     side_scores
                 })
             })
             .collect();
         LineBoundsScoring { bound_scores }
+    }
+
+    pub(in crate::algorithm) fn score_side(&self, side: usize, file_id: usize, line_bound: LineIndex) -> TScore {
+        self.bound_scores[file_id][side][line_bound]
     }
 
     pub(in crate::algorithm) fn score(&self, file_ids: [usize; 2], line_bound: [LineIndex; 2]) -> TScore {

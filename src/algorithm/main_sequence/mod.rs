@@ -1,6 +1,6 @@
 use super::{
     indices::WordIndex,
-    scoring::{affine_scoring::AffineWordScoring, AlignmentScorer, TScore},
+    scoring::{line_bounds_scoring::LineBoundsScoring, AlignmentScorer, TScore},
     AlignedFragment, DiffOp, MainSequenceAlgorithm, PartitionedText,
 };
 
@@ -29,23 +29,29 @@ pub(super) trait Aligner {
 pub(super) fn get_aligner<'a>(
     text_words: &[[PartitionedText; 2]],
     word_scoring: &'a dyn AlignmentScorer,
+    line_bounds_scoring: &'a LineBoundsScoring,
     algorithm: MainSequenceAlgorithm,
 ) -> Box<dyn Aligner + 'a> {
     match algorithm {
         MainSequenceAlgorithm::Naive => Box::new(naive_dp::NaiveAligner::new(word_scoring)),
-        MainSequenceAlgorithm::LinesThenWords(line_scoring_algorithm) => Box::new(
-            multi_level::lines_then_words_aligner(text_words, word_scoring, line_scoring_algorithm),
-        ),
+        MainSequenceAlgorithm::LinesThenWords(line_scoring_algorithm) => {
+            Box::new(multi_level::lines_then_words_aligner(
+                text_words,
+                word_scoring,
+                line_bounds_scoring,
+                line_scoring_algorithm,
+            ))
+        }
     }
 }
 
 pub(super) fn main_sequence_fragments(
     text_words: &[[PartitionedText; 2]],
     algorithm: MainSequenceAlgorithm,
+    bounds_scoring: &LineBoundsScoring,
+    scoring: &dyn AlignmentScorer,
 ) -> Vec<(AlignedFragment, bool)> {
-    let scoring = AffineWordScoring::new(text_words);
-
-    let aligner = get_aligner(text_words, &scoring, algorithm);
+    let aligner = get_aligner(text_words, scoring, bounds_scoring, algorithm);
 
     let mut alignments = vec![];
     for file_id in 0..text_words.len() {

@@ -3,7 +3,7 @@ use self::moved_cores::find_moved_cores;
 use super::{
     indices::{IndexConverter, LineIndex, WordIndex},
     main_sequence::{get_aligner, Aligner},
-    scoring::{affine_scoring::AffineWordScoring, line_bounds_scoring::LineBoundsScoring, TScore},
+    scoring::{line_bounds_scoring::LineBoundsScoring, AlignmentScorer, TScore},
     AlignedFragment, DiffOp, MainSequenceAlgorithm, PartitionedText,
 };
 
@@ -798,11 +798,12 @@ fn add_main_fragments(
 
 pub(super) fn main_then_moved(
     text_words: &[[PartitionedText; 2]],
-    text_lines: &[[PartitionedText; 2]],
     algorithm: MainSequenceAlgorithm,
+    index_converters: &[[IndexConverter; 2]],
+    bounds_scoring: &LineBoundsScoring,
+    scoring: &dyn AlignmentScorer,
 ) -> Vec<(AlignedFragment, bool)> {
-    let scoring = AffineWordScoring::new(text_words);
-    let aligner = get_aligner(text_words, &scoring, algorithm);
+    let aligner = get_aligner(text_words, scoring, bounds_scoring, algorithm);
 
     let mut alignments: Vec<Vec<DiffOp>> = vec![];
     for (file_id, file_text_words) in text_words.iter().enumerate() {
@@ -816,18 +817,8 @@ pub(super) fn main_then_moved(
     let mut main_cores = vec![];
     let mut holes = [vec![], vec![]];
 
-    let mut index_converters: Vec<[IndexConverter; 2]> = vec![];
-
     for (file_id, alignment) in alignments.iter().enumerate() {
-        let file_index_converters = [0, 1].map(|side| {
-            IndexConverter::new(
-                text_words[file_id][side].part_bounds,
-                text_lines[file_id][side].part_bounds,
-            )
-        });
-
-        let (mut found_cores, mut found_holes) = filter_long_matches(alignment, &file_index_converters, file_id);
-        index_converters.push(file_index_converters);
+        let (mut found_cores, mut found_holes) = filter_long_matches(alignment, &index_converters[file_id], file_id);
         main_cores.append(&mut found_cores);
         for side in 0..2 {
             holes[side].append(&mut found_holes[side]);
@@ -835,14 +826,12 @@ pub(super) fn main_then_moved(
     }
     let moved_cores = find_moved_cores(text_words, &index_converters, &holes, aligner.as_ref());
 
-    let bounds_scoring = LineBoundsScoring::new(text_lines);
-
     let moved_fragments = extend_moved_cores(
         main_cores,
         moved_cores,
         &index_converters,
         aligner.as_ref(),
-        &bounds_scoring,
+        bounds_scoring,
     );
     add_main_fragments(&alignments, moved_fragments, &index_converters)
 }

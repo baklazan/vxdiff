@@ -22,6 +22,7 @@ impl KGramSamplingScoring {
     const K: usize = 3;
     const BITVECTOR_LENGTH: usize = 128;
     const SAMPLES: usize = 25;
+    const MAX_NONEXACT_SCORE_RATIO: TScore = 0.9;
 
     const HASH_MOD_P: u64 = 1000000009;
 
@@ -104,11 +105,15 @@ impl KGramSamplingScoring {
 
 impl MatchScoring for KGramSamplingScoring {
     fn score(&self, part_indices: [usize; 2], file_ids: [usize; 2]) -> TScore {
+        let scores = [0, 1].map(|side| self.part_scores[file_ids[side]][side][part_indices[side]]);
+        if self.is_match(part_indices, file_ids) {
+            return scores[0];
+        }
+
         let one_counts = [0, 1].map(|side| self.ones_counts[file_ids[side]][side][part_indices[side]]);
         if one_counts[0] == 0 || one_counts[1] == 0 {
             return 0.0;
         }
-
         let bitvectors = [0, 1].map(|side| &self.bitvectors[file_ids[side]][side][part_indices[side]]);
         let mut hits: usize = 0;
         for i in 0..Self::BITVECTOR_LENGTH / 128 {
@@ -118,8 +123,11 @@ impl MatchScoring for KGramSamplingScoring {
         let corrected_hits = (hits * Self::BITVECTOR_LENGTH).saturating_sub(one_counts[0] * one_counts[1]) as f64
             / (Self::BITVECTOR_LENGTH - usize::max(one_counts[0], one_counts[1])) as f64;
 
-        let scores = [0, 1].map(|side| &self.part_scores[file_ids[side]][side][part_indices[side]]);
-        corrected_hits / (one_counts[0] + one_counts[1]) as f64 * (scores[0] + scores[1])
+        let hit_scores = [0, 1].map(|side| corrected_hits / one_counts[side] as TScore * scores[side]);
+        let lower_exact_score = TScore::min(scores[0], scores[1]);
+        let proposed_score = TScore::min(hit_scores[0], hit_scores[1]) * 2.0 - lower_exact_score;
+
+        TScore::min(proposed_score, Self::MAX_NONEXACT_SCORE_RATIO * lower_exact_score)
     }
 
     fn is_match(&self, part_indices: [usize; 2], file_ids: [usize; 2]) -> bool {

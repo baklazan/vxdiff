@@ -5,6 +5,7 @@ use super::*;
 pub type TScore = f64;
 pub mod affine_scoring;
 pub mod line_bounds_scoring;
+pub mod multiline_gaps_scoring;
 pub mod simple;
 
 #[derive(Clone, Default)]
@@ -41,11 +42,36 @@ pub trait AlignmentPrioritizer {
 
     fn is_match(&self, part_indices: [usize; 2], file_ids: [usize; 2]) -> bool;
 }
-
 pub trait AlignmentScorer: AlignmentPrioritizer {
     fn as_prioritizer(&self) -> &dyn AlignmentPrioritizer;
 
-    fn score_gaps_between(&self, start_indices: [usize; 2], end_indices: [usize; 2]) -> TScore;
+    fn score_gaps_between(&self, file_ids: [usize; 2], start_indices: [usize; 2], end_indices: [usize; 2]) -> TScore;
+
+    fn score_alignment_steps(
+        &self,
+        alignment: &[DiffOp],
+        start: [usize; 2],
+        end: [usize; 2],
+        file_ids: [usize; 2],
+    ) -> Option<Vec<TScore>>;
+
+    fn score_alignment(
+        &self,
+        alignment: &[DiffOp],
+        start: [usize; 2],
+        end: [usize; 2],
+        file_ids: [usize; 2],
+    ) -> Option<TScore> {
+        if let Some(scores) = self.score_alignment_steps(alignment, start, end, file_ids) {
+            let mut sum = 0.0;
+            for step_score in scores {
+                sum += step_score;
+            }
+            Some(sum)
+        } else {
+            None
+        }
+    }
 
     fn prefix_scores(
         &self,
@@ -53,14 +79,38 @@ pub trait AlignmentScorer: AlignmentPrioritizer {
         start: [usize; 2],
         end: [usize; 2],
         alignment: &[DiffOp],
-    ) -> Vec<TScore>;
+    ) -> Vec<TScore> {
+        {
+            let step_scores = self.score_alignment_steps(alignment, start, end, file_ids).unwrap();
+            let mut score = 0.0;
+            let mut result = vec![score];
+            for i in 0..alignment.len() {
+                score += step_scores[i * 2];
+                score += step_scores[i * 2 + 1];
+                result.push(score);
+            }
+            result
+        }
+    }
+
     fn suffix_scores(
         &self,
         file_ids: [usize; 2],
         start: [usize; 2],
         end: [usize; 2],
         alignment: &[DiffOp],
-    ) -> Vec<TScore>;
+    ) -> Vec<TScore> {
+        let step_scores = self.score_alignment_steps(alignment, start, end, file_ids).unwrap();
+        let mut score = 0.0;
+        let mut result = vec![score];
+        for i in (0..alignment.len()).rev() {
+            score += step_scores[i * 2 + 1];
+            score += step_scores[i * 2 + 2];
+            result.push(score);
+        }
+        result.reverse();
+        result
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
