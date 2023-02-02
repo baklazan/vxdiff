@@ -1,16 +1,23 @@
+mod builder;
 mod clipboard;
+mod doc;
 mod gui_layout;
 mod line_layout;
 mod range_map;
 mod text_input;
 
-use super::algorithm::{Diff, DiffOp, FileDiff, Section};
+use super::algorithm::{Diff, FileDiff, Section};
 use super::config::{Config, DiffStyles, SearchCaseSensitivity, Style};
+use builder::{build_document, Document, Node};
 use clipboard::copy_to_clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use doc::{
+    BorderSide::{self, First, Last},
+    Direction::{self, Next, Prev},
+    Nid,
+};
 use gui_layout::gui_layout;
 use line_layout::{layout_line, LineCell, LineLayout};
-use range_map::RangeMap;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -162,22 +169,6 @@ fn make_extended_diff<'a>(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Direction {
-    Prev,
-    Next,
-}
-
-use Direction::{Next, Prev};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BorderSide {
-    First,
-    Last,
-}
-
-use BorderSide::{First, Last};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HalfLineStyle {
     Equal,
     Change,
@@ -186,13 +177,11 @@ enum HalfLineStyle {
     Padding,
 }
 
-#[derive(Clone)]
 enum TextSource {
     Section(usize),
     Fabricated(String),
 }
 
-#[derive(Clone)]
 struct WrappedHalfLine {
     style: HalfLineStyle,
     offset_override_for_selection: Option<usize>,
@@ -200,15 +189,11 @@ struct WrappedHalfLine {
     offset: usize,
 }
 
-#[derive(Clone)]
 enum UILine {
     Sides([WrappedHalfLine; 2]),
     FileHeaderLine(usize),
-    ExpanderLine(usize),
+    ExpanderLine,
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct Nid(usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LeafPosition {
@@ -216,13 +201,6 @@ struct LeafPosition {
     line_index: usize,
 }
 
-#[derive(Clone)]
-struct BranchNode {
-    children: Vec<Nid>,
-    visible: Range<usize>,
-}
-
-#[derive(Clone)]
 struct PaddedGroupRawElement {
     style: HalfLineStyle,
     // TODO: Rename. It's also used for search and jumps (Some vs None).
@@ -230,486 +208,10 @@ struct PaddedGroupRawElement {
     source: TextSource,
 }
 
-#[derive(Clone)]
 struct PaddedGroupNode {
     raw_elements: [Vec<PaddedGroupRawElement>; 2],
-    end_offsets_for_selection: [usize; 2],
+    owned_byte_offsets: [Range<usize>; 2],
     cached_wrap: RefCell<Option<(usize, Vec<UILine>)>>,
-}
-
-#[derive(Clone)]
-enum Node {
-    Branch(BranchNode),
-    PaddedGroup(PaddedGroupNode),
-    FileHeaderLine(usize),
-    ExpanderLine(usize),
-}
-
-impl Node {
-    fn new_branch() -> Node {
-        Node::Branch(BranchNode {
-            children: Default::default(),
-            visible: 0..0,
-        })
-    }
-
-    fn as_branch(&self) -> &BranchNode {
-        match self {
-            Node::Branch(node) => node,
-            _ => panic!("expected Branch node"),
-        }
-    }
-
-    fn as_branch_mut(&mut self) -> &mut BranchNode {
-        match self {
-            Node::Branch(node) => node,
-            _ => panic!("expected Branch node"),
-        }
-    }
-}
-
-struct NodeMeta {
-    value: Node,
-    parent: Option<Nid>,
-    index_in_parent: usize,
-}
-
-struct Tree {
-    nodes: Vec<NodeMeta>,
-    root: Nid,
-}
-
-impl Tree {
-    fn new(root_node: Node) -> Tree {
-        Tree {
-            nodes: vec![NodeMeta {
-                value: root_node,
-                parent: None,
-                index_in_parent: usize::MAX,
-            }],
-            root: Nid(0),
-        }
-    }
-
-    fn node(&self, nid: Nid) -> &Node {
-        &self.nodes[nid.0].value
-    }
-
-    fn node_mut(&mut self, nid: Nid) -> &mut Node {
-        &mut self.nodes[nid.0].value
-    }
-
-    fn node_meta(&self, nid: Nid) -> &NodeMeta {
-        &self.nodes[nid.0]
-    }
-
-    fn parent(&self, nid: Nid) -> Option<Nid> {
-        self.node_meta(nid).parent
-    }
-
-    fn sibling(&self, nid: Nid, dir: Direction) -> Option<Nid> {
-        let my_meta = self.node_meta(nid);
-        let parent = self.node(my_meta.parent?).as_branch();
-        let next_index = match dir {
-            Next => my_meta.index_in_parent + 1,
-            Prev => my_meta.index_in_parent.wrapping_sub(1),
-        };
-        if parent.visible.contains(&next_index) {
-            Some(parent.children[next_index])
-        } else {
-            None
-        }
-    }
-
-    /// Returns the first/last visible child of `nid`, if it exists.
-    fn bordering_child(&self, nid: Nid, side: BorderSide) -> Option<Nid> {
-        if let Node::Branch(node) = self.node(nid) {
-            if !node.visible.is_empty() {
-                return Some(
-                    node.children[match side {
-                        First => node.visible.start,
-                        Last => node.visible.end - 1,
-                    }],
-                );
-            }
-        }
-        None
-    }
-
-    fn index_path(&self, nid: Nid) -> Vec<usize> {
-        let mut result = vec![];
-        let mut nid = nid;
-        while let Some(parent) = self.parent(nid) {
-            result.push(self.node_meta(nid).index_in_parent);
-            nid = parent;
-        }
-        result.reverse();
-        result
-    }
-
-    fn compare_nodes(&self, a: Nid, b: Nid) -> Ordering {
-        if a == b {
-            Ordering::Equal
-        } else {
-            self.index_path(a).cmp(&self.index_path(b))
-        }
-    }
-
-    fn compare_leaves(&self, a: LeafPosition, b: LeafPosition) -> Ordering {
-        if a.parent == b.parent {
-            a.line_index.cmp(&b.line_index)
-        } else {
-            self.compare_nodes(a.parent, b.parent)
-        }
-    }
-
-    fn add_child(&mut self, parent: Nid, value: Node) -> Nid {
-        let nid = Nid(self.nodes.len());
-        let mut parent_branch_node = self.node_mut(parent).as_branch_mut();
-        parent_branch_node.visible.end += 1;
-        let index_in_parent = parent_branch_node.children.len();
-        parent_branch_node.children.push(nid);
-        self.nodes.push(NodeMeta {
-            value,
-            parent: Some(parent),
-            index_in_parent,
-        });
-        nid
-    }
-
-    fn add_children(&mut self, parent: Nid, values: Vec<Node>) {
-        for value in values {
-            self.add_child(parent, value);
-        }
-    }
-
-    // Future note: We don't need removing nodes yet, but we could implement it as:
-    // - replace the node in self.nodes with some kind of "dummy node"
-    // - add the nid to a list of "unused nids", to be recycled in add_child
-    // - fix `children` in the parent
-    // - fix `index_in_parent` in all next siblings
-}
-
-fn add_padded_group_to_range_maps(
-    diff: &ExtendedDiff,
-    node: &Node,
-    visible: bool,
-    nid: Nid,
-    visible_byte_sets: &mut [[RangeMap<()>; 2]],
-    byte_to_nid_maps: &mut [[RangeMap<Nid>; 2]],
-) {
-    if let Node::PaddedGroup(node) = node {
-        for side in 0..2 {
-            for raw_element in &node.raw_elements[side] {
-                if raw_element.offset_override_for_selection.is_none() {
-                    if let TextSource::Section(section_id) = raw_element.source {
-                        let section_side = diff.section_side(section_id, side);
-                        let visibility = if visible { Some(()) } else { None };
-                        visible_byte_sets[section_side.file_id][side].set(section_side.byte_range.clone(), visibility);
-                        byte_to_nid_maps[section_side.file_id][side].set(section_side.byte_range.clone(), Some(nid));
-                    }
-                }
-            }
-        }
-    } else {
-        panic!("add_padded_group_to_range_maps needs a Node::PaddedGroup");
-    }
-}
-
-fn build_initial_tree(config: &Config, diff: &ExtendedDiff) -> (Tree, Vec<[RangeMap<()>; 2]>, Vec<[RangeMap<Nid>; 2]>) {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum SectionType {
-        MatchEqual,
-        MatchUnequal,
-        InsertDelete,
-        Phantom,
-    }
-
-    let is_move = |(op, section_id): (DiffOp, usize)| -> bool {
-        op != DiffOp::Match
-            && diff.section_sides[section_id][0].is_some()
-            && diff.section_sides[section_id][1].is_some()
-    };
-
-    let is_continuing_move = |a: (DiffOp, usize), b: (DiffOp, usize)| -> bool {
-        let other_side = if a.0 == DiffOp::Insert { 0 } else { 1 };
-        is_move(a)
-            && is_move(b)
-            && a.0 == b.0
-            && diff.section_side(a.1, other_side).byte_range.end == diff.section_side(b.1, other_side).byte_range.start
-    };
-
-    let get_type = |(op, section_id): (DiffOp, usize)| -> SectionType {
-        if op == DiffOp::Match {
-            if diff.sections[section_id].equal {
-                SectionType::MatchEqual
-            } else {
-                SectionType::MatchUnequal
-            }
-        } else {
-            if config.phantom_rendering && is_move((op, section_id)) {
-                SectionType::Phantom
-            } else {
-                SectionType::InsertDelete
-            }
-        }
-    };
-
-    struct PaddedGroupBuilder<'a> {
-        diff: &'a ExtendedDiff<'a>,
-        offsets: &'a mut [usize; 2],
-        raw_elements: [Vec<PaddedGroupRawElement>; 2],
-    }
-
-    impl<'a> PaddedGroupBuilder<'a> {
-        fn new<'b>(diff: &'b ExtendedDiff, offsets: &'b mut [usize; 2]) -> PaddedGroupBuilder<'b> {
-            PaddedGroupBuilder {
-                diff,
-                offsets,
-                raw_elements: [vec![], vec![]],
-            }
-        }
-
-        fn add_fabricated(mut self, style: HalfLineStyle, side: usize, content: String) -> Self {
-            self.raw_elements[side].push(PaddedGroupRawElement {
-                style,
-                offset_override_for_selection: Some(self.offsets[side]),
-                source: TextSource::Fabricated(content),
-            });
-            self
-        }
-
-        fn add_section(
-            mut self,
-            styles: [HalfLineStyle; 2],
-            (op, section_id): (DiffOp, usize),
-            both_sides: bool,
-        ) -> Self {
-            for side in 0..2 {
-                if both_sides || op.movement()[side] != 0 {
-                    let style = styles[side];
-                    let section_side = self.diff.section_side(section_id, side);
-                    let offset_override_for_selection = if op.movement()[side] != 0 {
-                        self.offsets[side] = section_side.byte_range.end;
-                        None
-                    } else {
-                        Some(self.offsets[side])
-                    };
-                    self.raw_elements[side].push(PaddedGroupRawElement {
-                        style,
-                        offset_override_for_selection,
-                        source: TextSource::Section(section_id),
-                    });
-                    let file_side = &self.diff.file_sides[section_side.file_id][side];
-                    if !file_side.content[section_side.byte_range.clone()].ends_with('\n') {
-                        self = self.add_fabricated(style, side, "No newline at end of file".to_string());
-                    }
-                }
-            }
-            self
-        }
-
-        fn build(self) -> Node {
-            Node::PaddedGroup(PaddedGroupNode {
-                raw_elements: self.raw_elements,
-                end_offsets_for_selection: *self.offsets,
-                cached_wrap: RefCell::new(None),
-            })
-        }
-    }
-
-    let get_description_of_move = |(op, section_id): (DiffOp, usize), render_side: usize| -> String {
-        let other_side = if op == DiffOp::Delete { 1 } else { 0 };
-        let section_other_side = diff.section_side(section_id, other_side);
-        let start = section_other_side.byte_range.start;
-        let file_other_side = &diff.file_sides[section_other_side.file_id][other_side];
-        let filename = &file_other_side.filename;
-        let line_number = file_other_side.byte_offset_to_line_number(start);
-        let direction = match (other_side, render_side) {
-            (0, 1) => "Moved from",
-            (1, 0) => "Moved to",
-            _ => "Preview of",
-        };
-        format!("{direction} {filename}:{line_number}")
-    };
-
-    struct FileBuilder<'a> {
-        diff: &'a ExtendedDiff<'a>,
-        tree: &'a mut Tree,
-        visible_byte_sets: &'a mut [[RangeMap<()>; 2]],
-        byte_to_nid_maps: &'a mut [[RangeMap<Nid>; 2]],
-        offsets: [usize; 2],
-        file_content_nid: Nid,
-    }
-
-    fn add_node_to_range_maps(b: &mut FileBuilder, nid: Nid) {
-        match b.tree.node(nid) {
-            Node::Branch(node) => {
-                // Making a copy to avoid borrow issues with b.tree.
-                let children = node.children[node.visible.clone()].to_vec();
-                for child in children {
-                    add_node_to_range_maps(b, child);
-                }
-            }
-            node @ Node::PaddedGroup(_) => {
-                add_padded_group_to_range_maps(b.diff, node, true, nid, b.visible_byte_sets, b.byte_to_nid_maps);
-            }
-            Node::FileHeaderLine(_) | Node::ExpanderLine(_) => unreachable!(),
-        }
-    }
-
-    let build_match_equal = |b: &mut FileBuilder, ops: &[(DiffOp, usize)], is_first: bool, is_last: bool| {
-        let length = ops.len();
-        let mut padded_groups = vec![];
-        for &op in ops {
-            padded_groups.push(
-                PaddedGroupBuilder::new(diff, &mut b.offsets)
-                    .add_section([HalfLineStyle::Equal; 2], op, true)
-                    .build(),
-            );
-        }
-
-        let context_before = if is_first { 0 } else { config.context_lines };
-        let context_after = if is_last { 0 } else { config.context_lines };
-        if length > context_before + context_after + 1 {
-            let upper_nid = b.tree.add_child(b.file_content_nid, Node::new_branch());
-            b.tree.add_children(upper_nid, padded_groups.clone());
-            b.tree.node_mut(upper_nid).as_branch_mut().visible = 0..context_before;
-            add_node_to_range_maps(b, upper_nid);
-
-            let hidden_count = length - context_before - context_after;
-            let expander_nid = b.tree.add_child(b.file_content_nid, Node::ExpanderLine(hidden_count));
-            for padded_group in &padded_groups[context_before..(length - context_after)] {
-                add_padded_group_to_range_maps(
-                    b.diff,
-                    padded_group,
-                    false,
-                    expander_nid,
-                    b.visible_byte_sets,
-                    b.byte_to_nid_maps,
-                );
-            }
-
-            let lower_nid = b.tree.add_child(b.file_content_nid, Node::new_branch());
-            b.tree.add_children(lower_nid, padded_groups);
-            b.tree.node_mut(lower_nid).as_branch_mut().visible = (length - context_after)..length;
-            add_node_to_range_maps(b, lower_nid);
-        } else {
-            for padded_group in padded_groups {
-                let nid = b.tree.add_child(b.file_content_nid, padded_group);
-                add_node_to_range_maps(b, nid);
-            }
-        }
-    };
-
-    let build_match_unequal = |b: &mut FileBuilder, op: (DiffOp, usize)| {
-        let nid = b.tree.add_child(
-            b.file_content_nid,
-            PaddedGroupBuilder::new(diff, &mut b.offsets)
-                .add_section([HalfLineStyle::Change; 2], op, true)
-                .build(),
-        );
-        add_node_to_range_maps(b, nid);
-    };
-
-    let build_insert_delete = |b: &mut FileBuilder, ops: &[(DiffOp, usize)]| {
-        let mut pgb = PaddedGroupBuilder::new(diff, &mut b.offsets);
-        for i in 0..ops.len() {
-            let style = if is_move(ops[i]) {
-                HalfLineStyle::Move
-            } else {
-                HalfLineStyle::Change
-            };
-            if is_move(ops[i]) && (i == 0 || !is_continuing_move(ops[i - 1], ops[i])) {
-                let side = if ops[i].0 == DiffOp::Delete { 0 } else { 1 };
-                pgb = pgb.add_fabricated(style, side, get_description_of_move(ops[i], side));
-            }
-            pgb = pgb.add_section([style; 2], ops[i], false);
-        }
-        let nid = b.tree.add_child(b.file_content_nid, pgb.build());
-        add_node_to_range_maps(b, nid);
-    };
-
-    let build_phantom = |b: &mut FileBuilder, op: (DiffOp, usize), prev_op: Option<(DiffOp, usize)>| {
-        let styles = if op.0 == DiffOp::Delete {
-            [HalfLineStyle::Move, HalfLineStyle::Phantom]
-        } else {
-            [HalfLineStyle::Phantom, HalfLineStyle::Move]
-        };
-        if prev_op.is_none() || !is_continuing_move(prev_op.unwrap(), op) {
-            let mut pgb = PaddedGroupBuilder::new(diff, &mut b.offsets);
-            for side in 0..2 {
-                pgb = pgb.add_fabricated(styles[side], side, get_description_of_move(op, side));
-            }
-            b.tree.add_child(b.file_content_nid, pgb.build());
-        }
-        let nid = b.tree.add_child(
-            b.file_content_nid,
-            PaddedGroupBuilder::new(diff, &mut b.offsets)
-                .add_section(styles, op, true)
-                .build(),
-        );
-        add_node_to_range_maps(b, nid);
-    };
-
-    let mut tree = Tree::new(Node::new_branch());
-    let mut visible_byte_sets = vec_of(diff.files.len(), Default::default);
-    let mut byte_to_nid_maps = vec_of(diff.files.len(), Default::default);
-
-    for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
-        let file_nid = tree.add_child(tree.root, Node::new_branch());
-        tree.add_child(file_nid, Node::FileHeaderLine(file_id));
-        let file_content_nid = tree.add_child(file_nid, Node::new_branch());
-        let is_open = config.open_all_files || diff.files.len() == 1;
-        tree.node_mut(file_nid).as_branch_mut().visible = if is_open { 0..2 } else { 0..1 };
-
-        let mut b = FileBuilder {
-            diff,
-            tree: &mut tree,
-            visible_byte_sets: &mut visible_byte_sets,
-            byte_to_nid_maps: &mut byte_to_nid_maps,
-            offsets: [0; 2],
-            file_content_nid,
-        };
-        let mut op_index = 0;
-        while op_index < ops.len() {
-            let begin = op_index;
-            let section_type = get_type(ops[begin]);
-            let mut end = begin + 1;
-            if section_type == SectionType::MatchEqual || section_type == SectionType::InsertDelete {
-                while end < ops.len() && get_type(ops[end]) == section_type {
-                    end += 1;
-                }
-            }
-            op_index = end;
-
-            match section_type {
-                SectionType::MatchEqual => build_match_equal(&mut b, &ops[begin..end], begin == 0, end == ops.len()),
-                SectionType::MatchUnequal => build_match_unequal(&mut b, ops[begin]),
-                SectionType::InsertDelete => build_insert_delete(&mut b, &ops[begin..end]),
-                SectionType::Phantom => build_phantom(&mut b, ops[begin], begin.checked_sub(1).map(|prev| ops[prev])),
-            }
-        }
-    }
-
-    (tree, visible_byte_sets, byte_to_nid_maps)
-}
-
-fn get_file_id_from_tree_ancestors(tree: &Tree, mut nid: Nid) -> Option<usize> {
-    loop {
-        if let Node::Branch(node) = tree.node(nid) {
-            if !node.children.is_empty() {
-                if let &Node::FileHeaderLine(file_id) = tree.node(node.children[0]) {
-                    return Some(file_id);
-                }
-            }
-        }
-        if let Some(parent_nid) = tree.parent(nid) {
-            nid = parent_nid;
-        } else {
-            return None;
-        }
-    }
 }
 
 fn layout_diff_line(
@@ -763,19 +265,17 @@ fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_
     out
 }
 
-struct TreeView<'a> {
+struct DocumentView<'a> {
     diff: &'a ExtendedDiff<'a>,
-    tree: &'a Tree,
+    doc: &'a Document,
     wrap_width: usize,
 }
 
-impl<'a> TreeView<'a> {
+impl<'a> DocumentView<'a> {
     /// Calls func with node's current UILine list, recomputing it if needed.
-    /// Panics if node is a branch node.
     /// Don't call with_ui_lines recursively (from inside func).
-    fn with_ui_lines<Ret>(&self, node: &Node, func: impl FnOnce(&[UILine]) -> Ret) -> Ret {
-        match node {
-            Node::Branch(_) => panic!("unexpected Branch node"),
+    fn with_ui_lines<Ret>(&self, nid: Nid, func: impl FnOnce(&[UILine]) -> Ret) -> Ret {
+        match self.doc.get(nid) {
             Node::PaddedGroup(node) => match node.cached_wrap.borrow_mut().deref_mut() {
                 Some((w, l)) if *w == self.wrap_width => func(l),
                 cached_wrap => {
@@ -784,13 +284,14 @@ impl<'a> TreeView<'a> {
                     let len = std::cmp::max(wrapped_sides[0].1.len(), wrapped_sides[1].1.len());
                     let padded_wrapped_sides = wrapped_sides.map(|(side, whls)| {
                         // TODO: temporary padding indicators
-                        let padding = WrappedHalfLine {
+                        let offset_override_for_selection = Some(node.owned_byte_offsets[side].end);
+                        let padding = move || WrappedHalfLine {
                             style: HalfLineStyle::Padding,
-                            offset_override_for_selection: Some(node.end_offsets_for_selection[side]),
+                            offset_override_for_selection,
                             source: TextSource::Fabricated("@".to_string()),
                             offset: 0,
                         };
-                        whls.into_iter().chain(std::iter::repeat(padding))
+                        whls.into_iter().chain(std::iter::repeat_with(padding))
                     });
                     let [side0, side1] = padded_wrapped_sides;
                     let lines: Vec<UILine> = std::iter::zip(side0, side1)
@@ -803,41 +304,29 @@ impl<'a> TreeView<'a> {
                 }
             },
             Node::FileHeaderLine(file_id) => func(&[UILine::FileHeaderLine(*file_id)]),
-            Node::ExpanderLine(0) => func(&[]),
-            Node::ExpanderLine(hidden_count) => func(&[UILine::ExpanderLine(*hidden_count)]),
+            Node::Expander(_) => func(&[UILine::ExpanderLine]),
         }
     }
 
-    /// Returns the first/last visible leaf under `nid`, if it exists.
-    fn bordering_leaf_under(&self, nid: Nid, side: BorderSide) -> Option<LeafPosition> {
-        let node = self.tree.node(nid);
-        if let Node::Branch(_) = node {
-            let mut child_option_nid = self.tree.bordering_child(nid, side);
-            while let Some(child_nid) = child_option_nid {
-                if let Some(lp) = self.bordering_leaf_under(child_nid, side) {
-                    return Some(lp);
-                }
-                let dir = match side {
-                    First => Next,
-                    Last => Prev,
-                };
-                child_option_nid = self.tree.sibling(child_nid, dir);
+    /// Returns the first/last visible leaf, if it exists.
+    fn first_visible_leaf(&self, side: BorderSide) -> Option<LeafPosition> {
+        let mut nid = self.doc.first_visible_node(side)?;
+        loop {
+            let len = self.with_ui_lines(nid, |lines| lines.len());
+            if len != 0 {
+                return Some(LeafPosition {
+                    parent: nid,
+                    line_index: match side {
+                        First => 0,
+                        Last => len - 1,
+                    },
+                });
             }
-            None
-        } else {
-            self.with_ui_lines(node, |lines| {
-                if lines.is_empty() {
-                    None
-                } else {
-                    Some(LeafPosition {
-                        parent: nid,
-                        line_index: match side {
-                            First => 0,
-                            Last => lines.len() - 1,
-                        },
-                    })
-                }
-            })
+            let dir = match side {
+                First => Next,
+                Last => Prev,
+            };
+            nid = self.doc.next_visible_node(nid, dir)?;
         }
     }
 
@@ -848,40 +337,33 @@ impl<'a> TreeView<'a> {
             Next => leaf.line_index + 1,
             Prev => leaf.line_index.wrapping_sub(1),
         };
-        let parent = self.tree.node(leaf.parent);
-        if next_line_index < self.with_ui_lines(parent, |lines| lines.len()) {
+        if next_line_index < self.with_ui_lines(leaf.parent, |lines| lines.len()) {
             return Some(LeafPosition {
                 parent: leaf.parent,
                 line_index: next_line_index,
             });
         }
 
-        // Loop invariant: We already tried everything under `nid`.
+        // TODO: try to deduplicate with first_visible_leaf() a bit.
         let mut nid = leaf.parent;
         loop {
-            if let Some(sibling) = self.tree.sibling(nid, dir) {
-                let side = match dir {
-                    Next => First,
-                    Prev => Last,
-                };
-                if let Some(lp) = self.bordering_leaf_under(sibling, side) {
-                    return Some(lp);
-                } else {
-                    nid = sibling;
-                }
-            } else {
-                if let Some(parent) = self.tree.parent(nid) {
-                    nid = parent;
-                } else {
-                    return None;
-                }
+            nid = self.doc.next_visible_node(nid, dir)?;
+            let len = self.with_ui_lines(nid, |lines| lines.len());
+            if len != 0 {
+                return Some(LeafPosition {
+                    parent: nid,
+                    line_index: match dir {
+                        Next => 0,
+                        Prev => len - 1,
+                    },
+                });
             }
         }
     }
 
     /// Precondition: `leaf` is visible.
     /// Returns the next visible leaf moving in `direction` by `count`. If it reaches the
-    /// first/last visible leaf of the tree, it stays there.
+    /// first/last visible leaf of the document, it stays there.
     /// Returns the new position and how much we moved.
     fn next_leaves_max(&self, leaf: LeafPosition, offset: usize, dir: Direction) -> LeafPosition {
         let mut leaf = leaf;
@@ -895,7 +377,7 @@ impl<'a> TreeView<'a> {
         leaf
     }
 
-    /// Preconditions: `from` and `to` are visible. `from <= to` in tree order.
+    /// Preconditions: `from` and `to` are visible. `from <= to` in node order.
     fn leaf_distance(&self, from: LeafPosition, to: LeafPosition) -> usize {
         let mut from = from;
         let mut result = 0;
@@ -905,31 +387,31 @@ impl<'a> TreeView<'a> {
         }
         result
     }
+
+    fn compare_leaves(&self, a: LeafPosition, b: LeafPosition) -> Ordering {
+        if a.parent == b.parent {
+            a.line_index.cmp(&b.line_index)
+        } else {
+            self.doc.compare_nodes(a.parent, b.parent)
+        }
+    }
 }
 
 type TheResult = Result<(), Box<dyn Error>>;
 
-fn print_plainly(tree_view: &TreeView, nid: Nid, output: &mut impl io::Write) -> TheResult {
-    let node = tree_view.tree.node(nid);
-    if let Node::Branch(node) = node {
-        // clone() explanation: https://stackoverflow.com/q/63685464
-        for i in node.visible.clone() {
-            print_plainly(tree_view, node.children[i], output)?;
-        }
-        return Ok(());
-    }
-    tree_view.with_ui_lines(node, |lines| -> TheResult {
+fn print_plainly(doc_view: &DocumentView, nid: Nid, output: &mut impl io::Write) -> TheResult {
+    doc_view.with_ui_lines(nid, |lines| -> TheResult {
         for line in lines {
             match line {
                 UILine::Sides(sides) => {
                     let render_half = |side: usize| -> String {
                         let layout = layout_diff_line(
-                            tree_view.diff,
+                            doc_view.diff,
                             side,
                             &sides[side].source,
                             &[],
                             sides[side].offset,
-                            tree_view.wrap_width,
+                            doc_view.wrap_width,
                         );
                         fn show_cell(cell: &LineCell) -> String {
                             format!(
@@ -940,14 +422,15 @@ fn print_plainly(tree_view: &TreeView, nid: Nid, output: &mut impl io::Write) ->
                             )
                         }
                         layout.cells.iter().map(show_cell).collect::<String>()
-                            + &" ".repeat(tree_view.wrap_width - layout.cells.len())
+                            + &" ".repeat(doc_view.wrap_width - layout.cells.len())
                     };
                     writeln!(output, "{} | {}", render_half(0), render_half(1))?;
                 }
                 UILine::FileHeaderLine(file_id) => {
                     writeln!(output, "file #{}", file_id)?;
                 }
-                UILine::ExpanderLine(hidden_count) => {
+                UILine::ExpanderLine => {
+                    let hidden_count = doc_view.doc.get_expander_hidden_count(nid);
                     writeln!(output, "...{} hidden lines...", hidden_count)?;
                 }
             }
@@ -967,15 +450,21 @@ pub fn print_side_by_side_diff_plainly(
     config.open_all_files = true;
 
     let diff = make_extended_diff(diff, file_input, file_names);
-    let (tree, _, _) = build_initial_tree(&config, &diff);
+    let doc = build_document(&config, &diff, None);
 
-    let tree_view = TreeView {
-        tree: &tree,
+    let doc_view = DocumentView {
+        doc: &doc,
         diff: &diff,
         wrap_width: 80,
     };
 
-    print_plainly(&tree_view, tree.root, output)
+    let mut pos = doc_view.doc.first_visible_node(First);
+    while let Some(nid) = pos {
+        print_plainly(&doc_view, nid, output)?;
+        pos = doc_view.doc.next_visible_node(nid, Next);
+    }
+
+    Ok(())
 }
 
 fn compute_wrap_width(layout: &[Range<usize>; 6]) -> usize {
@@ -1063,9 +552,7 @@ enum GuiMode {
 
 struct State<'a> {
     config: Config,
-    tree: Tree,
-    visible_byte_sets: Vec<[RangeMap<()>; 2]>,
-    byte_to_nid_maps: Vec<[RangeMap<Nid>; 2]>,
+    doc: Document,
     diff: &'a ExtendedDiff<'a>,
     file_status_text: &'a [&'a str],
     line_number_width: usize,
@@ -1157,16 +644,16 @@ fn buffer_write(buffer: &mut tui::buffer::Buffer, x: usize, y: usize, string: im
 }
 
 impl<'a> State<'a> {
-    fn tree_view(&self) -> TreeView {
-        TreeView {
-            tree: &self.tree,
+    fn doc_view(&self) -> DocumentView {
+        DocumentView {
+            doc: &self.doc,
             diff: self.diff,
             wrap_width: self.wrap_width,
         }
     }
 
     fn move_pos(&self, pos: LeafPosition, offset: usize, dir: Direction) -> LeafPosition {
-        self.tree_view().next_leaves_max(pos, offset, dir)
+        self.doc_view().next_leaves_max(pos, offset, dir)
     }
 
     fn scroll_by(&mut self, offset: usize, dir: Direction) {
@@ -1184,15 +671,9 @@ impl<'a> State<'a> {
     }
 
     fn toggle_open_file(&mut self, file_header_nid: Nid) {
-        let &Node::FileHeaderLine(file_id) = self.tree.node(file_header_nid) else { return };
-        let file_nid = self.tree.parent(file_header_nid).unwrap();
-        let file_branch_node = self.tree.node_mut(file_nid).as_branch_mut();
-        file_branch_node.visible.end = match file_branch_node.visible.end {
-            1 => 2,
-            2 => 1,
-            _ => panic!("logic error: bad file_branch_node.visible.end"),
-        };
-        if get_file_id_from_tree_ancestors(&self.tree, self.cursor_pos.parent) == Some(file_id) {
+        let &Node::FileHeaderLine(file_id) = self.doc.get(file_header_nid) else { return };
+        self.doc.set_open_file(file_id, !self.doc.get_open_file(file_id));
+        if self.doc.get_spatial_file_id(self.cursor_pos.parent) == Some(file_id) {
             self.cursor_pos = LeafPosition {
                 parent: file_header_nid,
                 line_index: 0,
@@ -1201,77 +682,42 @@ impl<'a> State<'a> {
         self.fix_scroll_invariants(false);
     }
 
-    fn expand_sibling(&mut self, expander: Nid, count: usize, dir: Direction) {
-        let branch_nid = self.tree.sibling(expander, dir).unwrap();
-        let branch_node = self.tree.node_mut(branch_nid).as_branch_mut();
-        let old_visible = branch_node.visible.clone();
-        let newly_visible = match dir {
-            Prev => {
-                branch_node.visible.end += count;
-                old_visible.end..branch_node.visible.end
-            }
-            Next => {
-                branch_node.visible.start -= count;
-                branch_node.visible.start..old_visible.start
-            }
-        };
-        let branch_node = self.tree.node(branch_nid).as_branch();
-        for &child in &branch_node.children[newly_visible] {
-            add_padded_group_to_range_maps(
-                self.diff,
-                self.tree.node(child),
-                true,
-                child,
-                &mut self.visible_byte_sets,
-                &mut self.byte_to_nid_maps,
-            );
-        }
-    }
-
-    fn expand_expander(&mut self, mut expander: LeafPosition, count: usize, dir: Direction) {
+    fn expand_expander(&mut self, expander: LeafPosition, count: usize, dir: Direction) {
         let expander_nid = expander.parent;
-        let hidden_count = match self.tree.node(expander_nid) {
-            Node::ExpanderLine(hidden_count) => *hidden_count,
-            _ => return,
-        };
-        assert!(self.tree.compare_leaves(self.scroll_pos, expander) != Ordering::Greater);
-        let expander_distance = self.tree_view().leaf_distance(self.scroll_pos, expander);
-        if hidden_count >= count + 2 {
-            *self.tree.node_mut(expander_nid) = Node::ExpanderLine(hidden_count - count);
-            self.expand_sibling(expander_nid, count, dir);
-        } else {
-            self.expand_sibling(expander_nid, hidden_count, Next);
-            let this_leaf = expander;
-            let next_leaf = self.tree_view().next_leaf(this_leaf, Next).unwrap();
-            if self.scroll_pos == this_leaf {
-                self.scroll_pos = next_leaf;
-            }
-            if self.cursor_pos == this_leaf {
-                self.cursor_pos = next_leaf;
-            }
-            *self.tree.node_mut(expander_nid) = Node::ExpanderLine(0);
-            expander = next_leaf;
+        if !matches!(self.doc.get(expander_nid), Node::Expander(_)) {
+            return;
         }
-        self.scroll_pos = self.move_pos(expander, expander_distance, Prev);
+        assert!(self.doc_view().compare_leaves(self.scroll_pos, expander) != Ordering::Greater);
+        let expander_distance = self.doc_view().leaf_distance(self.scroll_pos, expander);
+        let cursor_is_expander = self.cursor_pos == expander;
+        let new_expander = self.doc.expand(expander_nid, count, dir);
+        let new_expander = LeafPosition {
+            parent: new_expander,
+            line_index: 0,
+        };
+        if cursor_is_expander {
+            self.cursor_pos = new_expander;
+        }
+        self.scroll_pos = self.move_pos(new_expander, expander_distance, Prev);
         self.fix_scroll_invariants(false);
         self.perform_search();
     }
 
     fn fix_scroll_invariants(&mut self, prefer_changing_scroll: bool) {
-        // scroll_pos <= tree.end - (scroll_height-1)
+        // scroll_pos <= doc.end - (scroll_height-1)
         let top_bottom_dist = self.scroll_height - 1;
         let bottom_pos = self.move_pos(self.scroll_pos, top_bottom_dist, Next);
         self.scroll_pos = self.move_pos(bottom_pos, top_bottom_dist, Prev);
 
         // scroll_pos <= cursor_pos <= bottom_pos
-        if self.tree.compare_leaves(self.cursor_pos, self.scroll_pos) == Ordering::Less {
+        if self.doc_view().compare_leaves(self.cursor_pos, self.scroll_pos) == Ordering::Less {
             if prefer_changing_scroll {
                 self.scroll_pos = self.cursor_pos;
             } else {
                 self.cursor_pos = self.scroll_pos;
             }
         }
-        if self.tree.compare_leaves(self.cursor_pos, bottom_pos) == Ordering::Greater {
+        if self.doc_view().compare_leaves(self.cursor_pos, bottom_pos) == Ordering::Greater {
             if prefer_changing_scroll {
                 self.scroll_pos = self.move_pos(self.cursor_pos, top_bottom_dist, Prev);
             } else {
@@ -1286,16 +732,15 @@ impl<'a> State<'a> {
         }
         self.wrap_width = wrap_width;
         self.scroll_height = scroll_height;
-        fn fix_position(tree_view: &TreeView, pos: LeafPosition) -> LeafPosition {
-            let parent = tree_view.tree.node(pos.parent);
-            let new_len = tree_view.with_ui_lines(parent, |lines| lines.len());
+        fn fix_position(doc_view: &DocumentView, pos: LeafPosition) -> LeafPosition {
+            let new_len = doc_view.with_ui_lines(pos.parent, |lines| lines.len());
             LeafPosition {
                 parent: pos.parent,
                 line_index: std::cmp::min(pos.line_index, new_len - 1),
             }
         }
-        self.scroll_pos = fix_position(&self.tree_view(), self.scroll_pos);
-        self.cursor_pos = fix_position(&self.tree_view(), self.cursor_pos);
+        self.scroll_pos = fix_position(&self.doc_view(), self.scroll_pos);
+        self.cursor_pos = fix_position(&self.doc_view(), self.cursor_pos);
         self.fix_scroll_invariants(false);
     }
 
@@ -1355,7 +800,7 @@ impl<'a> State<'a> {
 
         for file_id in 0..self.diff.files.len() {
             for side in 0..2 {
-                for (range, ()) in self.visible_byte_sets[file_id][side].ranges() {
+                for (range, ()) in self.doc.get_expanded_byte_set(file_id, side).ranges() {
                     let subcontent = &self.diff.file_sides[file_id][side].content[range.clone()];
 
                     let mut process_match = |start: usize, end: usize| {
@@ -1388,7 +833,7 @@ impl<'a> State<'a> {
                         let my_match = SearchMatch {
                             file_id,
                             offset,
-                            parent: self.byte_to_nid_maps[file_id][side].get(offset).unwrap(),
+                            parent: self.doc.get_byte_to_nid_map(file_id, side).get(offset).unwrap(),
                         };
                         match self.search_matches[side].last() {
                             Some(last_match) if *last_match == my_match => {}
@@ -1414,7 +859,7 @@ impl<'a> State<'a> {
     }
 
     fn find_leaf_position_within_parent(&self, side: usize, parent: Nid, byte_offset: usize) -> LeafPosition {
-        let line_index = self.tree_view().with_ui_lines(self.tree.node(parent), |lines| {
+        let line_index = self.doc_view().with_ui_lines(parent, |lines| {
             lines
                 .binary_search_by(|ui_line| match ui_line {
                     UILine::Sides(sides) => {
@@ -1423,7 +868,7 @@ impl<'a> State<'a> {
                             .unwrap_or(whl.offset)
                             .cmp(&byte_offset)
                     }
-                    UILine::ExpanderLine(_) => Ordering::Equal,
+                    UILine::ExpanderLine => Ordering::Equal,
                     _ => unreachable!(),
                 })
                 .unwrap_or_else(|i| i - 1)
@@ -1434,14 +879,14 @@ impl<'a> State<'a> {
     fn find_leaf_position_of_line(&self, file_id: usize, side: usize, line_number: usize) -> LeafPosition {
         let line_offsets = &self.diff.file_sides[file_id][side].line_offsets;
         let byte_offset = line_offsets[std::cmp::min(line_number, line_offsets.len() - 1)];
-        let parent = self.byte_to_nid_maps[file_id][side].get(byte_offset).unwrap();
+        let parent = self.doc.get_byte_to_nid_map(file_id, side).get(byte_offset).unwrap();
         self.find_leaf_position_within_parent(side, parent, byte_offset)
     }
 
     fn next_or_same_search_result(&self, start: LeafPosition, dir: Direction) -> Option<LeafPosition> {
         let candidates = [0, 1].map(|side| {
             let compare_with_start = |probe: &SearchMatch| {
-                self.tree.compare_nodes(probe.parent, start.parent).then_with(|| {
+                self.doc.compare_nodes(probe.parent, start.parent).then_with(|| {
                     self.find_leaf_position_within_parent(side, probe.parent, probe.offset)
                         .line_index
                         .cmp(&start.line_index)
@@ -1463,7 +908,7 @@ impl<'a> State<'a> {
             [None, None] => None,
             [Some(x), None] => Some(x),
             [None, Some(y)] => Some(y),
-            [Some(x), Some(y)] => match (dir, self.tree.compare_leaves(x, y)) {
+            [Some(x), Some(y)] => match (dir, self.doc_view().compare_leaves(x, y)) {
                 (Prev, Ordering::Less | Ordering::Equal) => Some(y),
                 (Prev, Ordering::Greater) => Some(x),
                 (Next, Ordering::Less | Ordering::Equal) => Some(x),
@@ -1517,12 +962,12 @@ impl<'a> State<'a> {
             KeyCode::Char('w') | KeyCode::Char('k') => self.move_cursor_by(1, Prev),
             KeyCode::Char('s') | KeyCode::Char('j') => self.move_cursor_by(1, Next),
             KeyCode::Home => {
-                self.scroll_pos = self.tree_view().bordering_leaf_under(self.tree.root, First).unwrap();
+                self.scroll_pos = self.doc_view().first_visible_leaf(First).unwrap();
                 self.cursor_pos = self.scroll_pos;
                 self.fix_scroll_invariants(false);
             }
             KeyCode::End => {
-                self.scroll_pos = self.tree_view().bordering_leaf_under(self.tree.root, Last).unwrap();
+                self.scroll_pos = self.doc_view().first_visible_leaf(Last).unwrap();
                 self.cursor_pos = self.scroll_pos;
                 self.fix_scroll_invariants(false);
             }
@@ -1632,8 +1077,7 @@ impl<'a> State<'a> {
                         }
                         KeyCode::Enter => {
                             if let Ok(line_number) = input.get_content().parse::<usize>() {
-                                let file_id =
-                                    get_file_id_from_tree_ancestors(&self.tree, self.cursor_pos.parent).unwrap_or(0);
+                                let file_id = self.doc.get_spatial_file_id(self.cursor_pos.parent).unwrap_or(0);
                                 let pos = self.find_leaf_position_of_line(file_id, self.focused_side, line_number);
                                 // TODO: Open the file if it's closed.
                                 self.scroll_pos = pos;
@@ -1799,9 +1243,8 @@ impl<'a> State<'a> {
             self.wrap_width,
         );
 
-        // TODO: The loop in get_file_id_from_tree_ancestors runs at most a few times, but it might be nicer to avoid it.
-        let file_id_for_selection = get_file_id_from_tree_ancestors(&self.tree, pos.parent)
-            .expect("UILine::Sides was used outside of a file_content_node");
+        let file_id_for_selection =
+            (self.doc.get_spatial_file_id(pos.parent)).expect("UILine::Sides has no spatial_file_id");
 
         let eol_cell = LineCell {
             egc: " ".to_string(),
@@ -1907,9 +1350,8 @@ impl<'a> State<'a> {
             if pos == self.cursor_pos && self.config.show_cursor {
                 buffer_write(buffer, xcursor.start, y, ">", self.config.theme.cursor);
             }
-            let parent_node = self.tree.node(pos.parent);
-            let tree_view = self.tree_view();
-            tree_view.with_ui_lines(parent_node, |lines| match lines[pos.line_index] {
+            let doc_view = self.doc_view();
+            doc_view.with_ui_lines(pos.parent, |lines| match lines[pos.line_index] {
                 UILine::Sides(ref sides) => {
                     for side in 0..2 {
                         self.render_half_line(
@@ -1929,12 +1371,7 @@ impl<'a> State<'a> {
                 }
                 UILine::FileHeaderLine(file_id) => {
                     let file_header_nid = pos.parent;
-                    let file_nid = self.tree.parent(file_header_nid).unwrap();
-                    let is_open = match self.tree.node(file_nid).as_branch().visible.end {
-                        1 => false,
-                        2 => true,
-                        _ => panic!("unexpected node.visible of FileHeaderLine's parent"),
-                    };
+                    let is_open = self.doc.get_open_file(file_id);
                     let mut string = self.diff.file_headers[file_id].clone();
                     if !self.file_status_text[file_id].is_empty() {
                         string.push_str(&format!(" ({})", self.file_status_text[file_id]));
@@ -1952,7 +1389,8 @@ impl<'a> State<'a> {
                     let button_fn = Rc::new(move |s: &mut State| s.toggle_open_file(pos.parent));
                     buttons.push(((pos.parent, 0), button_pos, y, button_text, button_fn));
                 }
-                UILine::ExpanderLine(hidden_count) => {
+                UILine::ExpanderLine => {
+                    let hidden_count = self.doc.get_expander_hidden_count(pos.parent);
                     let x = if self.config.show_cursor { 1 } else { 0 };
                     let hline = tui::symbols::line::DOUBLE_HORIZONTAL.repeat(term_width - x);
                     buffer_write(buffer, x, y, hline, self.config.theme.expander);
@@ -1978,7 +1416,7 @@ impl<'a> State<'a> {
                     buttons.push(((pos.parent, 2), down_pos, y, down_text, down_fn));
                 }
             });
-            if let Some(next) = tree_view.next_leaf(pos, Next) {
+            if let Some(next) = doc_view.next_leaf(pos, Next) {
                 pos = next;
             } else {
                 break;
@@ -2150,25 +1588,23 @@ pub fn run_tui(
             .to_string()
             .len();
 
-        let (initial_tree, visible_byte_sets, byte_to_nid_maps) = build_initial_tree(&config, &diff);
+        let initial_doc = build_document(&config, &diff, None);
         let size = terminal.size()?;
         let initial_wrap_width = compute_wrap_width(&main_gui_layout(
             u16tos(size.width),
             line_number_width,
             config.show_cursor,
         ));
-        let initial_scroll = TreeView {
-            tree: &initial_tree,
+        let initial_scroll = DocumentView {
+            doc: &initial_doc,
             diff: &diff,
             wrap_width: initial_wrap_width,
         }
-        .bordering_leaf_under(initial_tree.root, First)
+        .first_visible_leaf(First)
         .unwrap();
         State {
             config,
-            tree: initial_tree,
-            visible_byte_sets,
-            byte_to_nid_maps,
+            doc: initial_doc,
             diff: &diff,
             file_status_text,
             line_number_width,
@@ -2186,23 +1622,6 @@ pub fn run_tui(
             reverse_button_hint_chars,
         }
     };
-
-    // TODO
-    if false {
-        for file_id in 0..diff.files.len() {
-            for side in 0..2 {
-                for (range, ()) in state.visible_byte_sets[file_id][side].ranges() {
-                    eprintln!(
-                        "{file_id} {side} visible range: {range:?} {:?}",
-                        &file_input[file_id][side][range.clone()]
-                    );
-                }
-                for (range, nid) in state.byte_to_nid_maps[file_id][side].ranges() {
-                    eprintln!("{file_id} {side} range {range:?} belongs to nid {}", nid.0);
-                }
-            }
-        }
-    }
 
     let mut rendered = None;
 
