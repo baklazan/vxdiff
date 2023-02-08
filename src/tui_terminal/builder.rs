@@ -153,13 +153,13 @@ impl<'a> Builder<'a> {
             return;
         }
 
-        let hide_range = context_before..(length - context_after);
+        let nid_range = (nid_base + context_before)..(nid_base + length - context_after);
 
-        let first_offsets = &node_offsets[hide_range.clone()][0];
-        let last_offsets = &node_offsets[hide_range.clone()].last().unwrap();
+        let first_offsets = &node_offsets[nid_range.start - nid_base];
+        let last_offsets = &node_offsets[nid_range.end - 1 - nid_base];
         let expander_id = [
             self.doc.current_file_id(),
-            hide_range.len(),
+            nid_range.len(),
             first_offsets[0].start,
             last_offsets[0].end,
             first_offsets[1].start,
@@ -167,18 +167,21 @@ impl<'a> Builder<'a> {
         ];
         let expander_id = ExpanderId(expander_id.map(usize::to_le_bytes).concat());
 
+        self.doc.add_original_expander(expander_id.clone(), nid_range.clone());
+
         let state = FrozenDocumentReader(self.frozen)
             .get_expander_state(&expander_id)
-            .unwrap_or_else(|| vec![true; hide_range.len()]);
+            .unwrap_or_else(|| vec![true; nid_range.len()]);
         let mut last = false;
         let mut start = 0;
         for (i, value) in state.into_iter().chain(std::iter::once(false)).enumerate() {
-            let nid = nid_base + hide_range.start + i;
+            let nid = nid_range.start + i;
             if value != last {
                 if value {
                     start = nid;
                 } else {
-                    self.doc.hide_nodes(start, nid - 1, Node::Expander(expander_id.clone()));
+                    let expander_node = Node::Expander(expander_id.clone());
+                    self.doc.add_expander(start, nid - 1, expander_node);
                 }
             }
             last = value;

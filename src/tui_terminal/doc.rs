@@ -17,7 +17,10 @@ pub enum BorderSide {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Nid(usize);
+pub enum Nid {
+    Basic(usize),
+    Cover(usize),
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ExpanderId(pub Vec<u8>);
@@ -30,10 +33,13 @@ struct NodeMeta<N> {
     node: N,
     // usize::MAX if none
     spatial_file_id: usize,
-    collapsed: bool,
-    // only meaningful if collapsed is true and either sibling's collapsed is false
-    collapsed_from_to: usize,
-    replacement_expander: Option<N>,
+    cover: Option<usize>,
+}
+
+struct CoverMeta<N> {
+    node: N,
+    covered_first: usize,
+    covered_last: usize,
 }
 
 struct FileMeta {
@@ -46,6 +52,8 @@ struct FileMeta {
 
 pub struct GenericDocument<N> {
     nodes: Vec<NodeMeta<N>>,
+    covers: HashMap<usize, CoverMeta<N>>,
+    next_cover_id: usize,
     files: Vec<FileMeta>,
     original_expanders: HashMap<ExpanderId, Range<usize>>,
 }
@@ -57,8 +65,10 @@ pub struct FrozenDocument {
 
 impl<N: Nodeish> GenericDocument<N> {
     pub fn get(&self, nid: Nid) -> &N {
-        let meta = &self.nodes[nid.0];
-        meta.replacement_expander.as_ref().unwrap_or(&meta.node)
+        match nid {
+            Nid::Basic(nid) => &self.nodes[nid].node,
+            Nid::Cover(cid) => &self.covers[&cid].node,
+        }
     }
 
     pub fn get_expanded_byte_set(&self, file_id: usize, side: usize) -> &RangeMap<()> {
@@ -71,8 +81,8 @@ impl<N: Nodeish> GenericDocument<N> {
 
     pub fn first_visible_node(&self, side: BorderSide) -> Option<Nid> {
         match side {
-            BorderSide::First => self.next_visible_node(Nid(usize::MAX), Direction::Next),
-            BorderSide::Last => self.next_visible_node(Nid(self.nodes.len()), Direction::Prev),
+            BorderSide::First => self.next_visible_node(Nid::Basic(usize::MAX), Direction::Next),
+            BorderSide::Last => self.next_visible_node(Nid::Basic(self.nodes.len()), Direction::Prev),
         }
     }
 
@@ -81,7 +91,12 @@ impl<N: Nodeish> GenericDocument<N> {
             Direction::Prev => usize::MAX,
             Direction::Next => 1,
         };
-        let mut pos = nid.0.wrapping_add(one);
+        let mut pos = match (nid, dir) {
+            (Nid::Basic(nid), _) => nid,
+            (Nid::Cover(cid), Direction::Prev) => self.covers[&cid].covered_first,
+            (Nid::Cover(cid), Direction::Next) => self.covers[&cid].covered_last,
+        };
+        pos = pos.wrapping_add(one);
         loop {
             if pos >= self.nodes.len() {
                 return None;
@@ -97,104 +112,81 @@ impl<N: Nodeish> GenericDocument<N> {
                     continue;
                 }
             }
-            if self.nodes[pos].collapsed {
-                pos = self.nodes[pos].collapsed_from_to.wrapping_add(one);
-                continue;
-            }
-            return Some(Nid(pos));
+            return match self.nodes[pos].cover {
+                Some(cid) => Some(Nid::Cover(cid)),
+                None => Some(Nid::Basic(pos)),
+            };
         }
     }
 
     pub fn compare_nodes(&self, a: Nid, b: Nid) -> Ordering {
-        a.0.cmp(&b.0)
+        let process = |nid| match nid {
+            Nid::Basic(nid) => nid,
+            Nid::Cover(cid) => self.covers[&cid].covered_first,
+        };
+        process(a).cmp(&process(b))
     }
 
     pub fn is_visible(&self, nid: Nid) -> bool {
-        if self.nodes[nid.0].collapsed {
+        let (basic, pos) = match nid {
+            Nid::Basic(nid) => (true, nid),
+            Nid::Cover(cid) => (false, self.covers[&cid].covered_first),
+        };
+        if basic && self.nodes[pos].cover.is_some() {
             return false;
         }
-        let f = self.nodes[nid.0].spatial_file_id;
+        let f = self.nodes[pos].spatial_file_id;
         if f != usize::MAX {
             let fm = &self.files[f];
-            if !fm.is_open && fm.content_nid_range.contains(&nid.0) {
+            if !fm.is_open && fm.content_nid_range.contains(&pos) {
                 return false;
             }
         }
         true
     }
 
-    fn get_expander_last(&self, expander_nid: Nid) -> usize {
-        if let Some(node) = self.nodes.get(expander_nid.0 + 1) {
-            if node.collapsed {
-                return node.collapsed_from_to;
-            }
-        }
-        expander_nid.0
-    }
-
     pub fn get_expander_hidden_count(&self, expander_nid: Nid) -> usize {
-        assert!(self.nodes[expander_nid.0].replacement_expander.is_some());
-        assert!(!self.nodes[expander_nid.0].collapsed);
-        self.get_expander_last(expander_nid) - expander_nid.0 + 1
+        let Nid::Cover(cid) = expander_nid else { panic!("not Nid::Cover") };
+        let meta = &self.covers[&cid];
+        meta.covered_last - meta.covered_first + 1
     }
 
     pub fn expand(&mut self, expander_nid: Nid, count: usize, dir: Direction) -> Nid {
-        let expander_payload = self.nodes[expander_nid.0].replacement_expander.take().unwrap();
-        let first = expander_nid.0;
-        let last = self.get_expander_last(expander_nid);
+        let Nid::Cover(cid) = expander_nid else { panic!("not Nid::Cover") };
+        let meta = self.covers.get_mut(&cid).unwrap();
+        let first = meta.covered_first;
+        let last = meta.covered_last;
         let hidden_count = last - first + 1;
         if hidden_count >= count + 2 {
             match dir {
                 Direction::Prev => {
-                    self.unhide_nodes(first, first + count - 1);
-                    self.hide_nodes(first + count, last, expander_payload)
+                    meta.covered_first += count;
+                    self.uncover_nodes(first, first + count - 1);
                 }
                 Direction::Next => {
-                    self.unhide_nodes(last - count + 1, last);
-                    self.hide_nodes(first, last - count, expander_payload)
+                    meta.covered_last -= count;
+                    self.uncover_nodes(last - count + 1, last);
                 }
             }
+            Nid::Cover(cid)
         } else {
-            self.unhide_nodes(first, last);
-            expander_nid
+            self.uncover_nodes(first, last);
+            self.covers.remove(&cid);
+            Nid::Basic(first)
         }
     }
 
-    fn unhide_nodes(&mut self, first: usize, last: usize) {
+    fn uncover_nodes(&mut self, first: usize, last: usize) {
         for pos in first..=last {
-            self.nodes[pos].collapsed = false;
-            self.nodes[pos].collapsed_from_to = usize::MAX;
-            self.nodes[pos].replacement_expander = None;
+            self.nodes[pos].cover = None;
             if let Some(ranges) = self.nodes[pos].node.get_owned_byte_offsets() {
                 let file_meta = &mut self.files[self.nodes[pos].spatial_file_id];
                 for side in 0..2 {
                     file_meta.expanded_byte_sets[side].set(ranges[side].clone(), Some(()));
-                    file_meta.byte_to_nid_maps[side].set(ranges[side].clone(), Some(Nid(pos)));
+                    file_meta.byte_to_nid_maps[side].set(ranges[side].clone(), Some(Nid::Basic(pos)));
                 }
             }
         }
-    }
-
-    fn hide_nodes(&mut self, first: usize, last: usize, expander_payload: N) -> Nid {
-        assert!(first <= last);
-        self.nodes[first].collapsed = false;
-        self.nodes[first].collapsed_from_to = usize::MAX;
-        self.nodes[first].replacement_expander = Some(expander_payload);
-        for nid in (first + 1)..=last {
-            self.nodes[nid].collapsed = true;
-        }
-        if first != last {
-            self.nodes[first + 1].collapsed_from_to = last;
-            self.nodes[last].collapsed_from_to = first + 1;
-        }
-        for side in 0..2 {
-            let start = self.nodes[first].node.get_owned_byte_offsets().unwrap()[side].start;
-            let end = self.nodes[last].node.get_owned_byte_offsets().unwrap()[side].end;
-            let file_id = self.nodes[first].spatial_file_id;
-            self.files[file_id].expanded_byte_sets[side].set(start..end, None);
-            self.files[file_id].byte_to_nid_maps[side].set(start..end, Some(Nid(first)));
-        }
-        Nid(first)
     }
 
     pub fn get_open_file(&self, file_id: usize) -> bool {
@@ -210,7 +202,11 @@ impl<N: Nodeish> GenericDocument<N> {
     }
 
     pub fn get_spatial_file_id(&self, nid: Nid) -> Option<usize> {
-        let f = self.nodes[nid.0].spatial_file_id;
+        let pos = match nid {
+            Nid::Basic(nid) => nid,
+            Nid::Cover(cid) => self.covers[&cid].covered_first,
+        };
+        let f = self.nodes[pos].spatial_file_id;
         if f == usize::MAX {
             None
         } else {
@@ -220,10 +216,7 @@ impl<N: Nodeish> GenericDocument<N> {
 
     pub fn freeze(&self) -> FrozenDocument {
         let mapper = |(k, v): (&ExpanderId, &Range<usize>)| -> (ExpanderId, Vec<bool>) {
-            let v = self.nodes[v.clone()]
-                .iter()
-                .map(|node| node.collapsed || node.replacement_expander.is_some())
-                .collect();
+            let v = self.nodes[v.clone()].iter().map(|node| node.cover.is_some()).collect();
             (k.clone(), v)
         };
         FrozenDocument {
@@ -243,6 +236,8 @@ impl<N: Nodeish> GenericDocumentBuilder<N> {
             doc: GenericDocument {
                 nodes: Default::default(),
                 files: Default::default(),
+                covers: Default::default(),
+                next_cover_id: Default::default(),
                 original_expanders: Default::default(),
             },
         }
@@ -262,15 +257,13 @@ impl<N: Nodeish> GenericDocumentBuilder<N> {
             let file_meta = &mut self.doc.files[spatial_file_id];
             for side in 0..2 {
                 file_meta.expanded_byte_sets[side].set(ranges[side].clone(), Some(()));
-                file_meta.byte_to_nid_maps[side].set(ranges[side].clone(), Some(Nid(self.doc.nodes.len())));
+                file_meta.byte_to_nid_maps[side].set(ranges[side].clone(), Some(Nid::Basic(self.doc.nodes.len())));
             }
         }
         self.doc.nodes.push(NodeMeta {
             node,
             spatial_file_id,
-            collapsed: false,
-            collapsed_from_to: usize::MAX,
-            replacement_expander: None,
+            cover: None,
         });
         self.doc.files[spatial_file_id].content_nid_range.end = self.doc.nodes.len();
     }
@@ -278,7 +271,7 @@ impl<N: Nodeish> GenericDocumentBuilder<N> {
     pub fn add_file(&mut self, is_open: bool, header_node: N) {
         self.doc.files.push(FileMeta {
             is_open,
-            header_nid: Nid(self.doc.nodes.len()),
+            header_nid: Nid::Basic(self.doc.nodes.len()),
             content_nid_range: (self.doc.nodes.len() + 1)..(self.doc.nodes.len() + 1),
             expanded_byte_sets: Default::default(),
             byte_to_nid_maps: Default::default(),
@@ -286,15 +279,39 @@ impl<N: Nodeish> GenericDocumentBuilder<N> {
         self.add_node(header_node);
     }
 
-    pub fn hide_nodes(&mut self, first: usize, last: usize, expander_payload: N) {
+    pub fn add_expander(&mut self, first: usize, last: usize, node: N) {
+        let cid = self.doc.next_cover_id;
+        self.doc.next_cover_id += 1;
+
+        assert!(first <= last);
         for nid in first..=last {
             assert_eq!(
                 self.doc.nodes[nid].spatial_file_id,
                 self.doc.nodes[first].spatial_file_id
             );
             assert!(self.doc.nodes[nid].node.get_owned_byte_offsets().is_some());
+            assert!(self.doc.nodes[nid].cover.is_none());
+            self.doc.nodes[nid].cover = Some(cid);
         }
-        self.doc.hide_nodes(first, last, expander_payload);
+        self.doc.covers.insert(
+            cid,
+            CoverMeta {
+                node,
+                covered_first: first,
+                covered_last: last,
+            },
+        );
+        for side in 0..2 {
+            let start = self.doc.nodes[first].node.get_owned_byte_offsets().unwrap()[side].start;
+            let end = self.doc.nodes[last].node.get_owned_byte_offsets().unwrap()[side].end;
+            let file_id = self.doc.nodes[first].spatial_file_id;
+            self.doc.files[file_id].expanded_byte_sets[side].set(start..end, None);
+            self.doc.files[file_id].byte_to_nid_maps[side].set(start..end, Some(Nid::Cover(cid)));
+        }
+    }
+
+    pub fn add_original_expander(&mut self, expander_id: ExpanderId, range: Range<usize>) {
+        self.doc.original_expanders.insert(expander_id, range);
     }
 
     pub fn into_inner(self) -> GenericDocument<N> {
@@ -313,8 +330,7 @@ impl<'a> FrozenDocumentReader<'a> {
         self.0.and_then(|frozen| frozen.expanders.get(expander_id).cloned())
     }
 
-    pub fn assert_files_length(&self, expected_length: usize) {
-        self.0
-            .map(|frozen| assert_eq!(frozen.open_files.len(), expected_length));
+    pub fn assert_files_length(&self, expected: usize) {
+        self.0.map(|frozen| assert_eq!(frozen.open_files.len(), expected));
     }
 }
