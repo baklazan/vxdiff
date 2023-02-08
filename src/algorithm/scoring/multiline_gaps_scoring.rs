@@ -119,7 +119,7 @@ impl<'a> AlignmentPrioritizer for MultilineGapsScoring<'a> {
         if let Some(line_indices) = self.get_line_indices(file_ids, dp_position.map(WordIndex::new)) {
             for from_substate in 0..Self::SUBSTATES_COUNT {
                 for to_substate in 0..Self::SUBSTATES_COUNT {
-                    let mut proposed_score = scores_without_transition[from_substate]
+                    let proposed_score = scores_without_transition[from_substate]
                         + self.transition_cost(file_ids, line_indices, from_substate, to_substate);
                     improve(to_substate, proposed_score, Some((step, from_substate)));
                 }

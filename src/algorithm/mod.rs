@@ -30,12 +30,13 @@ pub struct FileDiff {
 
 #[derive(Debug, PartialEq)]
 pub struct Section {
-    pub sides: [SectionSide; 2],
+    pub sides: [Option<SectionSide>; 2],
     pub equal: bool,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct SectionSide {
+    pub file_id: usize,
     pub byte_range: Range<usize>,
     pub highlight_ranges: Vec<Range<usize>>,
 }
@@ -100,19 +101,20 @@ pub fn compute_diff_with_hints(files: &[[&str; 2]], hints: &[Vec<[usize; 2]>], a
     };
 
     let mut split_index = 0;
-    for file_hints in hints {
+    for (file_id, file_hints) in hints.iter().enumerate() {
         let mut ops = vec![];
         for last in std::iter::once([0, 0]).chain(file_hints.iter().copied()) {
             for &(op, section_id) in &split_diff.files[split_index].ops {
                 ops.push((op, section_id));
                 for side in 0..2 {
                     if op.movement()[side] != 0 {
-                        let section_side = &mut joined_diff.sections[section_id].sides[side];
+                        let section_side = joined_diff.sections[section_id].sides[side].as_mut().unwrap();
                         let adjust = |range: &mut Range<usize>| {
                             range.start += last[side];
                             range.end += last[side];
                         };
                         adjust(&mut section_side.byte_range);
+                        section_side.file_id = file_id;
                         for highlight_range in section_side.highlight_ranges.iter_mut() {
                             adjust(highlight_range);
                         }

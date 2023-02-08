@@ -8,6 +8,7 @@ mod text_input;
 
 use super::algorithm::{Diff, FileDiff, Section};
 use super::config::{Config, DiffStyles, SearchCaseSensitivity, Style};
+use crate::algorithm::SectionSide;
 use builder::{build_document, Document, Node};
 use clipboard::copy_to_clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -35,12 +36,6 @@ fn vec_of<T>(length: usize, func: impl Fn() -> T) -> Vec<T> {
     (0..length).map(|_| func()).collect()
 }
 
-struct ExtendedDiffSectionSide<'a> {
-    file_id: usize,
-    byte_range: Range<usize>,
-    highlight_ranges: &'a [Range<usize>],
-}
-
 struct ExtendedDiffFileSide<'a> {
     filename: &'a str,
     content: &'a str,
@@ -59,7 +54,6 @@ impl<'a> ExtendedDiffFileSide<'a> {
 }
 
 struct ExtendedDiff<'a> {
-    section_sides: Vec<[Option<ExtendedDiffSectionSide<'a>>; 2]>,
     file_sides: Vec<[ExtendedDiffFileSide<'a>; 2]>,
     file_headers: Vec<String>,
     sections: &'a [Section],
@@ -67,8 +61,8 @@ struct ExtendedDiff<'a> {
 }
 
 impl<'a> ExtendedDiff<'a> {
-    fn section_side(&self, section_id: usize, side: usize) -> &ExtendedDiffSectionSide<'a> {
-        self.section_sides[section_id][side].as_ref().unwrap()
+    fn section_side(&self, section_id: usize, side: usize) -> &SectionSide {
+        self.sections[section_id].sides[side].as_ref().unwrap()
     }
 }
 
@@ -124,7 +118,6 @@ fn make_extended_diff<'a>(
     file_names: &'a [[&'a str; 2]],
 ) -> ExtendedDiff<'a> {
     let mut extended_diff = ExtendedDiff {
-        section_sides: vec_of(diff.sections.len(), Default::default),
         file_sides: (0..diff.files.len())
             .map(|file_id| {
                 [0, 1].map(|side| ExtendedDiffFileSide {
@@ -141,19 +134,8 @@ fn make_extended_diff<'a>(
         files: &diff.files,
     };
 
-    for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
+    for file_id in 0..diff.files.len() {
         for side in 0..2 {
-            for &(op, section_id) in ops {
-                if op.movement()[side] == 0 {
-                    continue;
-                }
-                let section_side = &diff.sections[section_id].sides[side];
-                extended_diff.section_sides[section_id][side] = Some(ExtendedDiffSectionSide {
-                    file_id,
-                    byte_range: section_side.byte_range.clone(),
-                    highlight_ranges: &section_side.highlight_ranges,
-                });
-            }
             for (i, c) in file_input[file_id][side].char_indices() {
                 if c == '\n' {
                     extended_diff.file_sides[file_id][side].line_offsets.push(i + 1);
@@ -227,7 +209,7 @@ fn layout_diff_line(
             let section_side = diff.section_side(section_id, side);
             layout_line(
                 diff.file_sides[section_side.file_id][side].content,
-                section_side.highlight_ranges,
+                &section_side.highlight_ranges,
                 search_highlights.get(section_side.file_id).map_or(&[], |a| &a[side]),
                 offset,
                 section_side.byte_range.end,

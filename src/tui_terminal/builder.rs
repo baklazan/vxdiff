@@ -42,8 +42,8 @@ struct Builder<'a> {
 impl<'a> Builder<'a> {
     fn is_move(&self, (op, section_id): (DiffOp, usize)) -> bool {
         op != DiffOp::Match
-            && self.diff.section_sides[section_id][0].is_some()
-            && self.diff.section_sides[section_id][1].is_some()
+            && self.diff.sections[section_id].sides[0].is_some()
+            && self.diff.sections[section_id].sides[1].is_some()
     }
 
     fn is_continuing_move(&self, a: (DiffOp, usize), b: (DiffOp, usize)) -> bool {
@@ -127,7 +127,8 @@ impl<'a> Builder<'a> {
                 });
                 node.owned_byte_offsets[side].end = self.offsets[side];
                 let file_side = &self.diff.file_sides[section_side.file_id][side];
-                if !file_side.content[section_side.byte_range.clone()].ends_with('\n') {
+                let content = &file_side.content[section_side.byte_range.clone()];
+                if !content.ends_with('\n') && !content.is_empty() {
                     self.add_fabricated(node, style, side, "No newline at end of file".to_string());
                 }
             }

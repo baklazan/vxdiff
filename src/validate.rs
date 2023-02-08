@@ -54,38 +54,31 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]])
         }
     }
 
-    // Each section side should be non-empty if-and-only-if it's used.
-    // Each empty section side should be 0..0.
+    // Each section side should be Some if-and-only-if it's used.
     for (section_id, section) in diff.sections.iter().enumerate() {
         for (side, section_side) in section.sides.iter().enumerate() {
-            let is_empty = section_side.byte_range.is_empty();
+            let is_none = section_side.is_none();
             let is_used = !used[section_id][side].is_empty();
-            if is_empty && is_used {
+            if is_none && is_used {
                 errors.push(format!(
-                    "{} is empty, but it is used by {}",
+                    "{} is None, but it is used by {}",
                     side_str(section_id, side),
                     used[section_id][side][0]
                 ));
             }
-            if !is_empty && !is_used {
+            if !is_none && !is_used {
                 errors.push(format!(
-                    "{} is non-empty, but it is not used by any DiffOp",
+                    "{} is Some, but it is not used by any DiffOp",
                     side_str(section_id, side)
-                ));
-            }
-            if is_empty && section_side.byte_range != (0..0) {
-                errors.push(format!(
-                    "{} is empty, but the byte range is {:?} instead of 0..0",
-                    side_str(section_id, side),
-                    section_side.byte_range
                 ));
             }
         }
     }
 
-    // Each non-empty section side should end with a '\n', unless it's at the end of file.
+    // Each non-None, non-empty section side should end with a '\n', unless it's at the end of file.
     for (section_id, section) in diff.sections.iter().enumerate() {
         for (side, section_side) in section.sides.iter().enumerate() {
+            let Some(section_side) = section_side else { continue };
             let is_empty = section_side.byte_range.is_empty();
             let content = &whole_content[section_id][side][section_side.byte_range.clone()];
             let ends_with_newline = content.ends_with('\n');
@@ -100,6 +93,7 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]])
     // TODO: Decide whether we really want this, and in which cases (equal/non-equal).
     for (section_id, section) in diff.sections.iter().enumerate() {
         for (side, section_side) in section.sides.iter().enumerate() {
+            let Some(section_side) = section_side else { continue };
             if section_side.byte_range.is_empty() {
                 continue;
             }
@@ -123,10 +117,25 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]])
         }
     }
 
+    // Each section should have at least one non-None, non-empty side.
+    for (section_id, section) in diff.sections.iter().enumerate() {
+        if section
+            .sides
+            .iter()
+            .all(|s| s.as_ref().map_or(true, |s| s.byte_range.is_empty()))
+        {
+            errors.push(format!("Both sides of section {section_id} are None or empty"));
+        }
+    }
+
     // Sections with `section.equal == true` should contain the same string on both sides.
     // At least for now. We might change this later when ignoring whitespace is enabled.
     for (section_id, section) in diff.sections.iter().enumerate() {
-        let get = |side: usize| &whole_content[section_id][side][section.sides[side].byte_range.clone()];
+        let get = |side: usize| {
+            section.sides[side]
+                .as_ref()
+                .map_or("", |s| &whole_content[section_id][side][s.byte_range.clone()])
+        };
         if section.equal && get(0) != get(1) {
             errors.push(format!(
                 "Section {section_id} has equal==true, but its sides actually differ"
@@ -137,7 +146,7 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]])
     // Sections with `section.equal == true` should not contain any highlighted words.
     for (section_id, section) in diff.sections.iter().enumerate() {
         for (side, section_side) in section.sides.iter().enumerate() {
-            if section.equal && !section_side.highlight_ranges.is_empty() {
+            if section.equal && section_side.as_ref().map_or(false, |s| !s.highlight_ranges.is_empty()) {
                 errors.push(format!(
                     "{} has equal==true, but it contains highlighted text",
                     side_str(section_id, side)
@@ -150,6 +159,7 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]])
     // Byte offsets in highlight_ranges should be within byte_range.
     for (section_id, section) in diff.sections.iter().enumerate() {
         for (side, section_side) in section.sides.iter().enumerate() {
+            let Some(section_side) = section_side else { continue };
             let mut last = None;
             for value in section_side.highlight_ranges.iter().flat_map(|r| [r.start, r.end]) {
                 if value < section_side.byte_range.start || value > section_side.byte_range.end {
@@ -179,10 +189,12 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]])
     for (section_id, section) in diff.sections.iter().enumerate() {
         let non_highlighted_chars = |side: usize| {
             let whole_content_ref = &whole_content[section_id][side];
-            let highlight_ranges = &section.sides[side].highlight_ranges;
-            let starts = once(section.sides[side].byte_range.start).chain(highlight_ranges.iter().map(|r| r.end));
-            let ends = (highlight_ranges.iter().map(|r| r.start)).chain(once(section.sides[side].byte_range.end));
-            std::iter::zip(starts, ends).flat_map(move |(start, end)| whole_content_ref[start..end].chars())
+            section.sides[side].iter().flat_map(move |section_side| {
+                let highlight_ranges = &section_side.highlight_ranges;
+                let starts = once(section_side.byte_range.start).chain(highlight_ranges.iter().map(|r| r.end));
+                let ends = (highlight_ranges.iter().map(|r| r.start)).chain(once(section_side.byte_range.end));
+                std::iter::zip(starts, ends).flat_map(move |(start, end)| whole_content_ref[start..end].chars())
+            })
         };
         if !non_highlighted_chars(0).eq(non_highlighted_chars(1)) {
             errors.push(format!(
@@ -203,7 +215,9 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]])
                 if op.movement()[side] == 0 {
                     continue;
                 }
-                let byte_range = &diff.sections[section_id].sides[side].byte_range;
+                let Some(section_side) = &diff.sections[section_id].sides[side] else { continue // We already complained.
+                 };
+                let byte_range = &section_side.byte_range;
                 if byte_range.is_empty() {
                     continue; // We already complained.
                 }

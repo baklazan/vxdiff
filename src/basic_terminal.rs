@@ -9,10 +9,11 @@ type TheResult = Result<(), Box<dyn Error>>;
 fn print_side(
     prefix: char,
     style_var: &Style,
-    section_side: &SectionSide,
+    section_side: &Option<SectionSide>,
     file_input_side: &str,
     write_line: &mut impl FnMut(&str, usize, &Style) -> TheResult,
 ) -> TheResult {
+    let Some(section_side) = section_side.as_ref() else { return Ok(()) };
     if section_side.byte_range.is_empty() {
         return Ok(());
     }
