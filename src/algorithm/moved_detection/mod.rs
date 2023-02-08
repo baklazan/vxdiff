@@ -11,7 +11,7 @@ mod moved_cores;
 
 const MIN_LINES_IN_CORE: usize = 3;
 const MOVING_PENALTY: TScore = -4.0;
-const MIN_MOVED_CORE_SCORE: TScore = 10.0;
+const MIN_MOVED_CORE_SCORE: TScore = 30.0;
 
 #[derive(Debug)]
 struct Core {
@@ -409,7 +409,7 @@ fn optimal_tradeoffs<'a>(
     (score, result)
 }
 
-// When computing extensions, we tread main cores and moved cores alike.
+// When computing extensions, we treat main cores and moved cores alike.
 // However, once the cores are extended, we throw away the main cores and
 // replace them by the original main sequence.
 fn extend_moved_cores(

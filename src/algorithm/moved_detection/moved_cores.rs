@@ -29,6 +29,7 @@ struct Seed {
     end: [WordIndex; 2],
 }
 
+// TODO: extend each seed as much as possible
 fn find_seeds(
     text_words: &[[PartitionedText; 2]],
     index_converters: &[[IndexConverter; 2]],
@@ -222,7 +223,7 @@ fn build_saplings_in_file_combination(seeds: &[Seed], file_size: [usize; 2]) -> 
     }
     let mut edges: Vec<Vec<Edge>> = vec![vec![]; seeds.len()];
 
-    const MAX_GAP_BETWEEN_SEEDS: usize = 10;
+    const MAX_GAP_BETWEEN_SEEDS: usize = 20;
     for side in 0..2 {
         let mut last_seen: Vec<Option<usize>> = vec![None; diagonals_count];
 
@@ -236,7 +237,7 @@ fn build_saplings_in_file_combination(seeds: &[Seed], file_size: [usize; 2]) -> 
         for (_, _, seed_id) in ids_by_dimension {
             let seed = &seeds[seed_id];
             let diagonal = seed.start[1 - side].raw() + file_size[side] - seed.start[side].raw();
-            for to_diagonal in diagonal..=usize::min(diagonal + MAX_GAP_BETWEEN_SEEDS, diagonals_count) {
+            for to_diagonal in diagonal..usize::min(diagonal + MAX_GAP_BETWEEN_SEEDS + 1, diagonals_count) {
                 if let Some(to_id) = last_seen[to_diagonal] {
                     let to_seed = &seeds[to_id];
                     let gap = usize::max(
@@ -432,6 +433,7 @@ fn select_cores(saplings: &[Sapling], index_converters: &[[IndexConverter; 2]], 
             coverage[file_id][side].add(start_line, end_line);
         }
 
+        // TODO: consider a more accurate score
         let score = sapling
             .intervals
             .iter()
