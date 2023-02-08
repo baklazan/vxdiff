@@ -1370,7 +1370,6 @@ impl<'a> State<'a> {
                     buffer_write(buffer, xsep.start, y, sep, self.config.theme.middle_separator);
                 }
                 UILine::FileHeaderLine(file_id) => {
-                    let file_header_nid = pos.parent;
                     let is_open = self.doc.get_open_file(file_id);
                     let mut string = self.diff.file_headers[file_id].clone();
                     if !self.file_status_text[file_id].is_empty() {

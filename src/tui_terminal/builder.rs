@@ -126,7 +126,6 @@ impl<'a> Builder<'a> {
                     source: TextSource::Section(section_id),
                 });
                 node.owned_byte_offsets[side].end = self.offsets[side];
-                let owned_byte_offsets = node.owned_byte_offsets[side].clone();
                 let file_side = &self.diff.file_sides[section_side.file_id][side];
                 if !file_side.content[section_side.byte_range.clone()].ends_with('\n') {
                     self.add_fabricated(node, style, side, "No newline at end of file".to_string());
