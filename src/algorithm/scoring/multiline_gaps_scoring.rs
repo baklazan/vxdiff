@@ -6,13 +6,16 @@ use crate::algorithm::{
     DiffOp, PartitionedText,
 };
 
-use super::{line_bounds_scoring::LineBoundsScoring, AlignmentPrioritizer, AlignmentScorer, DpSubstate, TScore};
+use super::{
+    line_bounds_scoring::LineBoundsScoring, line_skipping::LineGapsScoring, AlignmentPrioritizer, AlignmentScorer,
+    DpSubstate, TScore,
+};
 
 pub struct MultilineGapsScoring<'a> {
     index_converters: &'a [[IndexConverter; 2]],
     symbols: Vec<[Vec<string_interner::symbol::SymbolU32>; 2]>,
     information_values: Vec<[Vec<TScore>; 2]>,
-    line_bounds_scoring: &'a LineBoundsScoring,
+    line_gap_scoring: LineGapsScoring<'a>,
 }
 
 impl<'a> MultilineGapsScoring<'a> {
@@ -21,13 +24,7 @@ impl<'a> MultilineGapsScoring<'a> {
     const BIG_DELETE: usize = 1;
     const BIG_INSERT: usize = 2;
 
-    const SMALL_GAP_COST: TScore = -1.0;
-    const BIG_GAP_EDGE_COST: TScore = -0.0;
-    const EOL_TRANSITION_MATRIX: [[TScore; 3]; 3] = [
-        [0.0, Self::BIG_GAP_EDGE_COST, Self::BIG_GAP_EDGE_COST],
-        [Self::BIG_GAP_EDGE_COST, 0.0, Self::BIG_GAP_EDGE_COST * 2.0],
-        [Self::BIG_GAP_EDGE_COST, Self::BIG_GAP_EDGE_COST * 2.0, 0.0],
-    ];
+    const SMALL_GAP_COST: TScore = -0.3;
 
     pub(in crate::algorithm) fn new(
         text_words: &[[PartitionedText; 2]],
@@ -40,32 +37,35 @@ impl<'a> MultilineGapsScoring<'a> {
             index_converters,
             symbols,
             information_values,
-            line_bounds_scoring,
+            line_gap_scoring: LineGapsScoring::new(line_bounds_scoring),
         }
     }
 
-    fn get_line_indices(&self, file_ids: [usize; 2], word_indices: [WordIndex; 2]) -> Option<[LineIndex; 2]> {
-        let mut result: [Option<LineIndex>; 2] = [None, None];
-        for side in 0..2 {
-            let line = self.index_converters[file_ids[side]][side].word_to_line_before(word_indices[side]);
-            if self.index_converters[file_ids[side]][side].line_to_word(line) == word_indices[side] {
-                result[side] = Some(line)
-            }
+    fn get_line_index(&self, side: usize, file_id: usize, word_index: WordIndex) -> Option<LineIndex> {
+        let line = self.index_converters[file_id][side].word_to_line_before(word_index);
+        if self.index_converters[file_id][side].line_to_word(line) == word_index {
+            Some(line)
+        } else {
+            None
         }
-        if result[0].is_some() && result[1].is_some() {
-            return Some(result.map(Option::unwrap));
-        }
-        None
     }
 
-    fn transition_cost(&self, file_ids: [usize; 2], line_indices: [LineIndex; 2], from: usize, to: usize) -> TScore {
-        let mut score = Self::EOL_TRANSITION_MATRIX[from][to];
-        if from != to {
-            if from == Self::BIG_DELETE || to == Self::BIG_DELETE {
-                score += self.line_bounds_scoring.score_side(0, file_ids[0], line_indices[0]);
-            }
-            if from == Self::BIG_INSERT || to == Self::BIG_INSERT {
-                score += self.line_bounds_scoring.score_side(1, file_ids[1], line_indices[1]);
+    fn transition_cost(&self, file_ids: [usize; 2], word_indices: [WordIndex; 2], from: usize, to: usize) -> TScore {
+        let line_indices = [0, 1].map(|side| self.get_line_index(side, file_ids[side], word_indices[side]));
+        if from == to {
+            return match from {
+                Self::MATCH => 0.0,
+                Self::BIG_DELETE => line_indices[0].map_or(0.0, |_| self.line_gap_scoring.gap_continuation()),
+                Self::BIG_INSERT => line_indices[1].map_or(0.0, |_| self.line_gap_scoring.gap_continuation()),
+                _ => panic!("Unexpected state {}", from),
+            };
+        }
+        let mut score = 0.0;
+        for (side, &state) in [Self::BIG_DELETE, Self::BIG_INSERT].iter().enumerate() {
+            if from == state || to == state {
+                score += line_indices[side].map_or(TScore::NEG_INFINITY, |line_index| {
+                    self.line_gap_scoring.gap_edge(side, file_ids[side], line_index)
+                });
             }
         }
         score
@@ -116,17 +116,11 @@ impl<'a> AlignmentPrioritizer for MultilineGapsScoring<'a> {
         };
         scores_without_transition[Self::MATCH] = state_before_step[Self::MATCH].score.get() + match_state_score;
 
-        if let Some(line_indices) = self.get_line_indices(file_ids, dp_position.map(WordIndex::new)) {
-            for from_substate in 0..Self::SUBSTATES_COUNT {
-                for to_substate in 0..Self::SUBSTATES_COUNT {
-                    let proposed_score = scores_without_transition[from_substate]
-                        + self.transition_cost(file_ids, line_indices, from_substate, to_substate);
-                    improve(to_substate, proposed_score, Some((step, from_substate)));
-                }
-            }
-        } else {
-            for substate in 0..Self::SUBSTATES_COUNT {
-                improve(substate, scores_without_transition[substate], Some((step, substate)));
+        for from_substate in 0..Self::SUBSTATES_COUNT {
+            for to_substate in 0..Self::SUBSTATES_COUNT {
+                let proposed_score = scores_without_transition[from_substate]
+                    + self.transition_cost(file_ids, dp_position.map(WordIndex::new), from_substate, to_substate);
+                improve(to_substate, proposed_score, Some((step, from_substate)));
             }
         }
     }
@@ -143,36 +137,22 @@ impl<'a> AlignmentPrioritizer for MultilineGapsScoring<'a> {
         state: &mut [DpSubstate],
     ) {
         state[Self::MATCH] = DpSubstate {
-            score: Cell::from(starting_score + Self::EOL_TRANSITION_MATRIX[Self::MATCH][Self::MATCH]),
+            score: Cell::from(starting_score),
             previous_step: Cell::from(None),
         };
 
-        if let Some(line_indices) = self.get_line_indices(file_ids, dp_position.map(WordIndex::new)) {
-            state[Self::BIG_DELETE] = DpSubstate {
-                score: Cell::from(
-                    starting_score
-                        + Self::EOL_TRANSITION_MATRIX[Self::MATCH][Self::BIG_DELETE]
-                        + self.line_bounds_scoring.score_side(0, file_ids[0], line_indices[0]),
-                ),
+        for (side, &gap_state) in [Self::BIG_DELETE, Self::BIG_INSERT].iter().enumerate() {
+            let score = if let Some(line_index) =
+                self.get_line_index(side, file_ids[side], WordIndex::new(dp_position[side]))
+            {
+                starting_score + self.line_gap_scoring.gap_edge(side, file_ids[side], line_index)
+            } else {
+                TScore::NEG_INFINITY
+            };
+            state[gap_state] = DpSubstate {
+                score: Cell::from(score),
                 previous_step: Cell::from(None),
             };
-            state[Self::BIG_INSERT] = DpSubstate {
-                score: Cell::from(
-                    starting_score
-                        + Self::EOL_TRANSITION_MATRIX[Self::MATCH][Self::BIG_INSERT]
-                        + self.line_bounds_scoring.score_side(1, file_ids[1], line_indices[1]),
-                ),
-                previous_step: Cell::from(None),
-            }
-        } else {
-            state[Self::BIG_DELETE] = DpSubstate {
-                score: Cell::from(TScore::NEG_INFINITY),
-                previous_step: Cell::from(None),
-            };
-            state[Self::BIG_INSERT] = DpSubstate {
-                score: Cell::from(TScore::NEG_INFINITY),
-                previous_step: Cell::from(None),
-            }
         }
     }
 }
@@ -196,11 +176,7 @@ impl<'a> AlignmentScorer for MultilineGapsScoring<'a> {
         file_ids: [usize; 2],
     ) -> Option<Vec<TScore>> {
         let transition_cost = |position: &[usize; 2], from: usize, to: usize| -> TScore {
-            if let Some(line_indices) = self.get_line_indices(file_ids, position.map(WordIndex::new)) {
-                self.transition_cost(file_ids, line_indices, from, to)
-            } else {
-                0.0
-            }
+            self.transition_cost(file_ids, position.map(WordIndex::new), from, to)
         };
         let mut result = vec![];
 
@@ -231,29 +207,28 @@ impl<'a> AlignmentScorer for MultilineGapsScoring<'a> {
                         Self::BIG_INSERT
                     };
 
-                    let mut first_line_break: Option<(usize, TScore)> = None;
-                    let mut last_line_break: Option<(usize, TScore)> = None;
+                    let mut first_line_break: Option<(usize, LineIndex, TScore)> = None;
+                    let mut last_line_break: Option<(usize, LineIndex, TScore)> = None;
 
                     let start_index = index_in_alignment;
                     let start_position = position;
                     while index_in_alignment < alignment.len() && alignment[index_in_alignment] == op {
-                        if let Some(line_indices) = self.get_line_indices(file_ids, position.map(WordIndex::new)) {
-                            let bound_score =
-                                self.line_bounds_scoring
-                                    .score_side(side, file_ids[side], line_indices[side]);
+                        if let Some(line_index) =
+                            self.get_line_index(side, file_ids[side], WordIndex::new(position[side]))
+                        {
+                            let edge_score = self.line_gap_scoring.gap_edge(side, file_ids[side], line_index);
                             if first_line_break.is_none() {
-                                first_line_break = Some((index_in_alignment, bound_score));
+                                first_line_break = Some((index_in_alignment, line_index, edge_score));
                             }
-                            last_line_break = Some((index_in_alignment, bound_score));
+                            last_line_break = Some((index_in_alignment, line_index, edge_score));
                         }
                         index_in_alignment += 1;
                         position[side] += 1;
                     }
-                    if let Some(line_indices) = self.get_line_indices(file_ids, position.map(WordIndex::new)) {
-                        let bound_score = self
-                            .line_bounds_scoring
-                            .score_side(side, file_ids[side], line_indices[side]);
-                        last_line_break = Some((index_in_alignment, bound_score));
+                    if let Some(line_index) = self.get_line_index(side, file_ids[side], WordIndex::new(position[side]))
+                    {
+                        let bound_score = self.line_gap_scoring.gap_edge(side, file_ids[side], line_index);
+                        last_line_break = Some((index_in_alignment, line_index, bound_score));
                     }
 
                     let score_with_match_state = (index_in_alignment - start_index) as TScore * Self::SMALL_GAP_COST;
@@ -262,10 +237,12 @@ impl<'a> AlignmentScorer for MultilineGapsScoring<'a> {
                         let last_line_break = last_line_break.unwrap();
                         let steps_with_match =
                             first_line_break.0 - start_index + index_in_alignment - last_line_break.0;
+                        let gap_length_lines = last_line_break.1 - first_line_break.1;
                         let score_with_insert_state = steps_with_match as TScore * Self::SMALL_GAP_COST
-                            + 2.0 * Self::BIG_GAP_EDGE_COST
-                            + first_line_break.1
-                            + last_line_break.1;
+                            + first_line_break.2
+                            + last_line_break.2
+                            + gap_length_lines.raw() as TScore * self.line_gap_scoring.gap_continuation()
+                            - self.line_gap_scoring.gap_continuation();
                         if score_with_insert_state > score_with_match_state {
                             for _ in start_index..first_line_break.0 {
                                 result.push(transition_cost(&position, current_state, Self::MATCH));

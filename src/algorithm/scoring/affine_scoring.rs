@@ -2,11 +2,14 @@ use std::cell::Cell;
 
 use crate::algorithm::{indices::LineIndex, DiffOp};
 
-use super::{line_bounds_scoring::LineBoundsScoring, simple::MatchScoring, AlignmentPrioritizer, DpSubstate, TScore};
+use super::{
+    line_bounds_scoring::LineBoundsScoring, line_skipping::LineGapsScoring, simple::MatchScoring, AlignmentPrioritizer,
+    DpSubstate, TScore,
+};
 
 pub(in crate::algorithm) struct AffineLineScoring<'a, Matcher: MatchScoring> {
     match_scoring: Matcher,
-    bounds_scoring: &'a LineBoundsScoring,
+    gap_scoring: LineGapsScoring<'a>,
 }
 
 impl<'a, Matcher: MatchScoring> AffineLineScoring<'a, Matcher> {
@@ -15,22 +18,13 @@ impl<'a, Matcher: MatchScoring> AffineLineScoring<'a, Matcher> {
     const DELETE: usize = 1;
     const INSERT: usize = 2;
 
-    const GAP_EDGE_COST: TScore = -2.0;
-
-    // this matrix should be Self::SUBSTATES_COUNT * Self::SUBSTATES_COUNT, but Rust
-    const TRANSITION_MATRIX: [[TScore; 3]; 3] = [
-        [0.0, Self::GAP_EDGE_COST, Self::GAP_EDGE_COST],
-        [Self::GAP_EDGE_COST, 0.0, Self::GAP_EDGE_COST * 2.0],
-        [Self::GAP_EDGE_COST, Self::GAP_EDGE_COST * 2.0, 0.0],
-    ];
-
     pub(in crate::algorithm) fn new(
         match_scoring: Matcher,
         bounds_scoring: &LineBoundsScoring,
     ) -> AffineLineScoring<Matcher> {
         AffineLineScoring {
             match_scoring,
-            bounds_scoring,
+            gap_scoring: LineGapsScoring::new(bounds_scoring),
         }
     }
 
@@ -41,17 +35,15 @@ impl<'a, Matcher: MatchScoring> AffineLineScoring<'a, Matcher> {
         from_substate: usize,
         to_substate: usize,
     ) -> TScore {
-        let mut cost = Self::TRANSITION_MATRIX[from_substate][to_substate];
-        if from_substate != to_substate {
-            if from_substate == Self::DELETE || to_substate == Self::DELETE {
+        let mut cost = 0.0;
+        if from_substate == to_substate && from_substate != Self::MATCH {
+            cost += self.gap_scoring.gap_continuation();
+        }
+        for (side, &state) in [Self::DELETE, Self::INSERT].iter().enumerate() {
+            if (from_substate == state) ^ (to_substate == state) {
                 cost += self
-                    .bounds_scoring
-                    .score_side(0, file_ids[0], LineIndex::new(position[0]));
-            }
-            if from_substate == Self::INSERT || to_substate == Self::INSERT {
-                cost += self
-                    .bounds_scoring
-                    .score_side(1, file_ids[1], LineIndex::new(position[1]));
+                    .gap_scoring
+                    .gap_edge(side, file_ids[side], LineIndex::new(position[side]));
             }
         }
         cost
