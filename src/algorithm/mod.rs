@@ -58,11 +58,13 @@ impl DiffOp {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum DiffAlgorithm {
     MainSequence(MainSequenceAlgorithm),
     MainThenMoved(MainSequenceAlgorithm),
 }
 
+#[derive(Clone, Copy)]
 pub enum MainSequenceAlgorithm {
     Naive,
     LinesThenWords(LineScoringStrategy),

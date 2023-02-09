@@ -6,9 +6,8 @@ mod line_layout;
 mod range_map;
 mod text_input;
 
-use super::algorithm::{Diff, FileDiff, Section};
+use super::algorithm::{Diff, FileDiff, Section, SectionSide};
 use super::config::{Config, DiffStyles, SearchCaseSensitivity, Style};
-use crate::algorithm::SectionSide;
 use builder::{build_document, Document, Node};
 use clipboard::copy_to_clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -56,8 +55,8 @@ impl<'a> ExtendedDiffFileSide<'a> {
 struct ExtendedDiff<'a> {
     file_sides: Vec<[ExtendedDiffFileSide<'a>; 2]>,
     file_headers: Vec<String>,
-    sections: &'a [Section],
-    files: &'a [FileDiff],
+    sections: Vec<Section>,
+    files: Vec<FileDiff>,
 }
 
 impl<'a> ExtendedDiff<'a> {
@@ -113,7 +112,7 @@ fn make_file_header(file_names: &[&str; 2]) -> String {
 }
 
 fn make_extended_diff<'a>(
-    diff: &'a Diff,
+    diff: Diff,
     file_input: &'a [[&'a str; 2]],
     file_names: &'a [[&'a str; 2]],
 ) -> ExtendedDiff<'a> {
@@ -130,11 +129,11 @@ fn make_extended_diff<'a>(
         file_headers: (0..diff.files.len())
             .map(|file_id| make_file_header(&file_names[file_id]))
             .collect(),
-        sections: &diff.sections,
-        files: &diff.files,
+        sections: diff.sections,
+        files: diff.files,
     };
 
-    for file_id in 0..diff.files.len() {
+    for file_id in 0..extended_diff.files.len() {
         for side in 0..2 {
             for (i, c) in file_input[file_id][side].char_indices() {
                 if c == '\n' {
@@ -422,7 +421,7 @@ fn print_plainly(doc_view: &DocumentView, nid: Nid, output: &mut impl io::Write)
 }
 
 pub fn print_side_by_side_diff_plainly(
-    diff: &Diff,
+    diff: Diff,
     mut config: Config,
     file_input: &[[&str; 2]],
     file_names: &[[&str; 2]],
@@ -449,6 +448,18 @@ pub fn print_side_by_side_diff_plainly(
     Ok(())
 }
 
+fn compute_line_number_width(diff: &ExtendedDiff) -> usize {
+    // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
+    diff.file_sides
+        .iter()
+        .flatten()
+        .map(|file_side| file_side.line_offsets.len() - 1)
+        .max()
+        .unwrap_or(0)
+        .to_string()
+        .len()
+}
+
 fn compute_wrap_width(layout: &[Range<usize>; 6]) -> usize {
     layout[2].len()
 }
@@ -472,7 +483,16 @@ fn main_gui_layout(terminal_width: usize, line_number_width: usize, show_cursor:
 enum MouseCell {
     Inert,
     Button(Rc<dyn Fn(&mut State)>),
-    Text { file_id: usize, side: usize, offset: usize },
+    Text {
+        file_id: usize,
+        side: usize,
+        offset: usize,
+    },
+    LineNumber {
+        file_id: usize,
+        side: usize,
+        line_number: usize,
+    },
 }
 
 #[derive(Clone)]
@@ -488,12 +508,25 @@ struct RenderedInfo {
     button_hints: Vec<Option<ButtonInfo>>,
 }
 
-struct SelectionState {
+struct TextSelection {
     file_id: usize,
     side: usize,
     selecting: bool,
     start_offset: usize,
     current_offset: usize,
+}
+
+#[derive(Clone, PartialEq)]
+struct HintSelection {
+    file_id: usize,
+    side: usize,
+    byte_offset: usize,
+}
+
+enum Selection {
+    None,
+    Text(TextSelection),
+    Hint(HintSelection),
 }
 
 struct SearchQuery {
@@ -535,14 +568,17 @@ enum GuiMode {
 struct State<'a> {
     config: Config,
     doc: Document,
-    diff: &'a ExtendedDiff<'a>,
+    diff: ExtendedDiff<'a>,
+    file_input: &'a [[&'a str; 2]],
+    file_names: &'a [[&'a str; 2]],
     file_status_text: &'a [&'a str],
+    diff_algorithm: crate::algorithm::DiffAlgorithm,
     line_number_width: usize,
     scroll_pos: LeafPosition,
     cursor_pos: LeafPosition,
     wrap_width: usize,
     scroll_height: usize,
-    selection: Option<SelectionState>,
+    selection: Selection,
     search_query: Option<SearchQuery>,
     search_matches: [Vec<SearchMatch>; 2],
     search_highlights: Vec<[Vec<Range<usize>>; 2]>,
@@ -550,9 +586,11 @@ struct State<'a> {
     focused_side: usize,
     button_hint_chars: Vec<char>,
     reverse_button_hint_chars: HashMap<char, usize>,
+    diff_hints: Vec<Vec<[usize; 2]>>,
+    must_refresh_terminal: bool,
 }
 
-fn update_selection_position(selection: &mut SelectionState, rendered: &RenderedInfo, x: usize, y: usize) {
+fn update_selection_position(selection: &mut TextSelection, rendered: &RenderedInfo, x: usize, y: usize) {
     let mut mx = x;
     let mut my = y;
     while my < rendered.mouse_cells.len() {
@@ -629,7 +667,7 @@ impl<'a> State<'a> {
     fn doc_view(&self) -> DocumentView {
         DocumentView {
             doc: &self.doc,
-            diff: self.diff,
+            diff: &self.diff,
             wrap_width: self.wrap_width,
         }
     }
@@ -922,6 +960,84 @@ impl<'a> State<'a> {
         };
     }
 
+    fn recompute_diff(&mut self) {
+        self.diff = ExtendedDiff {
+            file_sides: Default::default(),
+            file_headers: Default::default(),
+            sections: Default::default(),
+            files: Default::default(),
+        };
+        let diff = crate::algorithm::compute_diff_with_hints(self.file_input, &self.diff_hints, self.diff_algorithm);
+        let errors = crate::validate::validate(&diff, self.file_input, self.file_names);
+        if !errors.is_empty() {
+            let print_errors = || -> io::Result<()> {
+                crossterm::execute!(
+                    io::stdout(),
+                    crossterm::event::DisableMouseCapture,
+                    crossterm::terminal::LeaveAlternateScreen
+                )?;
+                crossterm::terminal::disable_raw_mode()?;
+                crate::validate::print_errors(&errors);
+                writeln!(io::stdout(), "Press enter to continue...")?;
+                io::stdin().read_line(&mut String::new())?;
+                crossterm::terminal::enable_raw_mode()?;
+                crossterm::execute!(
+                    io::stdout(),
+                    crossterm::terminal::EnterAlternateScreen,
+                    crossterm::event::EnableMouseCapture
+                )?;
+                Ok(())
+            };
+            print_errors().unwrap();
+            self.must_refresh_terminal = true;
+        }
+        self.diff = make_extended_diff(diff, self.file_input, self.file_names);
+        self.line_number_width = compute_line_number_width(&self.diff);
+        self.doc = build_document(&self.config, &self.diff, Some(&self.doc.freeze()));
+        // TODO: scroll_pos and cursor_pos (preserve visible position of hint line)
+        self.scroll_pos = self.doc_view().first_visible_leaf(First).unwrap();
+        self.cursor_pos = self.scroll_pos;
+        self.selection = Selection::None;
+        self.mode = GuiMode::Default; // old_search_pos and old_cursor_pos would need updating... let's just reset it.
+        self.perform_search();
+    }
+
+    fn has_diff_hint(&self, hint: &HintSelection) -> bool {
+        self.diff_hints[hint.file_id]
+            .iter()
+            .any(|pair| pair[hint.side] == hint.byte_offset)
+    }
+
+    fn add_diff_hint(&mut self, a: &HintSelection, b: &HintSelection) -> bool {
+        if a.file_id != b.file_id {
+            return false;
+        }
+        if a.side == b.side {
+            return false;
+        }
+        let pair = if a.side == 0 { [a, b] } else { [b, a] };
+        let pair = pair.map(|h| h.byte_offset);
+        let Err(pos) = self.diff_hints[a.file_id].binary_search(&pair) else { return false };
+        if let Some(next) = self.diff_hints[a.file_id].get(pos) {
+            if !(pair[0] <= next[0] && pair[1] <= next[1]) {
+                return false;
+            }
+        }
+        if let Some(prev) = self.diff_hints[a.file_id].get(pos.wrapping_sub(1)) {
+            if !(prev[0] <= pair[0] && prev[1] <= pair[1]) {
+                return false;
+            }
+        }
+        self.diff_hints[a.file_id].insert(pos, pair);
+        self.recompute_diff();
+        true
+    }
+
+    fn remove_diff_hint(&mut self, hint: &HintSelection) {
+        self.diff_hints[hint.file_id].retain(|pair| pair[hint.side] != hint.byte_offset);
+        self.recompute_diff();
+    }
+
     fn handle_key_event(&mut self, event: KeyEvent, rendered: &RenderedInfo) -> Result<EventResult, Box<dyn Error>> {
         if event.modifiers.contains(KeyModifiers::ALT) {
             if let KeyCode::Char(c) = event.code {
@@ -986,7 +1102,7 @@ impl<'a> State<'a> {
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => match rendered.mouse_cells[y][x] {
                 MouseCell::Text { file_id, side, offset } => {
-                    self.selection = Some(SelectionState {
+                    self.selection = Selection::Text(TextSelection {
                         file_id,
                         side,
                         selecting: true,
@@ -994,17 +1110,38 @@ impl<'a> State<'a> {
                         current_offset: offset,
                     });
                 }
+                MouseCell::LineNumber {
+                    file_id,
+                    side,
+                    line_number,
+                } => {
+                    let new = HintSelection {
+                        file_id,
+                        side,
+                        byte_offset: self.diff.file_sides[file_id][side].line_offsets[line_number],
+                    };
+                    let old = match &self.selection {
+                        Selection::Hint(old) => Some(old.clone()),
+                        _ => None,
+                    };
+                    match old {
+                        Some(old) if old == new => self.selection = Selection::None,
+                        Some(old) if self.add_diff_hint(&old, &new) => {}
+                        _ if self.has_diff_hint(&new) => self.remove_diff_hint(&new),
+                        _ => self.selection = Selection::Hint(new),
+                    }
+                }
                 MouseCell::Button(ref fun) => fun(self),
                 MouseCell::Inert => {}
             },
             MouseEventKind::Drag(MouseButton::Left) => match self.selection {
-                Some(ref mut selection) if selection.selecting => {
+                Selection::Text(ref mut selection) if selection.selecting => {
                     update_selection_position(selection, rendered, x, y);
                 }
                 _ => {}
             },
             MouseEventKind::Up(MouseButton::Left) => match self.selection {
-                Some(ref mut selection) if selection.selecting => {
+                Selection::Text(ref mut selection) if selection.selecting => {
                     update_selection_position(selection, rendered, x, y);
                     selection.selecting = false;
                     let from = std::cmp::min(selection.start_offset, selection.current_offset);
@@ -1179,7 +1316,7 @@ impl<'a> State<'a> {
         };
 
         let line_number_str;
-        let line_number_style = pick_style(&theme.line_numbers);
+        let mut line_number_style = pick_style(&theme.line_numbers);
         let file_id_for_rendering: Option<usize>;
 
         match whl.source {
@@ -1189,10 +1326,38 @@ impl<'a> State<'a> {
 
                 let file_side = &self.diff.file_sides[file_id][side];
                 let line_number = file_side.byte_offset_to_line_number(whl.offset);
-                if whl.offset != file_side.line_offsets[line_number] {
-                    line_number_str = "+".repeat(line_number.to_string().len());
-                } else {
+                if whl.offset == file_side.line_offsets[line_number] {
                     line_number_str = line_number.to_string();
+                } else {
+                    line_number_str = "+".repeat(line_number.to_string().len());
+                }
+                if whl.style != HalfLineStyle::Phantom {
+                    let start_offset = file_side.line_offsets[line_number];
+                    for screen_x in line_number_screen_x.clone() {
+                        rendered.mouse_cells[screen_y][screen_x] = MouseCell::LineNumber {
+                            file_id,
+                            side,
+                            line_number,
+                        };
+                    }
+                    match &self.selection {
+                        Selection::Hint(selection)
+                            if selection.file_id == file_id
+                                && selection.side == side
+                                && selection.byte_offset == start_offset =>
+                        {
+                            line_number_style = line_number_style.patch(theme.line_number_half_hint)
+                        }
+                        _ => {
+                            if self.has_diff_hint(&HintSelection {
+                                file_id,
+                                side,
+                                byte_offset: start_offset,
+                            }) {
+                                line_number_style = line_number_style.patch(theme.line_number_hint);
+                            }
+                        }
+                    }
                 }
             }
             TextSource::Fabricated(..) => {
@@ -1217,7 +1382,7 @@ impl<'a> State<'a> {
         );
 
         let layout = layout_diff_line(
-            self.diff,
+            &self.diff,
             side,
             &whl.source,
             &self.search_highlights,
@@ -1254,7 +1419,7 @@ impl<'a> State<'a> {
             } = layout.cells.get(x).unwrap_or(&eol_cell).clone();
 
             let selected = match &self.selection {
-                Some(selection) => {
+                Selection::Text(selection) => {
                     file_id_for_selection == selection.file_id
                         && file_id_for_rendering == Some(selection.file_id)
                         && whl.offset_override_for_selection.is_none()
@@ -1262,7 +1427,7 @@ impl<'a> State<'a> {
                         && offset >= std::cmp::min(selection.start_offset, selection.current_offset)
                         && offset < std::cmp::max(selection.start_offset, selection.current_offset)
                 }
-                None => false,
+                _ => false,
             };
 
             let screen_x = content_screen_x + x;
@@ -1532,11 +1697,12 @@ where
 type TheTerminal = tui::terminal::Terminal<tui::backend::CrosstermBackend<io::Stdout>>;
 
 pub fn run_tui(
-    diff: &Diff,
+    diff: Diff,
     config: Config,
     file_input: &[[&str; 2]],
     file_names: &[[&str; 2]],
     file_status_text: &[&str],
+    diff_algorithm: crate::algorithm::DiffAlgorithm,
     terminal: &mut TheTerminal,
 ) -> TheResult {
     let diff = make_extended_diff(diff, file_input, file_names);
@@ -1558,42 +1724,30 @@ pub fn run_tui(
         .collect();
 
     let mut state = {
-        // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
-        let line_number_width = diff
-            .file_sides
-            .iter()
-            .flatten()
-            .map(|file_side| file_side.line_offsets.len() - 1)
-            .max()
-            .unwrap_or(0)
-            .to_string()
-            .len();
-
+        let line_number_width = compute_line_number_width(&diff);
+        let diff_hints = vec![vec![]; diff.files.len()];
         let initial_doc = build_document(&config, &diff, None);
-        let size = terminal.size()?;
-        let initial_wrap_width = compute_wrap_width(&main_gui_layout(
-            u16tos(size.width),
-            line_number_width,
-            config.show_cursor,
-        ));
         let initial_scroll = DocumentView {
             doc: &initial_doc,
             diff: &diff,
-            wrap_width: initial_wrap_width,
+            wrap_width: usize::MAX,
         }
         .first_visible_leaf(First)
         .unwrap();
         State {
             config,
             doc: initial_doc,
-            diff: &diff,
+            diff,
+            file_input,
+            file_names,
             file_status_text,
+            diff_algorithm,
             line_number_width,
             scroll_pos: initial_scroll,
             cursor_pos: initial_scroll,
-            wrap_width: initial_wrap_width,
-            scroll_height: u16tos(size.height),
-            selection: None,
+            wrap_width: usize::MAX,    // Will be corrected immediately in first render().
+            scroll_height: usize::MAX, // Will be corrected immediately in first render().
+            selection: Selection::None,
             search_query: None,
             search_matches: [vec![], vec![]],
             search_highlights: Default::default(),
@@ -1601,12 +1755,19 @@ pub fn run_tui(
             focused_side: 1,
             button_hint_chars,
             reverse_button_hint_chars,
+            diff_hints,
+            must_refresh_terminal: false,
         }
     };
 
     let mut rendered = None;
 
     loop {
+        if state.must_refresh_terminal {
+            state.must_refresh_terminal = false;
+            terminal.clear()?;
+        }
+
         terminal.draw(|frame| {
             let render = |size: tui::layout::Rect, buffer: &mut tui::buffer::Buffer| {
                 rendered = Some(state.render(u16tos(size.width), u16tos(size.height), rendered.as_ref(), buffer));

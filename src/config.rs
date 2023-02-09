@@ -69,6 +69,8 @@ pub struct Theme {
     pub file_header_open: Style,
     pub button: Style,
     pub button_hint: Style,
+    pub line_number_hint: Style,
+    pub line_number_half_hint: Style,
 }
 
 macro_rules! style {
@@ -119,6 +121,8 @@ fn default_theme() -> Theme {
         file_header_open: style!(fg = Color::Black, bg = Color::Green),
         button: style!(fg = Color::Black, bg = Color::White),
         button_hint: style!(fg = Color::White, bg = Color::Blue, bold = true),
+        line_number_hint: style!(bold = true),
+        line_number_half_hint: style!(fg = Color::Yellow, bold = true),
     }
 }
 
@@ -171,6 +175,8 @@ fn new_theme() -> Theme {
         file_header_open: style!(fg = Color::Black, bg = Color::Green),
         button: style!(fg = black, bg = Color::Indexed(195)), // #D7FFFF
         button_hint: style!(fg = black, bg = Color::Indexed(123), bold = true), // #87FFFF
+        line_number_hint: style!(bold = true),
+        line_number_half_hint: style!(fg = Color::Yellow, bold = true),
     }
 }
 
@@ -221,6 +227,8 @@ fn light_theme() -> Theme {
         file_header_open: style!(fg = Color::Rgb(32, 33, 36), bg = Color::Rgb(112, 219, 255), bold = true),
         button: style!(fg = Color::Indexed(16), bg = Color::Indexed(195)), // #D7FFFF
         button_hint: style!(fg = Color::Indexed(16), bg = Color::Indexed(123), bold = true), // #87FFFF
+        line_number_hint: style!(bg = Color::Rgb(220, 221, 222), bold = true),
+        line_number_half_hint: style!(bg = Color::Rgb(240, 240, 100), bold = true),
     }
 }
 

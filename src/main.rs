@@ -120,7 +120,8 @@ fn try_main() -> DynResult<()> {
     let file_names: Vec<_> = input.file_names.iter().map(borrow_array).collect();
     let file_status_text: Vec<&str> = input.file_status_text.iter().map(AsRef::as_ref).collect();
 
-    let diff = compute_diff(&file_input, convert_algorithm(config.algorithm));
+    let algorithm = convert_algorithm(config.algorithm);
+    let diff = compute_diff(&file_input, algorithm);
 
     print_errors(&validate(&diff, &file_input, &file_names));
 
@@ -128,12 +129,18 @@ fn try_main() -> DynResult<()> {
         OutputMode::Debug => println!("{diff:#?}"),
         OutputMode::Unified => print(&diff, &file_input, &mut stdout())?,
         OutputMode::Side => print_side_by_side(&diff, &file_input, &mut stdout())?,
-        OutputMode::TuiPlain => {
-            print_side_by_side_diff_plainly(&diff, config, &file_input, &file_names, &mut stdout())?
-        }
-        OutputMode::Tui => {
-            run_in_terminal(|terminal| run_tui(&diff, config, &file_input, &file_names, &file_status_text, terminal))?
-        }
+        OutputMode::TuiPlain => print_side_by_side_diff_plainly(diff, config, &file_input, &file_names, &mut stdout())?,
+        OutputMode::Tui => run_in_terminal(|terminal| {
+            run_tui(
+                diff,
+                config,
+                &file_input,
+                &file_names,
+                &file_status_text,
+                algorithm,
+                terminal,
+            )
+        })?,
     }
 
     Ok(())

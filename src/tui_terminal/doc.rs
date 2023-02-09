@@ -127,6 +127,7 @@ impl<N: Nodeish> GenericDocument<N> {
         process(a).cmp(&process(b))
     }
 
+    #[allow(dead_code)] // TODO
     pub fn is_visible(&self, nid: Nid) -> bool {
         let (basic, pos) = match nid {
             Nid::Basic(nid) => (true, nid),
@@ -197,6 +198,7 @@ impl<N: Nodeish> GenericDocument<N> {
         self.files[file_id].is_open = value;
     }
 
+    #[allow(dead_code)] // TODO
     pub fn find_file_header(&self, file_id: usize) -> Nid {
         self.files[file_id].header_nid
     }
