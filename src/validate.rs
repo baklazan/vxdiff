@@ -206,6 +206,7 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]])
     }
 
     // The sections of each file should exactly cover the file content.
+    // Each used section side should have the correct file_id.
     for (file_id, FileDiff { ops }) in diff.files.iter().enumerate() {
         for side in 0..2 {
             let side_name = ["left", "right"][side];
@@ -215,17 +216,18 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]])
                 if op.movement()[side] == 0 {
                     continue;
                 }
-                let Some(section_side) = &diff.sections[section_id].sides[side] else { continue // We already complained.
-                 };
-                let byte_range = &section_side.byte_range;
-                if byte_range.is_empty() {
+                let Some(section_side) = &diff.sections[section_id].sides[side] else {
                     continue; // We already complained.
+                };
+                let claimed_file_id = section_side.file_id;
+                if claimed_file_id != file_id {
+                    errors.push(format!("The {side_name} side of section {section_id} has file_id = {claimed_file_id}, but it is used in file {file_id}"));
                 }
-                let start_offset = byte_range.start;
+                let start_offset = section_side.byte_range.start;
                 if current_offset != start_offset {
                     errors.push(format!("The {side_name} side of file {file_id} ({filename:?}) has section {section_id} which starts at offset {start_offset}, but it should start at offset {current_offset}"));
                 }
-                current_offset = byte_range.end;
+                current_offset = section_side.byte_range.end;
             }
             let file_size = file_input[file_id][side].len();
             if current_offset != file_size {
