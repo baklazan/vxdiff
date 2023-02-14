@@ -64,52 +64,61 @@ fn print_side(
 }
 
 pub fn print(diff: &Diff, file_input: &[[&str; 2]], output: &mut impl io::Write) -> TheResult {
-    let mut write_line = |line: &str, _visible_length: usize, _newline_style: &Style| {
-        // Never highlight the final newline because terminals are bad.
-        write!(output, "{}\n", line)?;
-        Ok(())
-    };
-    for (op, section_id) in diff.files[0].ops.iter() {
-        let section = &diff.sections[*section_id];
-        match op {
-            DiffOp::Match => {
-                if section.equal {
-                    // TODO: Check old == new.
-                    print_side(' ', &Style::new(), &section.sides[0], file_input[0][0], &mut write_line)?;
-                } else {
-                    print_side(
-                        '-',
-                        &Style::new().red(),
-                        &section.sides[0],
-                        file_input[0][0],
-                        &mut write_line,
-                    )?;
+    for file_id in 0..diff.files.len() {
+        writeln!(output, "file {file_id}")?;
+        let mut write_line = |line: &str, _visible_length: usize, _newline_style: &Style| {
+            // Never highlight the final newline because terminals are bad.
+            write!(output, "{}\n", line)?;
+            Ok(())
+        };
+        for (op, section_id) in diff.files[file_id].ops.iter() {
+            let section = &diff.sections[*section_id];
+            match op {
+                DiffOp::Match => {
+                    if section.equal {
+                        // TODO: Check old == new.
+                        print_side(
+                            ' ',
+                            &Style::new(),
+                            &section.sides[0],
+                            file_input[file_id][0],
+                            &mut write_line,
+                        )?;
+                    } else {
+                        print_side(
+                            '-',
+                            &Style::new().red(),
+                            &section.sides[0],
+                            file_input[file_id][0],
+                            &mut write_line,
+                        )?;
+                        print_side(
+                            '+',
+                            &Style::new().green(),
+                            &section.sides[1],
+                            file_input[file_id][1],
+                            &mut write_line,
+                        )?;
+                    }
+                }
+                DiffOp::Insert => {
                     print_side(
                         '+',
                         &Style::new().green(),
                         &section.sides[1],
-                        file_input[0][1],
+                        file_input[file_id][1],
                         &mut write_line,
                     )?;
                 }
-            }
-            DiffOp::Insert => {
-                print_side(
-                    '+',
-                    &Style::new().green(),
-                    &section.sides[1],
-                    file_input[0][1],
-                    &mut write_line,
-                )?;
-            }
-            DiffOp::Delete => {
-                print_side(
-                    '-',
-                    &Style::new().red(),
-                    &section.sides[0],
-                    file_input[0][0],
-                    &mut write_line,
-                )?;
+                DiffOp::Delete => {
+                    print_side(
+                        '-',
+                        &Style::new().red(),
+                        &section.sides[0],
+                        file_input[file_id][0],
+                        &mut write_line,
+                    )?;
+                }
             }
         }
     }
@@ -120,38 +129,41 @@ pub fn print_side_by_side(diff: &Diff, file_input: &[[&str; 2]], output: &mut im
     let width = 121;
     let empty = String::from("x") + &" ".repeat(width - 1);
 
-    for (op, section_id) in diff.files[0].ops.iter() {
-        let section = &diff.sections[*section_id];
-        let styles = match op {
-            DiffOp::Match => {
-                if section.equal {
-                    [(' ', Style::new()), (' ', Style::new())]
-                } else {
-                    [('-', Style::new().red()), ('+', Style::new().green())]
+    for file_id in 0..diff.files.len() {
+        writeln!(output, "file {file_id}")?;
+        for (op, section_id) in diff.files[file_id].ops.iter() {
+            let section = &diff.sections[*section_id];
+            let styles = match op {
+                DiffOp::Match => {
+                    if section.equal {
+                        [(' ', Style::new()), (' ', Style::new())]
+                    } else {
+                        [('-', Style::new().red()), ('+', Style::new().green())]
+                    }
                 }
-            }
-            DiffOp::Insert => [('*', Style::new().blue()), ('+', Style::new().green())],
-            DiffOp::Delete => [('-', Style::new().red()), ('*', Style::new().blue())],
-        };
-
-        let mut lines = [vec![], vec![]];
-        for i in 0..2 {
-            let mut write_line = |line: &str, visible_length, _newline_style: &Style| {
-                lines[i].push(line.to_string() + &" ".repeat(width - visible_length));
-                Ok(())
+                DiffOp::Insert => [('*', Style::new().blue()), ('+', Style::new().green())],
+                DiffOp::Delete => [('-', Style::new().red()), ('*', Style::new().blue())],
             };
-            print_side(
-                styles[i].0,
-                &styles[i].1,
-                &section.sides[i],
-                file_input[0][i],
-                &mut write_line,
-            )?;
-        }
-        for i in 0..std::cmp::max(lines[0].len(), lines[1].len()) {
-            let left = lines[0].get(i).unwrap_or(&empty);
-            let right = lines[1].get(i).unwrap_or(&empty);
-            write!(output, "{} | {}\n", left, right)?;
+
+            let mut lines = [vec![], vec![]];
+            for i in 0..2 {
+                let mut write_line = |line: &str, visible_length, _newline_style: &Style| {
+                    lines[i].push(line.to_string() + &" ".repeat(width.saturating_sub(visible_length)));
+                    Ok(())
+                };
+                print_side(
+                    styles[i].0,
+                    &styles[i].1,
+                    &section.sides[i],
+                    file_input[file_id][i],
+                    &mut write_line,
+                )?;
+            }
+            for i in 0..std::cmp::max(lines[0].len(), lines[1].len()) {
+                let left = lines[0].get(i).unwrap_or(&empty);
+                let right = lines[1].get(i).unwrap_or(&empty);
+                write!(output, "{} | {}\n", left, right)?;
+            }
         }
     }
     Ok(())
