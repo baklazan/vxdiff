@@ -112,6 +112,10 @@ impl<'a> Builder<'a> {
         for side in 0..2 {
             if both_sides || op.movement()[side] != 0 {
                 let style = styles[side];
+                if self.config.debug_sections {
+                    let string = format!("----- {op:?} #{section_id} -----");
+                    self.add_fabricated(node, HalfLineStyle::Padding, side, string);
+                }
                 let section_side = self.diff.section_side(section_id, side);
                 let offset_override_for_selection = if op.movement()[side] != 0 {
                     // TODO: more asserts
@@ -259,7 +263,13 @@ pub(super) fn build_document(
             let begin = op_index;
             let section_type = b.get_type(ops[begin]);
             let mut end = begin + 1;
-            if section_type == SectionType::MatchEqual || section_type == SectionType::InsertDelete {
+            let can_group_together = match section_type {
+                SectionType::MatchEqual => true,
+                SectionType::MatchUnequal => false,
+                SectionType::InsertDelete => !config.debug_sections,
+                SectionType::Phantom => false,
+            };
+            if can_group_together {
                 while end < ops.len() && b.get_type(ops[end]) == section_type {
                     end += 1;
                 }

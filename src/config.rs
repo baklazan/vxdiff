@@ -198,7 +198,7 @@ fn light_theme() -> Theme {
         text: DiffStyles {
             equal: style!(fg = Color::Rgb(32, 33, 36), bg = Color::Rgb(255, 255, 255)),
             // TODO text_padding fg
-            padding: style!(fg = Color::Gray, bg = Color::Rgb(248, 249, 250)),
+            padding: style!(fg = Color::Rgb(190, 191, 192), bg = Color::Rgb(248, 249, 250)),
             change_old: style!(fg = Color::Rgb(32, 33, 36), bg = Color::Rgb(255, 235, 238)),
             change_new: style!(fg = Color::Rgb(32, 33, 36), bg = Color::Rgb(216, 254, 216)),
             // TODO
@@ -339,6 +339,9 @@ config_structs! {
     #[config_opt(arg(long, value_name = "CHARS"))]
     pub button_hint_chars: String,
 
+    #[config_opt(arg(long, require_equals = true, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL", group = "debug_sections_group"))]
+    pub debug_sections: bool,
+
     #[config_alias(phantom_rendering = false)]
     #[config_opt(arg(long, group = "phantom_rendering_group"))]
     pub no_phantom_rendering: bool,
@@ -366,6 +369,10 @@ config_structs! {
     #[config_alias(show_cursor = false)]
     #[config_opt(arg(long, group = "show_cursor_group"))]
     pub hide_cursor: bool,
+
+    #[config_alias(debug_sections = false)]
+    #[config_opt(arg(long, group = "debug_sections_group"))]
+    pub no_debug_sections: bool,
 }
 
 impl Default for Config {
@@ -385,6 +392,7 @@ impl Default for Config {
             open_all_files: true,
             show_cursor: true,
             button_hint_chars: "1234567890qwertyuiopasdfghjklzxcvbnm".to_owned(),
+            debug_sections: false,
         }
     }
 }
