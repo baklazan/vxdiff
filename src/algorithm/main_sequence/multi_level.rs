@@ -5,6 +5,7 @@ use crate::algorithm::{
     scoring::{
         affine_scoring::AffineLineScoring,
         line_bounds_scoring::LineBoundsScoring,
+        line_skipping::SKIP_SIMILARITY_THRESHOLD,
         simple::{
             k_gram_sampling::KGramSamplingScoring, whitespace_ignoring::WhitespaceIgnoringScoring,
             zero_one::ZeroOneScoring, zero_or_information::ZeroOrInformationScoring,
@@ -377,7 +378,7 @@ pub(in crate::algorithm) fn lines_then_words_aligner<'a>(
             line_bounds_scoring,
         )),
         LineScoringStrategy::KGram => Box::new(AffineLineScoring::new(
-            KGramSamplingScoring::new(&text_lines),
+            KGramSamplingScoring::new(&text_lines, SKIP_SIMILARITY_THRESHOLD),
             line_bounds_scoring,
         )),
     };

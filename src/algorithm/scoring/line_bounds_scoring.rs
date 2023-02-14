@@ -4,6 +4,9 @@ use crate::algorithm::{indices::LineIndex, PartitionedText};
 
 use super::TScore;
 
+// For two consecutive lines, compute how much we don't want to
+// start/end a big block (a moved block, a multiline indel etc.)
+// between these two lines
 pub(in crate::algorithm) struct LineBoundsScoring {
     bound_scores: Vec<[IndexVec<LineIndex, TScore>; 2]>,
 }

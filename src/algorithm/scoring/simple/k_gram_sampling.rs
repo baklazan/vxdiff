@@ -16,6 +16,7 @@ pub struct KGramSamplingScoring {
     bitvectors: Vec<[Vec<[u128; Self::BITVECTOR_LENGTH / 128]>; 2]>,
     ones_counts: Vec<[Vec<usize>; 2]>,
     part_scores: Vec<[Vec<TScore>; 2]>,
+    zero_at_similarity: f64,
 }
 
 impl KGramSamplingScoring {
@@ -26,7 +27,7 @@ impl KGramSamplingScoring {
 
     const HASH_MOD_P: u64 = 1000000009;
 
-    pub(in crate::algorithm) fn new(text_parts: &[[PartitionedText; 2]]) -> Self {
+    pub(in crate::algorithm) fn new(text_parts: &[[PartitionedText; 2]], zero_at_similarity: f64) -> Self {
         const BASE: u64 = 257;
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(42);
         let hash_factor: u64 = rng.gen_range(1..Self::HASH_MOD_P);
@@ -99,6 +100,7 @@ impl KGramSamplingScoring {
             bitvectors,
             ones_counts,
             part_scores: information_values(text_parts),
+            zero_at_similarity,
         }
     }
 }
@@ -124,8 +126,11 @@ impl MatchScoring for KGramSamplingScoring {
             / (Self::BITVECTOR_LENGTH - usize::max(one_counts[0], one_counts[1])) as f64;
 
         let hit_scores = [0, 1].map(|side| corrected_hits / one_counts[side] as TScore * scores[side]);
+        let hit_score = TScore::min(hit_scores[0], hit_scores[1]);
         let lower_exact_score = TScore::min(scores[0], scores[1]);
-        let proposed_score = TScore::min(hit_scores[0], hit_scores[1]) * 2.0 - lower_exact_score;
+
+        let proposed_score =
+            (hit_score - lower_exact_score * self.zero_at_similarity) / (1.0 - self.zero_at_similarity);
 
         TScore::min(proposed_score, Self::MAX_NONEXACT_SCORE_RATIO * lower_exact_score)
     }

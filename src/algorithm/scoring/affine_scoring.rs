@@ -36,9 +36,6 @@ impl<'a, Matcher: MatchScoring> AffineLineScoring<'a, Matcher> {
         to_substate: usize,
     ) -> TScore {
         let mut cost = 0.0;
-        if from_substate == to_substate && from_substate != Self::MATCH {
-            cost += self.gap_scoring.gap_continuation();
-        }
         for (side, &state) in [Self::DELETE, Self::INSERT].iter().enumerate() {
             if (from_substate == state) ^ (to_substate == state) {
                 cost += self
