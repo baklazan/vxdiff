@@ -9,7 +9,7 @@ edition = "2021"
 atty = "*"
 base64 = "*"
 clap = { version = "*", features = ["derive"] }
-crossterm = "*"
+crossterm = "0.25.0"  # Must be the same version as tui depends on.
 dirs = "*"
 float-ord = "*"
 index_vec = "0.1.3"

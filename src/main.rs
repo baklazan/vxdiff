@@ -84,7 +84,7 @@ fn try_main() -> DynResult<()> {
     let config_file = args.config.config_file.clone().or_else(config_file_default);
     if let Some(config_file) = config_file {
         match std::fs::read(config_file) {
-            Ok(b) => config = config.update(toml::from_slice(&b)?),
+            Ok(b) => config = config.update(toml::from_str(std::str::from_utf8(&b)?)?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e)?,
         }

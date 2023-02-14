@@ -1,11 +1,13 @@
 use crate::config::ClipboardMechanism;
+use base64::Engine as _;
 use std::io::{self, Write as _};
 
 pub fn copy_to_clipboard(mechanism: &ClipboardMechanism, text: &str) -> Result<(), io::Error> {
     match mechanism {
         ClipboardMechanism::Terminal => {
             // https://terminalguide.namepad.de/seq/osc-52/
-            io::stdout().write_all(format!("\x1b]52;c;{}\x1b\\", base64::encode(text)).as_bytes())?;
+            let base64_text = base64::engine::general_purpose::STANDARD.encode(text);
+            io::stdout().write_all(format!("\x1b]52;c;{base64_text}\x1b\\").as_bytes())?;
         }
         ClipboardMechanism::ExternalHelper => {
             let mut found_candidate = false;
