@@ -9,7 +9,6 @@ edition = "2021"
 atty = "*"
 base64 = "*"
 clap = { version = "*", features = ["derive"] }
-console = "*"
 crossterm = "*"
 dirs = "*"
 float-ord = "*"
