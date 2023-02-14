@@ -1,5 +1,6 @@
 mod builder;
 mod clipboard;
+mod direct;
 mod doc;
 mod gui_layout;
 mod line_layout;
@@ -380,74 +381,6 @@ impl<'a> DocumentView<'a> {
 
 type TheResult = Result<(), Box<dyn Error>>;
 
-fn print_plainly(doc_view: &DocumentView, nid: Nid, output: &mut impl io::Write) -> TheResult {
-    doc_view.with_ui_lines(nid, |lines| -> TheResult {
-        for line in lines {
-            match line {
-                UILine::Sides(sides) => {
-                    let render_half = |side: usize| -> String {
-                        let layout = layout_diff_line(
-                            doc_view.diff,
-                            side,
-                            &sides[side].source,
-                            &[],
-                            sides[side].offset,
-                            doc_view.wrap_width,
-                        );
-                        fn show_cell(cell: &LineCell) -> String {
-                            format!(
-                                "{}{}{}",
-                                if cell.highlight { "\x1b[1m" } else { "" },
-                                cell.egc,
-                                if cell.highlight { "\x1b[0m" } else { "" }
-                            )
-                        }
-                        layout.cells.iter().map(show_cell).collect::<String>()
-                            + &" ".repeat(doc_view.wrap_width - layout.cells.len())
-                    };
-                    writeln!(output, "{} | {}", render_half(0), render_half(1))?;
-                }
-                UILine::FileHeaderLine(file_id) => {
-                    writeln!(output, "file #{}", file_id)?;
-                }
-                UILine::ExpanderLine => {
-                    let hidden_count = doc_view.doc.get_expander_hidden_count(nid);
-                    writeln!(output, "...{} hidden lines...", hidden_count)?;
-                }
-            }
-        }
-        Ok(())
-    })
-}
-
-pub fn print_side_by_side_diff_plainly(
-    diff: Diff,
-    mut config: Config,
-    file_input: &[[&str; 2]],
-    file_names: &[[&str; 2]],
-    output: &mut impl io::Write,
-) -> TheResult {
-    // Gotta expand the file headers in order to see any content.
-    config.open_all_files = true;
-
-    let diff = make_extended_diff(diff, file_input, file_names);
-    let doc = build_document(&config, &diff, None);
-
-    let doc_view = DocumentView {
-        doc: &doc,
-        diff: &diff,
-        wrap_width: 80,
-    };
-
-    let mut pos = doc_view.doc.first_visible_node(First);
-    while let Some(nid) = pos {
-        print_plainly(&doc_view, nid, output)?;
-        pos = doc_view.doc.next_visible_node(nid, Next);
-    }
-
-    Ok(())
-}
-
 fn compute_line_number_width(diff: &ExtendedDiff) -> usize {
     // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
     diff.file_sides
@@ -479,10 +412,12 @@ fn main_gui_layout(terminal_width: usize, line_number_width: usize, show_cursor:
     gui_layout(constraints, 0..terminal_width)
 }
 
+type ButtonFn = Rc<dyn Fn(&mut State)>;
+
 #[derive(Clone)]
 enum MouseCell {
     Inert,
-    Button(Rc<dyn Fn(&mut State)>),
+    Button(ButtonFn),
     Text {
         file_id: usize,
         side: usize,
@@ -498,7 +433,7 @@ enum MouseCell {
 #[derive(Clone)]
 struct ButtonInfo {
     id: (Nid, usize),
-    func: Rc<dyn Fn(&mut State)>,
+    func: ButtonFn,
 }
 
 struct RenderedInfo {
@@ -1466,80 +1401,69 @@ impl<'a> State<'a> {
         }
     }
 
-    fn render(
-        &mut self,
-        term_width: usize,
-        term_height: usize,
-        old_rendered: Option<&RenderedInfo>,
+    fn render_line(
+        &self,
+        layout: &[Range<usize>; 6],
+        y: usize,
+        pos: LeafPosition,
+        interactive: bool,
+        rendered: &mut RenderedInfo,
         buffer: &mut tui::buffer::Buffer,
-    ) -> RenderedInfo {
-        let layout = main_gui_layout(term_width, self.line_number_width, self.config.show_cursor);
-        self.resize(compute_wrap_width(&layout), term_height);
+        add_button: &mut impl FnMut(usize, Range<usize>, String, ButtonFn),
+    ) {
         let [xcursor, xnuml, xmainl, xsep, xmainr, xnumr] = layout;
+        let term_width = u16tos(buffer.area.width);
 
-        let mut rendered = RenderedInfo {
-            mouse_cells: vec![vec![MouseCell::Inert; term_width]; term_height],
-            mouse_pseudocell_after: vec![[MouseCell::Inert, MouseCell::Inert]; term_height],
-            terminal_cursor: None,
-            button_hints: vec![None; self.button_hint_chars.len()],
-        };
+        if pos == self.cursor_pos && self.config.show_cursor {
+            buffer_write(buffer, xcursor.start, y, ">", self.config.theme.cursor);
+        }
 
-        type ButtonDef = ((Nid, usize), Range<usize>, usize, String, Rc<dyn Fn(&mut State)>);
-        let mut buttons: Vec<ButtonDef> = vec![];
-
-        let mut pos = self.scroll_pos;
-        let real_scroll_height = match self.mode {
-            GuiMode::Default => self.scroll_height,
-            GuiMode::Jump { .. } => self.scroll_height - 1,
-            GuiMode::Search { .. } => self.scroll_height - 1,
-        };
-        for y in 0..real_scroll_height {
-            if pos == self.cursor_pos && self.config.show_cursor {
-                buffer_write(buffer, xcursor.start, y, ">", self.config.theme.cursor);
-            }
-            let doc_view = self.doc_view();
-            doc_view.with_ui_lines(pos.parent, |lines| match lines[pos.line_index] {
-                UILine::Sides(ref sides) => {
-                    for side in 0..2 {
-                        self.render_half_line(
-                            pos,
-                            sides,
-                            side,
-                            [xmainl.start, xmainr.start][side],
-                            [&xnuml, &xnumr][side].clone(),
-                            [1, 0][side],
-                            y,
-                            buffer,
-                            &mut rendered,
-                        );
-                    }
-                    let sep = if xsep.len() == 2 { "▕▏" } else { " ┃ " };
-                    buffer_write(buffer, xsep.start, y, sep, self.config.theme.middle_separator);
+        let doc_view = self.doc_view();
+        doc_view.with_ui_lines(pos.parent, |lines| match lines[pos.line_index] {
+            UILine::Sides(ref sides) => {
+                for side in 0..2 {
+                    self.render_half_line(
+                        pos,
+                        sides,
+                        side,
+                        [xmainl.start, xmainr.start][side],
+                        [xnuml, xnumr][side].clone(),
+                        [1, 0][side],
+                        y,
+                        buffer,
+                        rendered,
+                    );
                 }
-                UILine::FileHeaderLine(file_id) => {
-                    let is_open = self.doc.get_open_file(file_id);
-                    let mut string = self.diff.file_headers[file_id].clone();
-                    if !self.file_status_text[file_id].is_empty() {
-                        string.push_str(&format!(" ({})", self.file_status_text[file_id]));
-                    }
-                    let style = if is_open {
-                        self.config.theme.file_header_open
-                    } else {
-                        self.config.theme.file_header_closed
-                    };
-                    let x = if self.config.show_cursor { 1 } else { 0 };
-                    buffer_write(buffer, x, y, " ".repeat(term_width - x), style);
-                    buffer_write(buffer, x, y, string, style);
+                let sep = if xsep.len() == 2 { "▕▏" } else { " ┃ " };
+                buffer_write(buffer, xsep.start, y, sep, self.config.theme.middle_separator);
+            }
+            UILine::FileHeaderLine(file_id) => {
+                let is_open = self.doc.get_open_file(file_id);
+                let mut string = self.diff.file_headers[file_id].clone();
+                if !self.file_status_text[file_id].is_empty() {
+                    string.push_str(&format!(" ({})", self.file_status_text[file_id]));
+                }
+                let style = if is_open {
+                    self.config.theme.file_header_open
+                } else {
+                    self.config.theme.file_header_closed
+                };
+                let x = if self.config.show_cursor { 1 } else { 0 };
+                buffer_write(buffer, x, y, " ".repeat(term_width - x), style);
+                buffer_write(buffer, x, y, string, style);
+                if interactive {
                     let button_text = if is_open { "Close".to_owned() } else { "Open".to_owned() };
                     let button_pos = (term_width - 1 - button_text.width() - 4)..(term_width - 1);
                     let button_fn = Rc::new(move |s: &mut State| s.toggle_open_file(pos.parent));
-                    buttons.push(((pos.parent, 0), button_pos, y, button_text, button_fn));
+                    add_button(0, button_pos, button_text, button_fn);
                 }
-                UILine::ExpanderLine => {
-                    let hidden_count = self.doc.get_expander_hidden_count(pos.parent);
-                    let x = if self.config.show_cursor { 1 } else { 0 };
-                    let hline = tui::symbols::line::DOUBLE_HORIZONTAL.repeat(term_width - x);
-                    buffer_write(buffer, x, y, hline, self.config.theme.expander);
+            }
+            UILine::ExpanderLine => {
+                let hidden_count = self.doc.get_expander_hidden_count(pos.parent);
+                let x = if self.config.show_cursor { 1 } else { 0 };
+                let hline = tui::symbols::line::DOUBLE_HORIZONTAL.repeat(term_width - x);
+                buffer_write(buffer, x, y, hline, self.config.theme.expander);
+                if interactive {
                     let up_text = "+3↑".to_owned();
                     let all_text = format!("Expand {hidden_count} matching lines");
                     let down_text = "+3↓".to_owned();
@@ -1557,12 +1481,51 @@ impl<'a> State<'a> {
                     let up_fn = Rc::new(move |s: &mut State| s.expand_expander(pos, 3, Prev));
                     let all_fn = Rc::new(move |s: &mut State| s.expand_expander(pos, hidden_count, Next));
                     let down_fn = Rc::new(move |s: &mut State| s.expand_expander(pos, 3, Next));
-                    buttons.push(((pos.parent, 0), up_pos, y, up_text, up_fn));
-                    buttons.push(((pos.parent, 1), all_pos, y, all_text, all_fn));
-                    buttons.push(((pos.parent, 2), down_pos, y, down_text, down_fn));
+                    add_button(0, up_pos, up_text, up_fn);
+                    add_button(1, all_pos, all_text, all_fn);
+                    add_button(2, down_pos, down_text, down_fn);
+                } else {
+                    let all_text = format!(" {hidden_count} matching lines ");
+                    let constraints = [Some(x), None, Some(all_text.width()), None];
+                    let [_, _, all_pos, _] = gui_layout(constraints, 0..term_width);
+                    buffer_write(buffer, all_pos.start, y, all_text, self.config.theme.button);
                 }
-            });
-            if let Some(next) = doc_view.next_leaf(pos, Next) {
+            }
+        });
+    }
+
+    fn render(
+        &mut self,
+        term_width: usize,
+        term_height: usize,
+        old_rendered: Option<&RenderedInfo>,
+        buffer: &mut tui::buffer::Buffer,
+    ) -> RenderedInfo {
+        let layout = main_gui_layout(term_width, self.line_number_width, self.config.show_cursor);
+        self.resize(compute_wrap_width(&layout), term_height);
+
+        let mut rendered = RenderedInfo {
+            mouse_cells: vec![vec![MouseCell::Inert; term_width]; term_height],
+            mouse_pseudocell_after: vec![[MouseCell::Inert, MouseCell::Inert]; term_height],
+            terminal_cursor: None,
+            button_hints: vec![None; self.button_hint_chars.len()],
+        };
+
+        type ButtonDef = ((Nid, usize), Range<usize>, usize, String, ButtonFn);
+        let mut buttons: Vec<ButtonDef> = vec![];
+
+        let mut pos = self.scroll_pos;
+        let real_scroll_height = match self.mode {
+            GuiMode::Default => self.scroll_height,
+            GuiMode::Jump { .. } => self.scroll_height - 1,
+            GuiMode::Search { .. } => self.scroll_height - 1,
+        };
+        for y in 0..real_scroll_height {
+            let mut add_button = |button_index: usize, x_range: Range<usize>, text: String, func: ButtonFn| {
+                buttons.push(((pos.parent, button_index), x_range, y, text, func));
+            };
+            self.render_line(&layout, y, pos, true, &mut rendered, buffer, &mut add_button);
+            if let Some(next) = self.doc_view().next_leaf(pos, Next) {
                 pos = next;
             } else {
                 break;
@@ -1678,6 +1641,37 @@ impl<'a> State<'a> {
 
         rendered
     }
+
+    fn render_noninteractive(&mut self, term_width: usize, mut output: impl std::io::Write) -> TheResult {
+        let layout = main_gui_layout(term_width, self.line_number_width, self.config.show_cursor);
+        self.resize(compute_wrap_width(&layout), 1);
+
+        let mut pos = self.scroll_pos;
+        loop {
+            let mut rendered = RenderedInfo {
+                mouse_cells: vec![vec![MouseCell::Inert; term_width]; 1],
+                mouse_pseudocell_after: vec![[MouseCell::Inert, MouseCell::Inert]; 1],
+                terminal_cursor: None,
+                button_hints: vec![],
+            };
+            let mut buffer = tui::buffer::Buffer::empty(tui::layout::Rect {
+                x: 0,
+                y: 0,
+                width: usto16(term_width),
+                height: 1,
+            });
+            let mut add_button = |_, _, _, _| panic!("add_button called");
+            self.render_line(&layout, 0, pos, false, &mut rendered, &mut buffer, &mut add_button);
+            direct::print_buffer_directly(&buffer, &mut output)?;
+            if let Some(next) = self.doc_view().next_leaf(pos, Next) {
+                pos = next;
+            } else {
+                break;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 // This hack is needed because tui-rs doesn't have a way to get Buffer from Frame. The only thing
@@ -1696,17 +1690,14 @@ where
 
 type TheTerminal = tui::terminal::Terminal<tui::backend::CrosstermBackend<io::Stdout>>;
 
-pub fn run_tui(
+fn make_state<'a>(
     diff: Diff,
     config: Config,
-    file_input: &[[&str; 2]],
-    file_names: &[[&str; 2]],
-    file_status_text: &[&str],
+    file_input: &'a [[&str; 2]],
+    file_names: &'a [[&str; 2]],
+    file_status_text: &'a [&str],
     diff_algorithm: crate::algorithm::DiffAlgorithm,
-    terminal: &mut TheTerminal,
-) -> TheResult {
-    let diff = make_extended_diff(diff, file_input, file_names);
-
+) -> State<'a> {
     let button_hint_chars: Vec<char> = {
         let mut seen = HashSet::new();
         (config.button_hint_chars)
@@ -1723,42 +1714,54 @@ pub fn run_tui(
         .map(|(n, c)| (c, n))
         .collect();
 
-    let mut state = {
-        let line_number_width = compute_line_number_width(&diff);
-        let diff_hints = vec![vec![]; diff.files.len()];
-        let initial_doc = build_document(&config, &diff, None);
-        let initial_scroll = DocumentView {
-            doc: &initial_doc,
-            diff: &diff,
-            wrap_width: usize::MAX,
-        }
-        .first_visible_leaf(First)
-        .unwrap();
-        State {
-            config,
-            doc: initial_doc,
-            diff,
-            file_input,
-            file_names,
-            file_status_text,
-            diff_algorithm,
-            line_number_width,
-            scroll_pos: initial_scroll,
-            cursor_pos: initial_scroll,
-            wrap_width: usize::MAX,    // Will be corrected immediately in first render().
-            scroll_height: usize::MAX, // Will be corrected immediately in first render().
-            selection: Selection::None,
-            search_query: None,
-            search_matches: [vec![], vec![]],
-            search_highlights: Default::default(),
-            mode: GuiMode::Default,
-            focused_side: 1,
-            button_hint_chars,
-            reverse_button_hint_chars,
-            diff_hints,
-            must_refresh_terminal: false,
-        }
-    };
+    let diff = make_extended_diff(diff, file_input, file_names);
+
+    let line_number_width = compute_line_number_width(&diff);
+    let diff_hints = vec![vec![]; diff.files.len()];
+    let initial_doc = build_document(&config, &diff, None);
+    let initial_scroll = DocumentView {
+        doc: &initial_doc,
+        diff: &diff,
+        wrap_width: usize::MAX,
+    }
+    .first_visible_leaf(First)
+    .unwrap();
+    State {
+        config,
+        doc: initial_doc,
+        diff,
+        file_input,
+        file_names,
+        file_status_text,
+        diff_algorithm,
+        line_number_width,
+        scroll_pos: initial_scroll,
+        cursor_pos: initial_scroll,
+        wrap_width: usize::MAX,    // Will be corrected immediately in first render().
+        scroll_height: usize::MAX, // Will be corrected immediately in first render().
+        selection: Selection::None,
+        search_query: None,
+        search_matches: [vec![], vec![]],
+        search_highlights: Default::default(),
+        mode: GuiMode::Default,
+        focused_side: 1,
+        button_hint_chars,
+        reverse_button_hint_chars,
+        diff_hints,
+        must_refresh_terminal: false,
+    }
+}
+
+pub fn run_tui(
+    diff: Diff,
+    config: Config,
+    file_input: &[[&str; 2]],
+    file_names: &[[&str; 2]],
+    file_status_text: &[&str],
+    diff_algorithm: crate::algorithm::DiffAlgorithm,
+    terminal: &mut TheTerminal,
+) -> TheResult {
+    let mut state = make_state(diff, config, file_input, file_names, file_status_text, diff_algorithm);
 
     let mut rendered = None;
 
@@ -1793,6 +1796,25 @@ pub fn run_tui(
             }
         }
     }
+}
+
+pub fn print_noninteractive_diff(
+    diff: Diff,
+    mut config: Config,
+    file_input: &[[&str; 2]],
+    file_names: &[[&str; 2]],
+    file_status_text: &[&str],
+    diff_algorithm: crate::algorithm::DiffAlgorithm,
+    output: impl io::Write,
+) -> TheResult {
+    config.open_all_files = true;
+    config.show_cursor = false;
+
+    // TODO: Add a command line option to override term_width for plain output (or maybe even tui output).
+    let term_width = u16tos(crossterm::terminal::size()?.0);
+
+    let mut state = make_state(diff, config, file_input, file_names, file_status_text, diff_algorithm);
+    state.render_noninteractive(term_width, output)
 }
 
 pub fn run_in_terminal(f: impl FnOnce(&mut TheTerminal) -> TheResult) -> TheResult {

@@ -8,7 +8,7 @@ use vxdiff::{
         read_as_git_pager, read_by_running_git_diff_raw, read_file_list, run_external_helper_for_git_diff,
         run_git_diff, ProgramInput,
     },
-    tui_terminal::{print_side_by_side_diff_plainly, run_in_terminal, run_tui},
+    tui_terminal::{print_noninteractive_diff, run_in_terminal, run_tui},
     validate::{print_errors, validate},
     DynResult,
 };
@@ -129,7 +129,15 @@ fn try_main() -> DynResult<()> {
         OutputMode::Debug => println!("{diff:#?}"),
         OutputMode::Unified => print(&diff, &file_input, &mut stdout())?,
         OutputMode::Side => print_side_by_side(&diff, &file_input, &mut stdout())?,
-        OutputMode::TuiPlain => print_side_by_side_diff_plainly(diff, config, &file_input, &file_names, &mut stdout())?,
+        OutputMode::TuiPlain => print_noninteractive_diff(
+            diff,
+            config,
+            &file_input,
+            &file_names,
+            &file_status_text,
+            algorithm,
+            &mut stdout(),
+        )?,
         OutputMode::Tui => run_in_terminal(|terminal| {
             run_tui(
                 diff,
