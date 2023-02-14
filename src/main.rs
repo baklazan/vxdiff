@@ -2,7 +2,6 @@ use clap::{error::ErrorKind, ArgGroup, CommandFactory as _, Parser};
 use std::io::stdout;
 use vxdiff::{
     algorithm::{compute_diff, DiffAlgorithm, LineScoringStrategy, MainSequenceAlgorithm},
-    basic_terminal::{print, print_side_by_side},
     config::{Config, ConfigOpt, DiffAlgorithm as DiffAlgorithmArg, OutputMode},
     input::{
         read_as_git_pager, read_by_running_git_diff_raw, read_file_list, run_external_helper_for_git_diff,
@@ -127,8 +126,6 @@ fn try_main() -> DynResult<()> {
 
     match config.mode {
         OutputMode::Debug => println!("{diff:#?}"),
-        OutputMode::Unified => print(&diff, &file_input, &mut stdout())?,
-        OutputMode::Side => print_side_by_side(&diff, &file_input, &mut stdout())?,
         OutputMode::TuiPlain => print_noninteractive_diff(
             diff,
             config,

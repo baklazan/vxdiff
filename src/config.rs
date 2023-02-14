@@ -235,8 +235,6 @@ fn light_theme() -> Theme {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Deserialize)]
 pub enum OutputMode {
     Debug,
-    Unified,
-    Side,
     TuiPlain,
     Tui,
 }
