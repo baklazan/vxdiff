@@ -90,7 +90,7 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]])
 
     // Every '\n' should be highlighted, except the '\n' at the end of a section (that one doesn't matter).
     // Because sections should be split by matching newlines so we can add padding.
-    // TODO: Decide whether we really want this, and in which cases (equal/non-equal).
+    // TODO: Decide whether we really want this, and in which cases (equal/non-equal, i.e. empty/non-empty highlight_ranges).
     for (section_id, section) in diff.sections.iter().enumerate() {
         for (side, section_side) in section.sides.iter().enumerate() {
             let Some(section_side) = section_side else { continue };
@@ -125,33 +125,6 @@ pub fn validate(diff: &Diff, file_input: &[[&str; 2]], file_names: &[[&str; 2]])
             .all(|s| s.as_ref().map_or(true, |s| s.byte_range.is_empty()))
         {
             errors.push(format!("Both sides of section {section_id} are None or empty"));
-        }
-    }
-
-    // Sections with `section.equal == true` should contain the same string on both sides.
-    // At least for now. We might change this later when ignoring whitespace is enabled.
-    for (section_id, section) in diff.sections.iter().enumerate() {
-        let get = |side: usize| {
-            section.sides[side]
-                .as_ref()
-                .map_or("", |s| &whole_content[section_id][side][s.byte_range.clone()])
-        };
-        if section.equal && get(0) != get(1) {
-            errors.push(format!(
-                "Section {section_id} has equal==true, but its sides actually differ"
-            ));
-        }
-    }
-
-    // Sections with `section.equal == true` should not contain any highlighted words.
-    for (section_id, section) in diff.sections.iter().enumerate() {
-        for (side, section_side) in section.sides.iter().enumerate() {
-            if section.equal && section_side.as_ref().map_or(false, |s| !s.highlight_ranges.is_empty()) {
-                errors.push(format!(
-                    "{} has equal==true, but it contains highlighted text",
-                    side_str(section_id, side)
-                ));
-            }
         }
     }
 

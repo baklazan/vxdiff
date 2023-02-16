@@ -31,7 +31,6 @@ pub struct FileDiff {
 #[derive(Debug, PartialEq)]
 pub struct Section {
     pub sides: [Option<SectionSide>; 2],
-    pub equal: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -39,6 +38,8 @@ pub struct SectionSide {
     pub file_id: usize,
     pub byte_range: Range<usize>,
     pub highlight_ranges: Vec<Range<usize>>,
+    pub only_whitespace_is_highlighted: bool,
+    pub only_leading_whitespace_is_highlighted: bool,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]

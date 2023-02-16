@@ -208,7 +208,7 @@ fn light_theme() -> Theme {
             phantom_new: style!(fg = Color::Cyan, dim = true),
         },
         highlight: DiffStyles {
-            equal: style!(),
+            equal: style!(bg = Color::Rgb(220, 220, 220)),
             padding: style!(),
             change_old: style!(bg = Color::Rgb(255, 205, 210)),
             change_new: style!(bg = Color::Rgb(170, 242, 170)),
@@ -251,6 +251,13 @@ pub enum SearchCaseSensitivity {
     CaseSensitive,
     CaseInsensitive,
     DependsOnPattern,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Deserialize)]
+pub enum IgnoreWhitespace {
+    None,
+    Leading,
+    All,
 }
 
 macro_rules! config_structs {
@@ -340,6 +347,9 @@ config_structs! {
     #[config_opt(arg(long, require_equals = true, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL", group = "debug_sections_group"))]
     pub debug_sections: bool,
 
+    #[config_opt(arg(long, require_equals = true, num_args = 0..=1, default_missing_value = "all", group = "ignore_whitespace_group"))]
+    pub ignore_whitespace: IgnoreWhitespace,
+
     #[config_alias(phantom_rendering = false)]
     #[config_opt(arg(long, group = "phantom_rendering_group"))]
     pub no_phantom_rendering: bool,
@@ -371,6 +381,14 @@ config_structs! {
     #[config_alias(debug_sections = false)]
     #[config_opt(arg(long, group = "debug_sections_group"))]
     pub no_debug_sections: bool,
+
+    #[config_alias(ignore_whitespace = IgnoreWhitespace::None)]
+    #[config_opt(arg(long, group = "ignore_whitespace_group"))]
+    pub no_ignore_whitespace: bool,
+
+    #[config_alias(ignore_whitespace = IgnoreWhitespace::Leading)]
+    #[config_opt(arg(long, group = "ignore_whitespace_group"))]
+    pub ignore_leading_whitespace: bool,
 }
 
 impl Default for Config {
@@ -391,6 +409,7 @@ impl Default for Config {
             show_cursor: true,
             button_hint_chars: "1234567890qwertyuiopasdfghjklzxcvbnm".to_owned(),
             debug_sections: false,
+            ignore_whitespace: IgnoreWhitespace::None,
         }
     }
 }

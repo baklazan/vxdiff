@@ -1,8 +1,8 @@
 use super::{get_partitioned_subtext, AlignedFragment, Diff, DiffOp, FileDiff, PartitionedText, Section, SectionSide};
 use std::ops::Range;
 
-fn highlighted_subsegments<'a>(
-    text_words: &PartitionedText<'a>,
+fn highlighted_subsegments(
+    text_words: &PartitionedText,
     word_indices_and_highlight: &[(bool, usize)],
     file_id: usize,
 ) -> SectionSide {
@@ -10,10 +10,13 @@ fn highlighted_subsegments<'a>(
         assert_eq!(word_indices_and_highlight[i - 1].1 + 1, word_indices_and_highlight[i].1);
     }
 
+    let first_word_index = word_indices_and_highlight[0].1;
     let last_word_index = word_indices_and_highlight.last().unwrap().1;
 
     let mut highlight_ranges = vec![];
     let mut current_highlight_from = None;
+    let mut only_whitespace_is_highlighted = true;
+    let mut only_leading_whitespace_is_highlighted = true;
 
     let sentinel = (false, last_word_index + 1);
     for &(highlight, word_index) in word_indices_and_highlight.iter().chain(std::iter::once(&sentinel)) {
@@ -21,7 +24,16 @@ fn highlighted_subsegments<'a>(
             (true, Some(_)) => {}
             (true, None) => current_highlight_from = Some(word_index),
             (false, Some(start_index)) => {
-                highlight_ranges.push(text_words.part_bounds[start_index]..text_words.part_bounds[word_index]);
+                let range = text_words.part_bounds[start_index]..text_words.part_bounds[word_index];
+                let highlighted_content = &text_words.text[range.clone()];
+                if !highlighted_content.chars().all(|c| c.is_whitespace() && c != '\n') {
+                    only_whitespace_is_highlighted = false;
+                    only_leading_whitespace_is_highlighted = false;
+                }
+                if start_index != first_word_index {
+                    only_leading_whitespace_is_highlighted = false;
+                }
+                highlight_ranges.push(range);
                 current_highlight_from = None;
             }
             (false, None) => {}
@@ -30,14 +42,15 @@ fn highlighted_subsegments<'a>(
 
     SectionSide {
         file_id,
-        byte_range: text_words.part_bounds[word_indices_and_highlight[0].1]
-            ..text_words.part_bounds[last_word_index + 1],
+        byte_range: text_words.part_bounds[first_word_index]..text_words.part_bounds[last_word_index + 1],
         highlight_ranges,
+        only_whitespace_is_highlighted,
+        only_leading_whitespace_is_highlighted,
     }
 }
 
-fn make_sections<'a>(
-    text_words: &[PartitionedText<'a>; 2],
+fn make_sections(
+    text_words: &[PartitionedText; 2],
     file_ids: [usize; 2],
     alignment: &[DiffOp],
     is_main: bool,
@@ -77,10 +90,12 @@ fn make_sections<'a>(
                                 file_id: file_ids[side],
                                 byte_range: byte_index..byte_index,
                                 highlight_ranges: vec![],
+                                only_whitespace_is_highlighted: true,
+                                only_leading_whitespace_is_highlighted: true,
                             })
                         }
                     });
-                    result.push(Section { sides, equal: false });
+                    result.push(Section { sides });
                     section_contents[indel_side].drain(0..current_line_start[indel_side]);
                     current_line_start[indel_side] = 0;
                 }
@@ -111,6 +126,8 @@ fn make_sections<'a>(
                             file_id: file_ids[side],
                             byte_range: byte_index..byte_index,
                             highlight_ranges: vec![],
+                            only_whitespace_is_highlighted: true,
+                            only_leading_whitespace_is_highlighted: true,
                         })
                     }
                 } else {
@@ -121,10 +138,7 @@ fn make_sections<'a>(
                     ))
                 }
             });
-            let equal = sides
-                .iter()
-                .all(|side| side.as_ref().map_or(false, |s| s.highlight_ranges.is_empty()));
-            result.push(Section { sides, equal });
+            result.push(Section { sides });
             section_contents = [vec![], vec![]];
             current_line_start = [0, 0];
             section_contains_match = false;

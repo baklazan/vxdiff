@@ -1,7 +1,7 @@
 use super::doc::{ExpanderId, FrozenDocument, FrozenDocumentReader, GenericDocument, GenericDocumentBuilder, Nodeish};
 use super::{ExtendedDiff, HalfLineStyle, PaddedGroupNode, PaddedGroupRawElement, TextSource};
 use crate::algorithm::{DiffOp, FileDiff};
-use crate::config::Config;
+use crate::config::{Config, IgnoreWhitespace};
 use std::ops::Range;
 
 pub(super) enum Node {
@@ -57,7 +57,15 @@ impl<'a> Builder<'a> {
 
     fn get_type(&self, (op, section_id): (DiffOp, usize)) -> SectionType {
         if op == DiffOp::Match {
-            if self.diff.sections[section_id].equal {
+            if (0..2).all(|side| {
+                let section_side = self.diff.section_side(section_id, side);
+                let almost_equal = match self.config.ignore_whitespace {
+                    IgnoreWhitespace::None => false,
+                    IgnoreWhitespace::Leading => section_side.only_leading_whitespace_is_highlighted,
+                    IgnoreWhitespace::All => section_side.only_whitespace_is_highlighted,
+                };
+                section_side.highlight_ranges.is_empty() || almost_equal
+            }) {
                 SectionType::MatchEqual
             } else {
                 SectionType::MatchUnequal
