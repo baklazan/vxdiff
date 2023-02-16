@@ -9,6 +9,7 @@ mod text_input;
 
 use super::algorithm::{Diff, FileDiff, Section, SectionSide};
 use super::config::{Config, DiffStyles, SearchCaseSensitivity, Style};
+use anyhow::Result;
 use builder::{build_document, Document, Node};
 use clipboard::copy_to_clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -23,7 +24,6 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
 use std::io::{self, Write as _};
 use std::ops::{DerefMut as _, Range};
 use std::rc::Rc;
@@ -378,8 +378,6 @@ impl<'a> DocumentView<'a> {
         }
     }
 }
-
-type TheResult = Result<(), Box<dyn Error>>;
 
 fn compute_line_number_width(diff: &ExtendedDiff) -> usize {
     // TODO: If we have per-file wrap_width later, we could have per-file-side line_number_width too.
@@ -973,7 +971,7 @@ impl<'a> State<'a> {
         self.recompute_diff();
     }
 
-    fn handle_key_event(&mut self, event: KeyEvent, rendered: &RenderedInfo) -> Result<EventResult, Box<dyn Error>> {
+    fn handle_key_event(&mut self, event: KeyEvent, rendered: &RenderedInfo) -> Result<EventResult> {
         if event.modifiers.contains(KeyModifiers::ALT) {
             if let KeyCode::Char(c) = event.code {
                 if let Some(&hint) = self.reverse_button_hint_chars.get(&c.to_ascii_uppercase()) {
@@ -1027,11 +1025,7 @@ impl<'a> State<'a> {
         Ok(EventResult::Nothing)
     }
 
-    fn handle_mouse_event(
-        &mut self,
-        event: MouseEvent,
-        rendered: &RenderedInfo,
-    ) -> Result<EventResult, Box<dyn Error>> {
+    fn handle_mouse_event(&mut self, event: MouseEvent, rendered: &RenderedInfo) -> Result<EventResult> {
         let x = std::cmp::min(u16tos(event.column), rendered.mouse_cells[0].len() - 1);
         let y = std::cmp::min(u16tos(event.row), rendered.mouse_cells.len() - 1);
         match event.kind {
@@ -1095,7 +1089,7 @@ impl<'a> State<'a> {
         Ok(EventResult::Nothing)
     }
 
-    fn handle_event(&mut self, event: Event, rendered: &RenderedInfo) -> Result<EventResult, Box<dyn Error>> {
+    fn handle_event(&mut self, event: Event, rendered: &RenderedInfo) -> Result<EventResult> {
         match self.mode {
             GuiMode::Default => match event {
                 Event::Key(e) => self.handle_key_event(e, rendered),
@@ -1642,7 +1636,7 @@ impl<'a> State<'a> {
         rendered
     }
 
-    fn render_noninteractive(&mut self, term_width: usize, mut output: impl std::io::Write) -> TheResult {
+    fn render_noninteractive(&mut self, term_width: usize, mut output: impl std::io::Write) -> Result<()> {
         let layout = main_gui_layout(term_width, self.line_number_width, self.config.show_cursor);
         self.resize(compute_wrap_width(&layout), 1);
 
@@ -1760,7 +1754,7 @@ pub fn run_tui(
     file_status_text: &[&str],
     diff_algorithm: crate::algorithm::DiffAlgorithm,
     terminal: &mut TheTerminal,
-) -> TheResult {
+) -> Result<()> {
     let mut state = make_state(diff, config, file_input, file_names, file_status_text, diff_algorithm);
 
     let mut rendered = None;
@@ -1806,7 +1800,7 @@ pub fn print_noninteractive_diff(
     file_status_text: &[&str],
     diff_algorithm: crate::algorithm::DiffAlgorithm,
     output: impl io::Write,
-) -> TheResult {
+) -> Result<()> {
     config.open_all_files = true;
     config.show_cursor = false;
 
@@ -1817,7 +1811,7 @@ pub fn print_noninteractive_diff(
     state.render_noninteractive(term_width, output)
 }
 
-pub fn run_in_terminal(f: impl FnOnce(&mut TheTerminal) -> TheResult) -> TheResult {
+pub fn run_in_terminal(f: impl FnOnce(&mut TheTerminal) -> Result<()>) -> Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(
         io::stdout(),
@@ -1827,7 +1821,7 @@ pub fn run_in_terminal(f: impl FnOnce(&mut TheTerminal) -> TheResult) -> TheResu
     let backend = tui::backend::CrosstermBackend::new(io::stdout());
     let mut terminal = tui::Terminal::new(backend)?;
 
-    fn reset_terminal() -> TheResult {
+    fn reset_terminal() -> Result<()> {
         crossterm::terminal::disable_raw_mode()?;
         crossterm::execute!(
             io::stdout(),

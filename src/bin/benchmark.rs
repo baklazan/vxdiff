@@ -1,11 +1,11 @@
+use anyhow::{bail, Result};
+use clap::Parser;
+use regex::Regex;
 use std::{
     ffi::OsStr,
     fs::read_to_string,
     path::{Path, PathBuf},
 };
-
-use clap::Parser;
-use regex::Regex;
 use vxdiff::algorithm::{
     benchmark::{compute_optimal_score, make_scorer, run_algorithm, PreprocessedTestcase},
     LineScoringStrategy, MainSequenceAlgorithm,
@@ -53,28 +53,24 @@ impl AlgorithmType {
         }
     }
 
-    pub fn parse(arg: &str) -> Result<Self, String> {
+    pub fn parse(arg: &str) -> Result<Self> {
         let words: Vec<&str> = arg.split(".").collect();
         match words[0] {
             "naive" => Ok(AlgorithmType::Naive),
             "lines-then-words" => {
                 if words.len() < 2 {
-                    return Err(String::from("Lines-then-words needs a line scoring subargument {zero-one, zero-information, whitespace-ignoring, k-gram}"));
+                    bail!("Lines-then-words needs a line scoring subargument [zero-one, zero-information, whitespace-ignoring, k-gram]");
                 }
                 let line_scoring = match words[1] {
                     "zero-one" => LineScoring::ZeroOne,
                     "zero-information" => LineScoring::ZeroInformation,
                     "whitespace-ignoring" => LineScoring::WhitespaceIgnoring,
                     "k-gram" => LineScoring::KGram,
-                    _ => {
-                        return Err(String::from(
-                            "Unknown line scoring method {zero-one, zero-information, whitespace-ignoring, k-gram}",
-                        ))
-                    }
+                    _ => bail!("Unknown line scoring method [zero-one, zero-information, whitespace-ignoring, k-gram]"),
                 };
                 Ok(AlgorithmType::LinesThenWords(line_scoring))
             }
-            _ => Err(String::from("Unknown algorithm {naive, seeds, lines-then-words}")),
+            _ => bail!("Unknown algorithm [naive, seeds, lines-then-words]"),
         }
     }
 }
@@ -118,7 +114,7 @@ impl AlgorithmStats {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let args = Args::parse();
 
     let regex = Regex::new(&args.filter)?;

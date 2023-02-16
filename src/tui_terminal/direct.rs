@@ -1,4 +1,3 @@
-use super::TheResult;
 use crossterm::queue;
 use crossterm::style::{
     Attribute as CAttribute, Color as CColor, Print, SetAttribute, SetBackgroundColor, SetForegroundColor,
@@ -8,7 +7,7 @@ use tui::buffer::Buffer;
 use tui::style::{Color, Modifier};
 use unicode_width::UnicodeWidthStr as _;
 
-pub fn print_buffer_directly(buffer: &Buffer, mut output: impl Write) -> TheResult {
+pub fn print_buffer_directly(buffer: &Buffer, mut output: impl Write) -> std::io::Result<()> {
     // This is based on tui::backend::CrosstermBackend::draw() but without the MoveTo calls.
     // With bits of tui::buffer::Buffer::diff() mixed in.
     // TODO: Can we switch from tui-rs to some better library?
@@ -48,7 +47,7 @@ pub fn print_buffer_directly(buffer: &Buffer, mut output: impl Write) -> TheResu
     Ok(())
 }
 
-fn modifier_diff(from: Modifier, to: Modifier, mut w: impl Write) -> TheResult {
+fn modifier_diff(from: Modifier, to: Modifier, mut w: impl Write) -> std::io::Result<()> {
     // This is based on tui::backend::crossterm::ModifierDiff, because it isn't public.
     let removed = from - to;
     if removed.contains(Modifier::REVERSED) {
