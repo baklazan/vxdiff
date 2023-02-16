@@ -82,14 +82,9 @@ fn dp_in_area(scoring: &SliceAlignmentPrioritizer, area: &DpArea) -> Vec<ApxDiff
         .map(|(start, end)| DpStateVec::new_with_offset(end + 1 - start, scoring.substates_count(), *start))
         .collect();
 
+    scoring.set_starting_state([0, 0], &mut dp[0][0]);
     for old_index in 0..=scoring.slice.size[0] {
         for new_index in area.row_ranges_local_inclusive[old_index].0..=area.row_ranges_local_inclusive[old_index].1 {
-            let default_score = if old_index == 0 && new_index == 0 {
-                0.0
-            } else {
-                TScore::NEG_INFINITY
-            };
-            scoring.set_starting_state([old_index, new_index], default_score, &mut dp[old_index][new_index]);
             for op in [DiffOp::Match, DiffOp::Delete, DiffOp::Insert] {
                 let previos_old = old_index.wrapping_sub(op.movement()[0]);
                 let previos_new = new_index.wrapping_sub(op.movement()[1]);

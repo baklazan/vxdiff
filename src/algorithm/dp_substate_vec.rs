@@ -12,7 +12,7 @@ pub(super) struct DpStateVec {
 impl DpStateVec {
     pub fn new(length: usize, substates_count: usize) -> Self {
         DpStateVec {
-            internal: vec![DpSubstate::default(); length * substates_count],
+            internal: vec![DpSubstate::negative_inf(); length * substates_count],
             substates_count,
             index_offset: 0,
         }
@@ -21,7 +21,7 @@ impl DpStateVec {
     pub fn new_with_offset(length: usize, substates_count: usize, index_offset: usize) -> Self {
         DpStateVec {
             substates_count,
-            internal: vec![DpSubstate::default(); length * substates_count],
+            internal: vec![DpSubstate::negative_inf(); length * substates_count],
             index_offset,
         }
     }

@@ -9,25 +9,28 @@ pub mod line_skipping;
 pub mod multiline_gaps_scoring;
 pub mod simple;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct DpSubstate {
     pub score: Cell<TScore>,
     pub previous_step: Cell<Option<(DiffOp, usize)>>,
+}
+
+impl DpSubstate {
+    pub fn negative_inf() -> Self {
+        DpSubstate {
+            score: Cell::from(TScore::NEG_INFINITY),
+            previous_step: Cell::from(None),
+        }
+    }
 }
 
 pub trait AlignmentPrioritizer {
     fn substates_count(&self) -> usize;
     fn final_substate(&self) -> usize;
 
-    fn set_starting_state(
-        &self,
-        _dp_position: [usize; 2],
-        _file_ids: [usize; 2],
-        starting_score: TScore,
-        state: &mut [DpSubstate],
-    ) {
+    fn set_starting_state(&self, _dp_position: [usize; 2], _file_ids: [usize; 2], state: &mut [DpSubstate]) {
         state.fill(DpSubstate {
-            score: Cell::from(starting_score),
+            score: Cell::from(0.0),
             previous_step: Cell::from(None),
         });
     }
@@ -153,13 +156,9 @@ impl<'a> SliceAlignmentPrioritizer<'a> {
         self.scoring.final_substate()
     }
 
-    pub fn set_starting_state(&self, dp_position: [usize; 2], starting_score: TScore, state: &mut [DpSubstate]) {
-        self.scoring.set_starting_state(
-            self.slice.global_indices(dp_position),
-            self.slice.file_ids,
-            starting_score,
-            state,
-        );
+    pub fn set_starting_state(&self, dp_position: [usize; 2], state: &mut [DpSubstate]) {
+        self.scoring
+            .set_starting_state(self.slice.global_indices(dp_position), self.slice.file_ids, state);
     }
 
     pub fn consider_step(

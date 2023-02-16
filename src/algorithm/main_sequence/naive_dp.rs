@@ -11,18 +11,9 @@ fn compute_dp_matrix(alignment_scoring: &SliceAlignmentPrioritizer, row_range: u
     let sizes = &alignment_scoring.slice.size;
     let mut result = vec![DpStateVec::new(sizes[1] + 1, alignment_scoring.substates_count()); row_range];
 
+    alignment_scoring.set_starting_state([0, 0], &mut result[0][0]);
     for old_index in 0..=sizes[0] {
         for new_index in 0..=sizes[1] {
-            let default_score = if old_index == 0 && new_index == 0 {
-                0.0
-            } else {
-                TScore::NEG_INFINITY
-            };
-            alignment_scoring.set_starting_state(
-                [old_index, new_index],
-                default_score,
-                &mut result[old_index % row_range][new_index],
-            );
             for op in [DiffOp::Delete, DiffOp::Insert, DiffOp::Match] {
                 if old_index >= op.movement()[0] && new_index >= op.movement()[1] {
                     alignment_scoring.consider_step(

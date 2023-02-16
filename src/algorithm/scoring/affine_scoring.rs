@@ -56,16 +56,10 @@ impl<'a, Matcher: MatchScoring> AlignmentPrioritizer for AffineLineScoring<'a, M
         Self::MATCH
     }
 
-    fn set_starting_state(
-        &self,
-        dp_position: [usize; 2],
-        file_ids: [usize; 2],
-        starting_score: TScore,
-        state: &mut [DpSubstate],
-    ) {
+    fn set_starting_state(&self, dp_position: [usize; 2], file_ids: [usize; 2], state: &mut [DpSubstate]) {
         for substate in 0..Self::SUBSTATES_COUNT {
             state[substate] = DpSubstate {
-                score: Cell::from(starting_score + self.transition_cost(file_ids, dp_position, Self::MATCH, substate)),
+                score: Cell::from(self.transition_cost(file_ids, dp_position, Self::MATCH, substate)),
                 previous_step: Cell::from(None),
             };
         }
