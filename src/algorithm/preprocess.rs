@@ -36,14 +36,16 @@ pub fn partition_into_lines(text: &str) -> Vec<usize> {
     line_bounds
 }
 
-pub(super) struct CharFrequencyCounter {
+pub(super) struct CharScorer {
     frequencies: HashMap<char, usize>,
     total: usize,
 }
 
-impl CharFrequencyCounter {
-    pub fn collect_from_texts(text_parts: &[[PartitionedText; 2]]) -> CharFrequencyCounter {
-        let mut result = CharFrequencyCounter {
+impl CharScorer {
+    const WHITESPACE_INFORMATION_FACTOR: TScore = 0.01;
+
+    pub fn from_texts(text_parts: &[[PartitionedText; 2]]) -> CharScorer {
+        let mut result = CharScorer {
             frequencies: HashMap::new(),
             total: 0,
         };
@@ -61,15 +63,18 @@ impl CharFrequencyCounter {
         result
     }
 
-    pub fn frequency(&self, c: char) -> f64 {
-        *self.frequencies.get(&c).unwrap() as f64 / self.total as f64
+    pub fn score(&self, c: char) -> TScore {
+        let frequency = *self.frequencies.get(&c).unwrap() as f64 / self.total as f64;
+        let score = -frequency.log2() / 5.0;
+        if c.is_whitespace() {
+            score * Self::WHITESPACE_INFORMATION_FACTOR
+        } else {
+            score
+        }
     }
 }
 
-pub(super) fn part_values(
-    text_parts: &[[PartitionedText; 2]],
-    frequencies: &CharFrequencyCounter,
-) -> Vec<[Vec<TScore>; 2]> {
+pub(super) fn part_values(text_parts: &[[PartitionedText; 2]], char_scorer: &CharScorer) -> Vec<[Vec<TScore>; 2]> {
     let mut result = vec![];
     for file_text_parts in text_parts {
         let mut file_values = [vec![], vec![]];
@@ -78,7 +83,7 @@ pub(super) fn part_values(
                 let word = side_text.get_part(i);
                 let mut score: f64 = 0.0;
                 for c in word.chars() {
-                    score += -frequencies.frequency(c).log2() / 5.0;
+                    score += char_scorer.score(c);
                 }
                 file_values[side].push(score);
             }
@@ -89,8 +94,8 @@ pub(super) fn part_values(
 }
 
 pub(super) fn information_values(text_parts: &[[PartitionedText; 2]]) -> Vec<[Vec<TScore>; 2]> {
-    let frequencies = CharFrequencyCounter::collect_from_texts(text_parts);
-    part_values(text_parts, &frequencies)
+    let char_scorer = CharScorer::from_texts(text_parts);
+    part_values(text_parts, &char_scorer)
 }
 
 pub(super) fn internalize_parts(

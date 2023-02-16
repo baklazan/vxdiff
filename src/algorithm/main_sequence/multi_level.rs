@@ -144,7 +144,7 @@ fn refine_alignment(
     max_bruteforce: usize,
 ) -> Vec<ApxDiffOp> {
     const EXACT_RUN_THRESHOLD: usize = 4;
-    const FUZZY_RUN_THRESHOLD: usize = 1;
+    const FUZZY_RUN_THRESHOLD: usize = 2;
 
     let mut is_exact_run = vec![false; coarse_alignment.len()];
     let mut is_fuzzy_run = vec![false; coarse_alignment.len()];
@@ -464,7 +464,6 @@ impl<'a> Aligner for MultiLevelAligner<'a> {
             };
             dp_in_area(&slice_scoring, &area)
         };
-
         for level in (0..top_level).rev() {
             alignment = refine_alignment(
                 &scorings[level],

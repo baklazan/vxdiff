@@ -12,6 +12,8 @@ pub(in crate::algorithm) struct LineBoundsScoring {
 }
 
 impl LineBoundsScoring {
+    const PENALTY_PER_BYTE: TScore = -0.000001;
+
     pub(in crate::algorithm) fn new(text_lines: &[[PartitionedText; 2]]) -> Self {
         let bound_scores = text_lines
             .iter()
@@ -30,7 +32,7 @@ impl LineBoundsScoring {
                         } else {
                             side_lines.part_bounds[line + 1] - side_lines.part_bounds[line]
                         };
-                        side_scores.push(-0.0001 * (usize::min(previous_length, next_length) as TScore));
+                        side_scores.push(Self::PENALTY_PER_BYTE * (usize::min(previous_length, next_length) as TScore));
                     }
                     side_scores
                 })

@@ -2,7 +2,9 @@ use super::{
     indices::{IndexConverter, WordIndex},
     main_sequence::{get_aligner, naive_dp},
     preprocess::{partition_into_lines, partition_into_words},
-    scoring::{line_bounds_scoring::LineBoundsScoring, AlignmentScorer, InputSliceBounds, SliceAlignmentPrioritizer},
+    scoring::{
+        line_bounds_scoring::LineBoundsScoring, AlignmentScorer, InputSliceBounds, SliceAlignmentPrioritizer, TScore,
+    },
     MainSequenceAlgorithm, PartitionedText,
 };
 
@@ -50,7 +52,7 @@ pub fn run_algorithm(
     input: &PreprocessedTestcase,
     scoring: &AlignmentScoring,
     algorithm: MainSequenceAlgorithm,
-) -> f64 {
+) -> TScore {
     let text_words = [[0, 1].map(|side| PartitionedText {
         text: input.text_strings[side],
         part_bounds: &input.word_bounds[side],
@@ -65,7 +67,7 @@ pub fn run_algorithm(
     scoring.score_alignment(&alignment, start, end, file_ids).unwrap()
 }
 
-pub fn compute_optimal_score(input: &PreprocessedTestcase, scoring: &AlignmentScoring) -> f64 {
+pub fn compute_optimal_score(input: &PreprocessedTestcase, scoring: &AlignmentScoring) -> TScore {
     let partitioned_texts = [0, 1].map(|side| PartitionedText {
         text: &input.text_strings[side],
         part_bounds: &input.word_bounds[side],

@@ -1,5 +1,5 @@
 use crate::algorithm::{
-    preprocess::{internalize_parts, part_values, CharFrequencyCounter},
+    preprocess::{internalize_parts, part_values, CharScorer},
     scoring::TScore,
     PartitionedText,
 };
@@ -56,13 +56,13 @@ impl WhitespaceIgnoringScoring {
             }));
         }
 
-        let frequencies = CharFrequencyCounter::collect_from_texts(text_parts);
+        let char_scorer = CharScorer::from_texts(text_parts);
 
         WhitespaceIgnoringScoring {
             full_symbols: internalize_parts(text_parts),
             non_white_symbols: internalize_parts(&non_white_parts),
-            full_values: part_values(text_parts, &frequencies),
-            non_white_values: part_values(&non_white_parts, &frequencies),
+            full_values: part_values(text_parts, &char_scorer),
+            non_white_values: part_values(&non_white_parts, &char_scorer),
         }
     }
 }
