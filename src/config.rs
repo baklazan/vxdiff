@@ -1,6 +1,5 @@
 use clap::{Args, ValueEnum};
 use serde::Deserialize;
-use std::path::PathBuf;
 use tui::style::Color;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Deserialize)]
@@ -280,10 +279,6 @@ macro_rules! config_structs {
         pub struct ConfigOpt {
             $( $( #[$aattr] )* #[serde(skip)] pub $aname: bool, )*
             $( $( #[$attr] )* pub $name: Option<$typ>, )*
-
-            #[arg(long)]
-            #[serde(skip)]
-            pub config_file: Option<PathBuf>,
         }
 
         impl Config {

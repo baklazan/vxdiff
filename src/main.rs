@@ -1,6 +1,7 @@
 use anyhow::{Context as _, Result};
 use clap::{error::ErrorKind, ArgGroup, CommandFactory as _, Parser};
 use std::io::stdout;
+use std::path::PathBuf;
 use vxdiff::{
     algorithm::{compute_diff, DiffAlgorithm, LineScoringStrategy, MainSequenceAlgorithm},
     config::{Config, ConfigOpt, DiffAlgorithm as DiffAlgorithmArg, OutputMode},
@@ -46,6 +47,9 @@ struct Args {
     #[arg(long, hide = true)]
     git_pager_hack: bool,
 
+    #[arg(long)]
+    config_file: Option<PathBuf>,
+
     #[command(flatten)]
     config: ConfigOpt,
 }
@@ -81,7 +85,7 @@ fn try_main() -> Result<()> {
     let mut config = Config::default();
 
     let config_file_default = || dirs::config_dir().map(|c| c.join("vxdiff").join("config.toml"));
-    let config_file = args.config.config_file.clone().or_else(config_file_default);
+    let config_file = args.config_file.clone().or_else(config_file_default);
     if let Some(config_file) = config_file {
         match std::fs::read(&config_file) {
             Ok(config_binary_content) => {
