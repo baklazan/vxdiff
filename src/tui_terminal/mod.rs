@@ -1753,13 +1753,12 @@ pub fn run_tui(
     file_names: &[[&str; 2]],
     file_status_text: &[&str],
     diff_algorithm: crate::algorithm::DiffAlgorithm,
-    terminal: &mut TheTerminal,
 ) -> Result<()> {
     let mut state = make_state(diff, config, file_input, file_names, file_status_text, diff_algorithm);
 
     let mut rendered = None;
 
-    loop {
+    run_in_terminal(|terminal| loop {
         if state.must_refresh_terminal {
             state.must_refresh_terminal = false;
             terminal.clear()?;
@@ -1789,7 +1788,7 @@ pub fn run_tui(
                 break;
             }
         }
-    }
+    })
 }
 
 pub fn print_noninteractive_diff(
@@ -1811,7 +1810,7 @@ pub fn print_noninteractive_diff(
     state.render_noninteractive(term_width, output)
 }
 
-pub fn run_in_terminal(f: impl FnOnce(&mut TheTerminal) -> Result<()>) -> Result<()> {
+fn run_in_terminal(f: impl FnOnce(&mut TheTerminal) -> Result<()>) -> Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(
         io::stdout(),

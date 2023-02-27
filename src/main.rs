@@ -9,7 +9,7 @@ use vxdiff::{
         read_as_git_pager, read_by_running_git_diff_raw, read_file_list, run_external_helper_for_git_diff,
         run_git_diff, ProgramInput,
     },
-    tui_terminal::{print_noninteractive_diff, run_in_terminal, run_tui},
+    tui_terminal::{print_noninteractive_diff, run_tui},
     validate::{print_errors, validate},
 };
 
@@ -146,18 +146,8 @@ fn try_main() -> Result<()> {
             &mut stdout(),
         )
         .context("Failed to print diff")?,
-        OutputMode::Tui => run_in_terminal(|terminal| {
-            run_tui(
-                diff,
-                config,
-                &file_input,
-                &file_names,
-                &file_status_text,
-                algorithm,
-                terminal,
-            )
-        })
-        .context("Error in terminal UI")?,
+        OutputMode::Tui => run_tui(diff, config, &file_input, &file_names, &file_status_text, algorithm)
+            .context("Error in terminal UI")?,
     }
 
     Ok(())
