@@ -5,6 +5,7 @@ mod doc;
 mod gui_layout;
 mod line_layout;
 mod range_map;
+mod syntax;
 mod text_input;
 
 use super::algorithm::{Diff, FileDiff, Section, SectionSide};
@@ -28,6 +29,7 @@ use std::io::{self, Write as _};
 use std::ops::{DerefMut as _, Range};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use syntax::make_syntax_highlights;
 use text_input::TextInput;
 use tui::style::Modifier;
 use unicode_width::UnicodeWidthStr as _;
@@ -201,6 +203,7 @@ fn layout_diff_line(
     side: usize,
     source: &TextSource,
     search_highlights: &[[Vec<Range<usize>>; 2]],
+    syntax_highlights: &[[Vec<(Range<usize>, Style)>; 2]],
     offset: usize,
     wrap_width: usize,
 ) -> LineLayout {
@@ -211,12 +214,13 @@ fn layout_diff_line(
                 diff.file_sides[section_side.file_id][side].content,
                 &section_side.highlight_ranges,
                 search_highlights.get(section_side.file_id).map_or(&[], |a| &a[side]),
+                syntax_highlights.get(section_side.file_id).map_or(&[], |a| &a[side]),
                 offset,
                 section_side.byte_range.end,
                 wrap_width,
             )
         }
-        TextSource::Fabricated(content) => layout_line(content, &[], &[], offset, content.len(), wrap_width),
+        TextSource::Fabricated(content) => layout_line(content, &[], &[], &[], offset, content.len(), wrap_width),
     }
 }
 
@@ -230,7 +234,7 @@ fn wrap_one_side(diff: &ExtendedDiff, node: &PaddedGroupNode, side: usize, wrap_
 
         while pos != end {
             let next =
-                layout_diff_line(diff, side, &raw_element.source, &[], pos, wrap_width).offset_after_with_newline;
+                layout_diff_line(diff, side, &raw_element.source, &[], &[], pos, wrap_width).offset_after_with_newline;
             let (slice_source, slice_offset) = match &raw_element.source {
                 &TextSource::Section(section_id) => (TextSource::Section(section_id), pos),
                 TextSource::Fabricated(content) => (TextSource::Fabricated(content[pos..next].to_string()), 0),
@@ -521,6 +525,7 @@ struct State<'a> {
     reverse_button_hint_chars: HashMap<char, usize>,
     diff_hints: Vec<Vec<[usize; 2]>>,
     must_refresh_terminal: bool,
+    syntax_highlights: Vec<[Vec<(Range<usize>, Style)>; 2]>,
 }
 
 fn update_selection_position(selection: &mut TextSelection, rendered: &RenderedInfo, x: usize, y: usize) {
@@ -1315,6 +1320,7 @@ impl<'a> State<'a> {
             side,
             &whl.source,
             &self.search_highlights,
+            &self.syntax_highlights,
             whl.offset,
             self.wrap_width,
         );
@@ -1324,8 +1330,9 @@ impl<'a> State<'a> {
 
         let eol_cell = LineCell {
             egc: " ".to_string(),
-            highlight: self.config.highlight_newlines && layout.newline_highlight,
+            change_highlight: self.config.highlight_newlines && layout.newline_highlight,
             search_highlight: false,
+            syntax_highlight: Default::default(),
             fabricated_symbol: false,
             offset: layout.offset_after_except_newline,
         };
@@ -1341,8 +1348,9 @@ impl<'a> State<'a> {
         for x in 0..self.wrap_width {
             let LineCell {
                 egc,
-                highlight,
+                change_highlight,
                 search_highlight,
+                syntax_highlight,
                 fabricated_symbol,
                 offset,
             } = layout.cells.get(x).unwrap_or(&eol_cell).clone();
@@ -1375,7 +1383,8 @@ impl<'a> State<'a> {
             let mut cell = tui::buffer::Cell::default();
             if !egc.is_empty() {
                 let mut style = pick_style(&theme.text);
-                if highlight {
+                style = style.patch(syntax_highlight);
+                if change_highlight {
                     style = style.patch(pick_style(&theme.highlight));
                 }
                 if fabricated_symbol {
@@ -1708,6 +1717,8 @@ fn make_state<'a>(
         .map(|(n, c)| (c, n))
         .collect();
 
+    let syntax_highlights = make_syntax_highlights(&config, file_input, file_names, io::stderr());
+
     let diff = make_extended_diff(diff, file_input, file_names);
 
     let line_number_width = compute_line_number_width(&diff);
@@ -1743,6 +1754,7 @@ fn make_state<'a>(
         reverse_button_hint_chars,
         diff_hints,
         must_refresh_terminal: false,
+        syntax_highlights,
     }
 }
 

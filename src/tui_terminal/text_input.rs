@@ -162,7 +162,7 @@ impl TextInput {
 
     pub fn set_content(&mut self, content: String, cursor_offset: usize) {
         self.content = content;
-        self.line_layout = layout_line(&self.content, &[], &[], 0, self.content.len(), usize::MAX).cells;
+        self.line_layout = layout_line(&self.content, &[], &[], &[], 0, self.content.len(), usize::MAX).cells;
         self.offsets = self.line_layout.iter().map(|c| c.offset).collect();
         self.offsets.push(self.content.len());
         self.set_cursor_offset(cursor_offset);

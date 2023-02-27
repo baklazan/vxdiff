@@ -21,6 +21,7 @@ regex = "*"
 serde = { version = "*", features = ["derive"] }
 shell-words = "*"
 string-interner = "*"
+syntect = "*"
 toml = "*"
 tui = { version = "*", features = ["serde"] }
 unicode-segmentation = "*"

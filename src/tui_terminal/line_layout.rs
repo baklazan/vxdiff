@@ -1,3 +1,4 @@
+use crate::config::Style;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
@@ -8,8 +9,9 @@ pub(super) struct LineCell {
     /// LineCell with an empty string.
     pub egc: String,
     pub offset: usize,
-    pub highlight: bool,
+    pub change_highlight: bool,
     pub search_highlight: bool,
+    pub syntax_highlight: Style,
     pub fabricated_symbol: bool,
 }
 
@@ -20,20 +22,47 @@ pub(super) struct LineLayout {
     pub offset_after_with_newline: usize,
 }
 
+struct HighlightState<'a, T, F: Fn(&T) -> &Range<usize>> {
+    ranges: &'a [T],
+    get_range: F,
+    index: usize,
+    active: bool,
+}
+
+impl<'a, T, F: Fn(&T) -> &Range<usize>> HighlightState<'a, T, F> {
+    fn new(ranges: &'a [T], offset: usize, get_range: F) -> HighlightState<'a, T, F> {
+        let index = ranges.partition_point(|range| get_range(range).end <= offset);
+        let active = index < ranges.len() && get_range(&ranges[index]).contains(&offset);
+        HighlightState {
+            ranges,
+            get_range,
+            index,
+            active,
+        }
+    }
+
+    fn advance(&mut self, offset: usize) {
+        if self.index < self.ranges.len() && (self.get_range)(&self.ranges[self.index]).end <= offset {
+            self.index += 1;
+        }
+        self.active = self.index < self.ranges.len() && (self.get_range)(&self.ranges[self.index]).contains(&offset);
+    }
+}
+
 pub(super) fn layout_line(
     input: &str,
-    highlight_ranges: &[Range<usize>],
+    change_ranges: &[Range<usize>],
     search_ranges: &[Range<usize>],
+    syntax_ranges: &[(Range<usize>, Style)],
     mut offset: usize,
     end: usize,
     max_width: usize,
 ) -> LineLayout {
     let mut cells = vec![];
 
-    let mut highlight_index = highlight_ranges.partition_point(|range| range.end <= offset);
-    let mut highlight = false;
-
-    let mut search_index = search_ranges.partition_point(|range| range.end <= offset);
+    let mut change_state = HighlightState::new(change_ranges, offset, |r| r);
+    let mut search_state = HighlightState::new(search_ranges, offset, |r| r);
+    let mut syntax_state = HighlightState::new(syntax_ranges, offset, |r| &r.0);
 
     let mut found_newline_length = 0;
 
@@ -41,18 +70,9 @@ pub(super) fn layout_line(
     // to compute the width of each EGC. I don't know if it's correct (precisely matches what
     // terminal emulators do), but at least it matches the behavior of our library (tui-rs).
     for egc in input[offset..end].graphemes(true) {
-        let sentinel = usize::MAX..usize::MAX;
-        let highlight_range = highlight_ranges.get(highlight_index).unwrap_or(&sentinel);
-        highlight = highlight_range.contains(&offset);
-        if offset >= highlight_range.end {
-            highlight_index += 1;
-        }
-
-        let search_range = search_ranges.get(search_index).unwrap_or(&sentinel);
-        let search_highlight = search_range.contains(&offset);
-        if offset >= search_range.end {
-            search_index += 1;
-        }
+        change_state.advance(offset);
+        search_state.advance(offset);
+        syntax_state.advance(offset);
 
         if egc == "\n" {
             found_newline_length = 1;
@@ -89,8 +109,13 @@ pub(super) fn layout_line(
             cells.push(LineCell {
                 egc: cell_string,
                 offset,
-                highlight,
-                search_highlight,
+                change_highlight: change_state.active,
+                search_highlight: search_state.active,
+                syntax_highlight: if syntax_state.active {
+                    syntax_ranges[syntax_state.index].1
+                } else {
+                    Default::default()
+                },
                 fabricated_symbol,
             });
         }
@@ -100,7 +125,7 @@ pub(super) fn layout_line(
 
     LineLayout {
         cells,
-        newline_highlight: highlight,
+        newline_highlight: change_state.active,
         offset_after_except_newline: offset,
         offset_after_with_newline: offset + found_newline_length,
     }

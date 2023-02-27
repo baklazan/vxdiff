@@ -1,5 +1,6 @@
 use anyhow::{Context as _, Result};
 use clap::{error::ErrorKind, ArgGroup, CommandFactory as _, Parser};
+use std::ffi::OsString;
 use std::io::stdout;
 use std::path::PathBuf;
 use vxdiff::{
@@ -47,8 +48,10 @@ struct Args {
     #[arg(long, hide = true)]
     git_pager_hack: bool,
 
+    // Declared as OsString instead of PathBuf to allow empty values. Clap's
+    // PathBufValueParser doesn't accept them.
     #[arg(long)]
-    config_file: Option<PathBuf>,
+    config_file: Option<OsString>,
 
     #[command(flatten)]
     config: ConfigOpt,
@@ -84,9 +87,16 @@ fn try_main() -> Result<()> {
 
     let mut config = Config::default();
 
-    let config_file_default = || dirs::config_dir().map(|c| c.join("vxdiff").join("config.toml"));
-    let config_file = args.config_file.clone().or_else(config_file_default);
-    if let Some(config_file) = config_file {
+    let config_file = match args.config_file {
+        Some(arg) if arg.is_empty() => None,
+        Some(arg) => Some((PathBuf::from(arg), false)),
+        None => dirs::config_dir().map(|base_config_dir| {
+            let vxdiff_config_dir = base_config_dir.join("vxdiff");
+            config.syntax_dir = vxdiff_config_dir.clone().into_os_string();
+            (vxdiff_config_dir.join("config.toml"), true)
+        }),
+    };
+    if let Some((config_file, is_default)) = config_file {
         match std::fs::read(&config_file) {
             Ok(config_binary_content) => {
                 let config_text_content = std::str::from_utf8(&config_binary_content)
@@ -95,7 +105,7 @@ fn try_main() -> Result<()> {
                     .with_context(|| format!("Failed parsing TOML config file '{}'", config_file.display()))?;
                 config = config.update(config_parsed);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) if is_default && e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e).context(format!("Failed to read config file '{}'", config_file.display())),
         }
     }

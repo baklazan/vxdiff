@@ -1,5 +1,6 @@
 use clap::{Args, ValueEnum};
 use serde::Deserialize;
+use std::ffi::OsString;
 use tui::style::Color;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Deserialize)]
@@ -315,6 +316,15 @@ config_structs! {
     #[config_opt(arg(long, require_equals = true, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL", group = "highlight_newlines_group"))]
     pub highlight_newlines: bool,
 
+    #[config_opt(arg(long, require_equals = true, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL", group = "syntax_highlighting_group"))]
+    pub syntax_highlighting: bool,
+
+    #[config_opt(arg(long))]
+    pub syntax_dir: OsString,
+
+    #[config_opt(arg(long))]
+    pub syntax_theme: OsString,
+
     #[config_opt(arg(skip))]
     pub theme: Theme,
 
@@ -352,6 +362,10 @@ config_structs! {
     #[config_alias(highlight_newlines = false)]
     #[config_opt(arg(long, group = "highlight_newlines_group"))]
     pub no_highlight_newlines: bool,
+
+    #[config_alias(syntax_highlighting = false)]
+    #[config_opt(arg(long, group = "syntax_highlighting_group"))]
+    pub no_syntax_highlighting: bool,
 
     #[config_alias(search_incremental = false)]
     #[config_opt(arg(long, group = "search_incremental_group"))]
@@ -395,6 +409,10 @@ impl Default for Config {
             mouse_wheel_scroll_lines: 3,
             phantom_rendering: true,
             highlight_newlines: false,
+            syntax_highlighting: true,
+            syntax_dir: OsString::new(),
+            // TODO: Find a better default theme.
+            syntax_theme: OsString::from("InspiredGitHub"),
             theme: light_theme(),
             clipboard_mechanism: ClipboardMechanism::Terminal,
             search_incremental: true,
